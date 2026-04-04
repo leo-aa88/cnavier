@@ -75,7 +75,8 @@ int main(int argc, char *argv[])
     mtrx u   = initm(nx, ny);
     mtrx v   = initm(nx, ny);
     mtrx w   = initm(nx, ny);
-    mtrx psi = initm(nx, ny);
+    mtrx psi         = initm(nx, ny);
+    mtrx psi_scratch = initm(nx, ny); // scratch buffer for Poisson solver
 
     // Derivative matrices — pre-allocated once, reused every iteration
     mtrx dwdx   = initm(nx, ny);
@@ -153,12 +154,12 @@ int main(int argc, char *argv[])
         euler(w, dwdx, dwdy, d2wdx2, d2wdy2, u, v, Re, dt);
 
         // Poisson solve: nabla^2 psi = -w
-        psi.M = freem(psi);
+
         invsig(w);
         if (poisson_type == 1)
-            psi = poisson(w, dx, dy, poisson_max_it, poisson_tol);
+            poisson(w, psi, psi_scratch, dx, dy, poisson_max_it, poisson_tol);
         else
-            psi = poisson_SOR(w, dx, dy, poisson_max_it, poisson_tol, beta);
+            poisson_SOR(w, psi, psi_scratch, dx, dy, poisson_max_it, poisson_tol, beta);
         invsig(w);
 
         // Velocities from stream function: u = dpsi/dy, v = -dpsi/dx
