@@ -11,7 +11,7 @@ void euler(mtrx w, mtrx dwdx, mtrx dwdy, mtrx d2wdx2, mtrx d2wdy2, mtrx u, mtrx 
     {
         for (j = 0; j < w.n; j++)
         {
-            w.M[i][j] = (-u.M[i][j] * dwdx.M[i][j] - v.M[i][j] * dwdy.M[i][j] + (1. / Re) * (d2wdx2.M[i][j] + d2wdy2.M[i][j])) * dt + w.M[i][j];
+            MAt(w, i, j) = (-MAt(u, i, j) * MAt(dwdx, i, j) - MAt(v, i, j) * MAt(dwdy, i, j) + (1. / Re) * (MAt(d2wdx2, i, j) + MAt(d2wdy2, i, j))) * dt + MAt(w, i, j);
         }
     }
 }
@@ -26,7 +26,7 @@ mtrx continuity(mtrx dudx, mtrx dvdy)
     {
         for (j = 0; j < temp.n; j++)
         {
-            temp.M[i][j] = dudx.M[i][j] + dvdy.M[i][j];
+            MAt(temp, i, j) = MAt(dudx, i, j) + MAt(dvdy, i, j);
         }
     }
     return temp;
@@ -42,7 +42,7 @@ mtrx vorticity(mtrx dudy, mtrx dvdx)
     {
         for (j = 0; j < temp.n; j++)
         {
-            temp.M[i][j] = dvdx.M[i][j] - dudy.M[i][j];
+            MAt(temp, i, j) = MAt(dvdx, i, j) - MAt(dudy, i, j);
         }
     }
     return temp;

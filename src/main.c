@@ -28,10 +28,12 @@ int main(int argc, char *argv[])
     int poisson_max_it = 10000;
     double poisson_tol = 1E-3;
     int output_interval = 10;
-    int poisson_type = 2;
+    int poisson_type = 3; // 1=Gauss-Seidel  2=SOR  3=FFT (direct, exact)
     double beta = 0.5 * (2 / (1 + sin(PI / (nx + 1))) + 2 / (1 + sin(PI / (ny + 1))));
 
     printf("Poisson SOR parameter: %lf\n", beta);
+
+    if (poisson_type == 3) fft_setup(nx, ny);
 
     // Boundary conditions (Dirichlet)
     double ui = 0., vi = 0.;
@@ -107,8 +109,8 @@ int main(int argc, char *argv[])
     for (i = 1; i < nx - 1; i++)
         for (j = 1; j < ny - 1; j++)
         {
-            u.M[i][j] = ui;
-            v.M[i][j] = vi;
+            MAt(u, i, j) = ui;
+            MAt(v, i, j) = vi;
         }
 
     // Main time loop
@@ -117,13 +119,13 @@ int main(int argc, char *argv[])
         // Boundary conditions
         for (j = 0; j < ny; j++)
         {
-            u.M[0][j]    = u3;  v.M[0][j]    = v3;
-            u.M[nx-1][j] = u4;  v.M[nx-1][j] = v4;
+            MAt(u, 0, j)    = u3;  MAt(v, 0, j)    = v3;
+            MAt(u, nx-1, j) = u4;  MAt(v, nx-1, j) = v4;
         }
         for (i = 0; i < nx; i++)
         {
-            u.M[i][0]    = u1;  v.M[i][0]    = v1;
-            u.M[i][ny-1] = u2;  v.M[i][ny-1] = v2;
+            MAt(u, i, 0)    = u1;  MAt(v, i, 0)    = v1;
+            MAt(u, i, ny-1) = u2;  MAt(v, i, ny-1) = v2;
         }
 
         // Vorticity BCs: w = dv/dx - du/dy evaluated at boundaries
@@ -134,13 +136,13 @@ int main(int argc, char *argv[])
 
         for (j = 0; j < ny; j++)
         {
-            w.M[0][j]    = dvdx.M[0][j]    - dudy.M[0][j];
-            w.M[nx-1][j] = dvdx.M[nx-1][j] - dudy.M[nx-1][j];
+            MAt(w, 0, j)    = MAt(dvdx, 0, j)    - MAt(dudy, 0, j);
+            MAt(w, nx-1, j) = MAt(dvdx, nx-1, j) - MAt(dudy, nx-1, j);
         }
         for (i = 0; i < nx; i++)
         {
-            w.M[i][0]    = dvdx.M[i][0]    - dudy.M[i][0];
-            w.M[i][ny-1] = dvdx.M[i][ny-1] - dudy.M[i][ny-1];
+            MAt(w, i, 0)    = MAt(dvdx, i, 0)    - MAt(dudy, i, 0);
+            MAt(w, i, ny-1) = MAt(dvdx, i, ny-1) - MAt(dudy, i, ny-1);
         }
 
         // Vorticity derivatives via SpMV (no reshape, no malloc)
@@ -158,8 +160,10 @@ int main(int argc, char *argv[])
         invsig(w);
         if (poisson_type == 1)
             poisson(w, psi, psi_scratch, dx, dy, poisson_max_it, poisson_tol);
-        else
+        else if (poisson_type == 2)
             poisson_SOR(w, psi, psi_scratch, dx, dy, poisson_max_it, poisson_tol, beta);
+        else
+            poisson_FFT(w, psi, dx, dy);
         invsig(w);
 
         // Velocities from stream function: u = dpsi/dy, v = -dpsi/dx
@@ -180,7 +184,7 @@ int main(int argc, char *argv[])
         // reuse check_continuity storage
         for (i = 0; i < nx; i++)
             for (j = 0; j < ny; j++)
-                check_continuity.M[i][j] = dudx.M[i][j] + dvdy.M[i][j];
+                MAt(check_continuity, i, j) = MAt(dudx, i, j) + MAt(dvdy, i, j);
 
         printf("Iteration: %d | Time: %.4lf | Progress: %.2lf%%\n",
                t, (double)t * dt, (double)100 * t / it_max);
@@ -192,18 +196,18 @@ int main(int argc, char *argv[])
     }
 
     // Free dense fields
-    u.M   = freem(u);
-    v.M   = freem(v);
-    w.M   = freem(w);
-    psi.M = freem(psi);
+    freem(&u);
+    freem(&v);
+    freem(&w);
+    freem(&psi);
 
     // Free derivative matrices
-    dwdx.M   = freem(dwdx);   dwdy.M   = freem(dwdy);
-    d2wdx2.M = freem(d2wdx2); d2wdy2.M = freem(d2wdy2);
-    dpsidx.M = freem(dpsidx); dpsidy.M = freem(dpsidy);
-    dudy.M   = freem(dudy);   dvdx.M   = freem(dvdx);
-    dudx.M   = freem(dudx);   dvdy.M   = freem(dvdy);
-    check_continuity.M = freem(check_continuity);
+    freem(&dwdx);   freem(&dwdy);
+    freem(&d2wdx2); freem(&d2wdy2);
+    freem(&dpsidx); freem(&dpsidy);
+    freem(&dudy);   freem(&dvdx);
+    freem(&dudx);   freem(&dvdy);
+    freem(&check_continuity);
 
     // Free flat buffers
     free(flat_u); free(flat_v); free(flat_w);
@@ -211,6 +215,8 @@ int main(int argc, char *argv[])
 
     // Free sparse operators
     freesm(DX); freesm(DY); freesm(DX2); freesm(DY2);
+
+    if (poisson_type == 3) fft_cleanup();
 
     printf("Simulation complete!\n");
     return 0;

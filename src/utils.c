@@ -57,12 +57,12 @@ void printvtk(mtrx A, char *title)
         {
             if ((j == 0))
             {
-                sprintf(c, "%.6lf", A.M[i][j]);
+                sprintf(c, "%.6lf", MAt(A, i, j));
                 fprintf(pf, "%s", c);
             }
             else
             {
-                sprintf(c, " %.6lf", A.M[i][j]);
+                sprintf(c, " %.6lf", MAt(A, i, j));
                 fprintf(pf, "%s", c);
             }
         }
