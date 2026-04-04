@@ -181,3 +181,49 @@ mtrx Diff2(int n, int o, double dx)
         exit(1);
     }
 }
+// Convert a dense finite-difference matrix to CSR sparse format.
+// This is called once at startup, so the O(n^2) scan is acceptable.
+static smtrx dense_to_csr(mtrx D)
+{
+    int i, j, nnz = 0;
+
+    // Count non-zeros
+    for (i = 0; i < D.m; i++)
+        for (j = 0; j < D.n; j++)
+            if (D.M[i][j] != 0.0)
+                nnz++;
+
+    smtrx S = initsm(D.m, D.n, nnz);
+    int pos = 0;
+    for (i = 0; i < D.m; i++)
+    {
+        S.row_ptr[i] = pos;
+        for (j = 0; j < D.n; j++)
+        {
+            if (D.M[i][j] != 0.0)
+            {
+                S.values[pos]  = D.M[i][j];
+                S.col_idx[pos] = j;
+                pos++;
+            }
+        }
+    }
+    S.row_ptr[D.m] = pos;
+    return S;
+}
+
+smtrx SDiff1(int n, int o, double dx)
+{
+    mtrx  D = Diff1(n, o, dx);
+    smtrx S = dense_to_csr(D);
+    freem(D);
+    return S;
+}
+
+smtrx SDiff2(int n, int o, double dx)
+{
+    mtrx  D = Diff2(n, o, dx);
+    smtrx S = dense_to_csr(D);
+    freem(D);
+    return S;
+}

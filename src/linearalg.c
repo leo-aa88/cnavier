@@ -428,3 +428,110 @@ void mtrxcpy(mtrx A, mtrx B)
         }
     }
 }
+// ---------------------------------------------------------------------------
+// Sparse matrix (CSR) operations
+// ---------------------------------------------------------------------------
+
+smtrx initsm(int m, int n, int nnz)
+{
+    smtrx A;
+    A.m = m;
+    A.n = n;
+    A.nnz = nnz;
+    A.values  = (double *)malloc(nnz * sizeof(double));
+    A.col_idx = (int *)   malloc(nnz * sizeof(int));
+    A.row_ptr = (int *)   malloc((m + 1) * sizeof(int));
+    if (!A.values || !A.col_idx || !A.row_ptr)
+    {
+        printf("** Error: insufficient memory for sparse matrix **\n");
+        exit(1);
+    }
+    return A;
+}
+
+void freesm(smtrx A)
+{
+    free(A.values);
+    free(A.col_idx);
+    free(A.row_ptr);
+}
+
+// y = A * x   (y pre-allocated by caller, fully overwritten)
+void spmv(smtrx A, double *x, double *y)
+{
+    int i, k;
+    for (i = 0; i < A.m; i++)
+    {
+        double sum = 0.0;
+        for (k = A.row_ptr[i]; k < A.row_ptr[i + 1]; k++)
+            sum += A.values[k] * x[A.col_idx[k]];
+        y[i] = sum;
+    }
+}
+
+// Sparse n x n identity matrix
+smtrx seye(int n)
+{
+    int i;
+    smtrx I = initsm(n, n, n);
+    for (i = 0; i < n; i++)
+    {
+        I.values[i]  = 1.0;
+        I.col_idx[i] = i;
+        I.row_ptr[i] = i;
+    }
+    I.row_ptr[n] = n;
+    return I;
+}
+
+// Sparse Kronecker product: C = A x B
+// C is (A.m*B.m) x (A.n*B.n) with A.nnz*B.nnz non-zeros.
+smtrx skronecker(smtrx A, smtrx B)
+{
+    int ia, ib, ka, kb;
+    int total_nnz = A.nnz * B.nnz;
+    int m = A.m * B.m;
+    int n = A.n * B.n;
+    smtrx C = initsm(m, n, total_nnz);
+
+    int pos = 0;
+    int row = 0;
+
+    for (ia = 0; ia < A.m; ia++)
+    {
+        for (ib = 0; ib < B.m; ib++)
+        {
+            C.row_ptr[row] = pos;
+            for (ka = A.row_ptr[ia]; ka < A.row_ptr[ia + 1]; ka++)
+            {
+                for (kb = B.row_ptr[ib]; kb < B.row_ptr[ib + 1]; kb++)
+                {
+                    C.values[pos]  = A.values[ka] * B.values[kb];
+                    C.col_idx[pos] = A.col_idx[ka] * B.n + B.col_idx[kb];
+                    pos++;
+                }
+            }
+            row++;
+        }
+    }
+    C.row_ptr[row] = pos;
+    return C;
+}
+
+// Flatten dense (nx x ny) matrix into pre-allocated flat array (row-major)
+void flatten(mtrx A, double *out, int nx, int ny)
+{
+    int i, j;
+    for (i = 0; i < nx; i++)
+        for (j = 0; j < ny; j++)
+            out[i * ny + j] = A.M[i][j];
+}
+
+// Write flat array back into pre-allocated dense matrix (row-major)
+void unflatten(double *in, mtrx A, int nx, int ny)
+{
+    int i, j;
+    for (i = 0; i < nx; i++)
+        for (j = 0; j < ny; j++)
+            A.M[i][j] = in[i * ny + j];
+}

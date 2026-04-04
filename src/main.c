@@ -11,301 +11,206 @@
 
 int main(int argc, char *argv[])
 {
-    // srand(time(NULL));
     int i, j, t;
 
     // Physical parameters
-    double Re = 1000.; // Reynolds number
-    int Lx = 1;        // length
-    int Ly = 1;        // width
+    double Re = 1000.;
+    int Lx = 1;
+    int Ly = 1;
 
     // Numerical parameters
-    int nx = 64;                                                                       // number of points in x direction
-    int ny = 64;                                                                       // number of points in y direction
-    double dt = 0.005;                                                                 // time step
-    double tf = 20;                                                                    // final time
-    double max_co = 1.;                                                                // max Courant number
-    int order = 6;                                                                     // finite difference order for spatial derivatives
-    int poisson_max_it = 10000;                                                        // Poisson equation max number of iterations
-    double poisson_tol = 1E-3;                                                         // Poisson equation criterion for convergence
-    int output_interval = 10;                                                          // Output interval for .vtk files
-    int poisson_type = 2;                                                              // 1 - no relaxation | 2 - successive overrelaxation
-    double beta = 0.5 * (2 / (1 + sin(PI / (nx + 1))) + 2 / (1 + sin(PI / (ny + 1)))); // SOR poisson parameter
+    int nx = 64;
+    int ny = 64;
+    double dt = 0.005;
+    double tf = 20;
+    double max_co = 1.;
+    int order = 6;
+    int poisson_max_it = 10000;
+    double poisson_tol = 1E-3;
+    int output_interval = 10;
+    int poisson_type = 2;
+    double beta = 0.5 * (2 / (1 + sin(PI / (nx + 1))) + 2 / (1 + sin(PI / (ny + 1))));
 
     printf("Poisson SOR parameter: %lf\n", beta);
 
     // Boundary conditions (Dirichlet)
-    double ui = 0.; // internal field for u
-    double vi = 0.; // internal field for v
+    double ui = 0., vi = 0.;
+    double u1 = 0., u2 = 0., u3 = 0., u4 = 1.;
+    double v1 = 0., v2 = 0., v3 = 0., v4 = 0.;
 
-    double u1 = 0.; // right boundary condition
-    double u2 = 0.; // left boundary condition
-    double u3 = 0.; // bottom boundary condition
-    double u4 = 1.; // top boundary condition
-
-    double v1 = 0.;
-    double v2 = 0.;
-    double v3 = 0.;
-    double v4 = 0.;
-
-    // Computes cell sizes
+    // Cell sizes
     double dx = (double)Lx / nx;
     double dy = (double)Ly / ny;
 
-    // Generates derivatives operators
-    mtrx d_x = Diff1(nx, order, dx);
-    mtrx d_y = Diff1(ny, order, dy);
-    mtrx d_x2 = Diff2(nx, order, dx);
-    mtrx d_y2 = Diff2(ny, order, dy);
+    // Build sparse 1D operators then free them after Kronecker
+    smtrx sd_x  = SDiff1(nx, order, dx);
+    smtrx sd_y  = SDiff1(ny, order, dy);
+    smtrx sd_x2 = SDiff2(nx, order, dx);
+    smtrx sd_y2 = SDiff2(ny, order, dy);
+    smtrx sIx   = seye(nx);
+    smtrx sIy   = seye(ny);
 
-    mtrx Ix = eye(nx);              // identity matrix
-    mtrx Iy = eye(ny);              // identity matrix
-    mtrx DX = kronecker(Ix, d_x);   // kronecker product for x first derivative
-    mtrx DY = kronecker(d_y, Iy);   // kronecker product for y first derivative
-    mtrx DX2 = kronecker(Ix, d_x2); // kronecker product for x second derivative
-    mtrx DY2 = kronecker(d_y2, Iy); // kronecker product for y second derivative
+    // Sparse 2D operators: DX = I_y x d_x,  DY = d_y x I_x
+    smtrx DX  = skronecker(sIy,   sd_x);
+    smtrx DY  = skronecker(sd_y,  sIx);
+    smtrx DX2 = skronecker(sIy,   sd_x2);
+    smtrx DY2 = skronecker(sd_y2, sIx);
 
-    d_x.M = freem(d_x);
-    d_y.M = freem(d_y);
-    d_x2.M = freem(d_x2);
-    d_y2.M = freem(d_y2);
-    Ix.M = freem(Ix);
-    Iy.M = freem(Iy);
+    freesm(sd_x); freesm(sd_y); freesm(sd_x2); freesm(sd_y2);
+    freesm(sIx);  freesm(sIy);
 
-    // Maximum number of iterations
+    int N = nx * ny;
+
+    // Courant check (u4 is the only non-zero BC velocity)
     int it_max = (int)((tf / dt) - 1);
-
-    // Courant numbers
-    double r1 = u1 * dt / (dx);
-    double r2 = u1 * dt / (dy);
-
+    double r1 = u4 * dt / dx;
+    double r2 = u4 * dt / dy;
     if ((r1 > max_co) || (r2 > max_co))
     {
-        printf("Unstable Solution!\n");
-        printf("r1: %lf\n", r1);
-        printf("r2: %lf\n", r2);
+        printf("Unstable Solution! r1=%lf r2=%lf\n", r1, r2);
         exit(1);
     }
 
-    // Variables
-    // Initialize velocities
-    mtrx u = initm(nx, ny);   // x-velocity
-    mtrx v = initm(nx, ny);   // y-velocity
-    mtrx w = initm(nx, ny);   // vorticity
-    mtrx psi = initm(nx, ny); // stream-function
+    // Dense field matrices
+    mtrx u   = initm(nx, ny);
+    mtrx v   = initm(nx, ny);
+    mtrx w   = initm(nx, ny);
+    mtrx psi = initm(nx, ny);
 
-    // Derivatives
-    // mtrx p;   // pressure
-    mtrx dwdx;             // vorticity x-derivative
-    mtrx dwdy;             // vorticity y-derivative
-    mtrx d2wdx2;           // vorticity x-derivative (2nd)
-    mtrx d2wdy2;           // vorticity y-derivative (2nd)
-    mtrx dpsidx;           // stream-function x-derivative
-    mtrx dpsidy;           // stream-function y-derivative
-    mtrx dudx;             // x-velocity x-derivative
-    mtrx dudy;             // x-velocity y-derivative
-    mtrx dvdx;             // y-velocity x-derivative
-    mtrx dvdy;             // y-velocity y-derivative
-    mtrx check_continuity; // continuity equation
+    // Derivative matrices — pre-allocated once, reused every iteration
+    mtrx dwdx   = initm(nx, ny);
+    mtrx dwdy   = initm(nx, ny);
+    mtrx d2wdx2 = initm(nx, ny);
+    mtrx d2wdy2 = initm(nx, ny);
+    mtrx dpsidx = initm(nx, ny);
+    mtrx dpsidy = initm(nx, ny);
+    mtrx dudy   = initm(nx, ny);
+    mtrx dvdx   = initm(nx, ny);
+    mtrx dudx   = initm(nx, ny);
+    mtrx dvdy   = initm(nx, ny);
+    mtrx check_continuity = initm(nx, ny);
 
-    // Auxiliary variables
-    mtrx w0;
-    mtrx dwdx0;
-    mtrx dwdy0;
-    mtrx d2wdx20;
-    mtrx d2wdy20;
-    mtrx psi0;
-    mtrx dpsidx0;
-    mtrx dpsidy0;
-    mtrx u0;
-    mtrx v0;
-    mtrx dudx0;
-    mtrx dudy0;
-    mtrx dvdx0;
-    mtrx dvdy0;
+    // Flat work buffers — pre-allocated once, no malloc/free in the time loop
+    double *flat_u   = (double *)malloc(N * sizeof(double));
+    double *flat_v   = (double *)malloc(N * sizeof(double));
+    double *flat_w   = (double *)malloc(N * sizeof(double));
+    double *flat_psi = (double *)malloc(N * sizeof(double));
+    double *flat_tmp = (double *)malloc(N * sizeof(double));
+    if (!flat_u || !flat_v || !flat_w || !flat_psi || !flat_tmp)
+    {
+        printf("** Error: insufficient memory **\n");
+        exit(1);
+    }
 
     // Initial condition
     for (i = 1; i < nx - 1; i++)
-    {
         for (j = 1; j < ny - 1; j++)
         {
             u.M[i][j] = ui;
             v.M[i][j] = vi;
         }
-    }
 
     // Main time loop
     for (t = 0; t <= it_max; t++)
     {
-        // Initialize variables
-
         // Boundary conditions
         for (j = 0; j < ny; j++)
         {
-            v.M[0][j] = v3;
-            v.M[nx - 1][j] = v4;
-            u.M[0][j] = u3;
-            u.M[nx - 1][j] = u4;
+            u.M[0][j]    = u3;  v.M[0][j]    = v3;
+            u.M[nx-1][j] = u4;  v.M[nx-1][j] = v4;
         }
         for (i = 0; i < nx; i++)
         {
-            v.M[i][0] = v1;
-            v.M[i][ny - 1] = v2;
-            u.M[i][0] = u1;
-            u.M[i][ny - 1] = u2;
+            u.M[i][0]    = u1;  v.M[i][0]    = v1;
+            u.M[i][ny-1] = u2;  v.M[i][ny-1] = v2;
         }
 
-        u0 = reshape(u, nx * ny, 1);
-        v0 = reshape(v, nx * ny, 1);
-        dudy0 = mtrxmul(DY, u0);
-        dvdx0 = mtrxmul(DX, v0);
-
-        dudy = reshape(dudy0, nx, ny);
-        dvdx = reshape(dvdx0, nx, ny);
-
-        u0.M = freem(u0);
-        v0.M = freem(v0);
-        dudy0.M = freem(dudy0);
-        dvdx0.M = freem(dvdx0);
+        // Vorticity BCs: w = dv/dx - du/dy evaluated at boundaries
+        flatten(u, flat_u, nx, ny);
+        flatten(v, flat_v, nx, ny);
+        spmv(DY, flat_u, flat_tmp);  unflatten(flat_tmp, dudy, nx, ny);
+        spmv(DX, flat_v, flat_tmp);  unflatten(flat_tmp, dvdx, nx, ny);
 
         for (j = 0; j < ny; j++)
         {
-            w.M[0][j] = dvdx.M[0][j] - dudy.M[0][j];
-            w.M[nx - 1][j] = dvdx.M[nx - 1][j] - dudy.M[nx - 1][j];
+            w.M[0][j]    = dvdx.M[0][j]    - dudy.M[0][j];
+            w.M[nx-1][j] = dvdx.M[nx-1][j] - dudy.M[nx-1][j];
         }
         for (i = 0; i < nx; i++)
         {
-            w.M[i][0] = dvdx.M[i][0] - dudy.M[i][0];
-            w.M[i][ny - 1] = dvdx.M[i][ny - 1] - dudy.M[i][ny - 1];
+            w.M[i][0]    = dvdx.M[i][0]    - dudy.M[i][0];
+            w.M[i][ny-1] = dvdx.M[i][ny-1] - dudy.M[i][ny-1];
         }
 
-        // Computes derivatives
-        w0 = reshape(w, nx * ny, 1);
-        dwdx0 = mtrxmul(DX, w0);
-        dwdy0 = mtrxmul(DY, w0);
+        // Vorticity derivatives via SpMV (no reshape, no malloc)
+        flatten(w, flat_w, nx, ny);
+        spmv(DX,  flat_w, flat_tmp);  unflatten(flat_tmp, dwdx,   nx, ny);
+        spmv(DY,  flat_w, flat_tmp);  unflatten(flat_tmp, dwdy,   nx, ny);
+        spmv(DX2, flat_w, flat_tmp);  unflatten(flat_tmp, d2wdx2, nx, ny);
+        spmv(DY2, flat_w, flat_tmp);  unflatten(flat_tmp, d2wdy2, nx, ny);
 
-        dwdx = reshape(dwdx0, nx, ny);
-        dwdy = reshape(dwdy0, nx, ny);
-
-        dwdx0.M = freem(dwdx0);
-        dwdy0.M = freem(dwdy0);
-
-        d2wdx20 = mtrxmul(DX2, w0);
-        d2wdy20 = mtrxmul(DY2, w0);
-
-        d2wdx2 = reshape(d2wdx20, nx, ny);
-        d2wdy2 = reshape(d2wdy20, nx, ny);
-
-        d2wdx20.M = freem(d2wdx20);
-        d2wdy20.M = freem(d2wdy20);
-        w0.M = freem(w0);
-
-        // Time - advancement(Euler)
+        // Time advancement (Euler)
         euler(w, dwdx, dwdy, d2wdx2, d2wdy2, u, v, Re, dt);
 
-        // Solves poisson equation for stream function
+        // Poisson solve: nabla^2 psi = -w
         psi.M = freem(psi);
         invsig(w);
         if (poisson_type == 1)
-        {
             psi = poisson(w, dx, dy, poisson_max_it, poisson_tol);
-        }
-        else if (poisson_type == 2)
-        {
-            psi = poisson_SOR(w, dx, dy, poisson_max_it, poisson_tol, beta);
-        }
         else
-        {
-            printf("Error - invalid option for Poisson solver\n");
-            exit(1);
-        }
-
+            psi = poisson_SOR(w, dx, dy, poisson_max_it, poisson_tol, beta);
         invsig(w);
 
-        // Computes velocities
-        psi0 = reshape(psi, nx * ny, 1);
-        dpsidx0 = mtrxmul(DX, psi0);
-        dpsidy0 = mtrxmul(DY, psi0);
+        // Velocities from stream function: u = dpsi/dy, v = -dpsi/dx
+        flatten(psi, flat_psi, nx, ny);
+        spmv(DY, flat_psi, flat_tmp);  unflatten(flat_tmp, dpsidy, nx, ny);
+        spmv(DX, flat_psi, flat_tmp);  unflatten(flat_tmp, dpsidx, nx, ny);
 
-        dpsidx = reshape(dpsidx0, nx, ny);
-        dpsidy = reshape(dpsidy0, nx, ny);
-
-        psi0.M = freem(psi0);
-        dpsidx0.M = freem(dpsidx0);
-        dpsidy0.M = freem(dpsidy0);
-
-        u.M = freem(u);
-        v.M = freem(v);
-        u = initm(nx, ny);
-        v = initm(nx, ny);
         mtrxcpy(u, dpsidy);
         invsig(dpsidx);
         mtrxcpy(v, dpsidx);
 
-        // Checks continuity equation
+        // Continuity check: du/dx + dv/dy ~ 0
+        flatten(u, flat_u, nx, ny);
+        flatten(v, flat_v, nx, ny);
+        spmv(DX, flat_u, flat_tmp);  unflatten(flat_tmp, dudx, nx, ny);
+        spmv(DY, flat_v, flat_tmp);  unflatten(flat_tmp, dvdy, nx, ny);
 
-        u0 = reshape(u, nx * ny, 1);
-        v0 = reshape(v, nx * ny, 1);
+        // reuse check_continuity storage
+        for (i = 0; i < nx; i++)
+            for (j = 0; j < ny; j++)
+                check_continuity.M[i][j] = dudx.M[i][j] + dvdy.M[i][j];
 
-        dudx0 = mtrxmul(DX, u0);
-        dvdy0 = mtrxmul(DY, v0);
-
-        dudx = reshape(dudx0, nx, ny);
-        dvdy = reshape(dvdy0, nx, ny);
-        check_continuity = continuity(dudx, dvdy);
-        printf("Iteration: %d | ", t);
-        printf("Time: %lf | ", (double)t * dt);
-        printf("Progress: %.2lf%%\n", (double)100 * t / it_max);
-        printf("Continuity max: %E | ", maxel(check_continuity));
-        printf("Continuity min: %E\n", minel(check_continuity));
-
-        u0.M = freem(u0);
-        v0.M = freem(v0);
-        dudx0.M = freem(dudx0);
-        dvdy0.M = freem(dvdy0);
-
-        // Computes pressure
-        //	dudx = np.reshape(DX @ np.reshape(u,(nx*ny,1)),(nx,ny))
-        //	dudy = np.reshape(DY @ np.reshape(u,(nx*ny,1)),(nx,ny))
-        //	dvdx = np.reshape(DX @ np.reshape(v,(nx*ny,1)),(nx,ny))
-        //	dvdy = np.reshape(DY @ np.reshape(v,(nx*ny,1)),(nx,ny))
-        //	f = dudx**2+dvdy**2+2*dudy*dvdx
-        //	p = fft_poisson(-f,dx)
+        printf("Iteration: %d | Time: %.4lf | Progress: %.2lf%%\n",
+               t, (double)t * dt, (double)100 * t / it_max);
+        printf("Continuity max: %E | min: %E\n",
+               maxel(check_continuity), minel(check_continuity));
 
         if (t % output_interval == 0)
-        {
-            // printvtk(psi, "stream-function");
             printvtk(w, "vorticity");
-            // printvtk(u, "x-velocity");
-            // printvtk(v, "y-velocity");
-            // printvtk(p, "pressure");
-        }
-
-        // Free memory
-        // freem(p);
-        dwdx.M = freem(dwdx);
-        dwdy.M = freem(dwdy);
-        d2wdx2.M = freem(d2wdx2);
-        d2wdy2.M = freem(d2wdy2);
-        dpsidx.M = freem(dpsidx);
-        dpsidy.M = freem(dpsidy);
-        dudx.M = freem(dudx);
-        dudy.M = freem(dudy);
-        dvdx.M = freem(dvdx);
-        dvdy.M = freem(dvdy);
-        check_continuity.M = freem(check_continuity);
     }
-    // Free memory
-    u.M = freem(u);
-    v.M = freem(v);
-    w.M = freem(w);
+
+    // Free dense fields
+    u.M   = freem(u);
+    v.M   = freem(v);
+    w.M   = freem(w);
     psi.M = freem(psi);
-    DX.M = freem(DX);
-    DY.M = freem(DY);
-    DX2.M = freem(DX2);
-    DY2.M = freem(DY2);
+
+    // Free derivative matrices
+    dwdx.M   = freem(dwdx);   dwdy.M   = freem(dwdy);
+    d2wdx2.M = freem(d2wdx2); d2wdy2.M = freem(d2wdy2);
+    dpsidx.M = freem(dpsidx); dpsidy.M = freem(dpsidy);
+    dudy.M   = freem(dudy);   dvdx.M   = freem(dvdx);
+    dudx.M   = freem(dudx);   dvdy.M   = freem(dvdy);
+    check_continuity.M = freem(check_continuity);
+
+    // Free flat buffers
+    free(flat_u); free(flat_v); free(flat_w);
+    free(flat_psi); free(flat_tmp);
+
+    // Free sparse operators
+    freesm(DX); freesm(DY); freesm(DX2); freesm(DY2);
 
     printf("Simulation complete!\n");
-
     return 0;
 }
