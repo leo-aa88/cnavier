@@ -33,11 +33,11 @@ mtrx Diff1(int n, int o, double dx)
         D.M[1][2] = (double)0.5 / dx;
         for (i = 2; i < (n - 2); i++)
         {
-            D.M[i][i - 2] = (double)1 / 12 / dx;
-            D.M[i][i - 1] = (double)-2 / 3 / dx;
+            D.M[i][i - 2] =  1.0 / 12.0 / dx;
+            D.M[i][i - 1] = -2.0 /  3.0 / dx;
             D.M[i][i] = 0;
-            D.M[i][i + 1] = (double)2 / 3 / dx;
-            D.M[i][i + 2] = (double)-1 / 12 / dx;
+            D.M[i][i + 1] =  2.0 /  3.0 / dx;
+            D.M[i][i + 2] = -1.0 / 12.0 / dx;
         }
         D.M[n - 1][n - 1] = D.M[0][1];
         D.M[n - 1][n - 2] = D.M[0][0];
@@ -53,20 +53,20 @@ mtrx Diff1(int n, int o, double dx)
         D.M[1][0] = (double)-0.5 / dx;
         D.M[1][1] = (double)0 / dx;
         D.M[1][2] = (double)0.5 / dx;
-        D.M[2][0] = (double)1 / 12 / dx;
-        D.M[2][1] = (double)-2 / 3 / dx;
-        D.M[2][2] = (double)0 / dx;
-        D.M[2][3] = (double)2 / 3 / dx;
-        D.M[2][4] = (double)-1 / 12 / dx;
+        D.M[2][0] =  1.0 / 12.0 / dx;
+        D.M[2][1] = -2.0 /  3.0 / dx;
+        D.M[2][2] =  0.0;
+        D.M[2][3] =  2.0 /  3.0 / dx;
+        D.M[2][4] = -1.0 / 12.0 / dx;
         for (i = 3; i < (n - 3); i++)
         {
-            D.M[i][i - 3] = (double)-1 / 60 / dx;
-            D.M[i][i - 2] = (double)3 / 20 / dx;
-            D.M[i][i - 1] = (double)-3 / 4 / dx;
-            D.M[i][i] = (double)0 / dx;
-            D.M[i][i + 1] = (double)3 / 4 / dx;
-            D.M[i][i + 2] = (double)-3 / 20 / dx;
-            D.M[i][i + 3] = (double)1 / 60 / dx;
+            D.M[i][i - 3] = -1.0 / 60.0 / dx;
+            D.M[i][i - 2] =  3.0 / 20.0 / dx;
+            D.M[i][i - 1] = -3.0 /  4.0 / dx;
+            D.M[i][i] = 0.0;
+            D.M[i][i + 1] =  3.0 /  4.0 / dx;
+            D.M[i][i + 2] = -3.0 / 20.0 / dx;
+            D.M[i][i + 3] =  1.0 / 60.0 / dx;
         }
         D.M[n - 1][n - 1] = D.M[0][1];
         D.M[n - 1][n - 2] = D.M[0][0];
@@ -122,11 +122,11 @@ mtrx Diff2(int n, int o, double dx)
         D.M[1][2] = (double)1 / (dx * dx);
         for (i = 2; i < (n - 2); i++)
         {
-            D.M[i][i - 2] = (double)-1 / 12 / (dx * dx);
-            D.M[i][i - 1] = (double)4 / 3 / (dx * dx);
-            D.M[i][i] = (double)-5 / 2 / (dx * dx);
-            D.M[i][i + 1] = (double)4 / 3 / (dx * dx);
-            D.M[i][i + 2] = (double)-1 / 12 / (dx * dx);
+            D.M[i][i - 2] =  -1.0 / 12.0 / (dx * dx);
+            D.M[i][i - 1] =   4.0 /  3.0 / (dx * dx);
+            D.M[i][i] =      -5.0 /  2.0 / (dx * dx);
+            D.M[i][i + 1] =   4.0 /  3.0 / (dx * dx);
+            D.M[i][i + 2] =  -1.0 / 12.0 / (dx * dx);
         }
         D.M[n - 1][n - 1] = D.M[0][0];
         D.M[n - 1][n - 2] = D.M[0][1];
@@ -146,20 +146,20 @@ mtrx Diff2(int n, int o, double dx)
         D.M[1][0] = (double)1 / (dx * dx); // Central-scheme (second-order)
         D.M[1][1] = (double)-2 / (dx * dx);
         D.M[1][2] = (double)1 / (dx * dx);
-        D.M[2][0] = (double)-1 / 12 / (dx * dx); // Central-scheme (fourth-order)
-        D.M[2][1] = (double)4 / 3 / (dx * dx);
-        D.M[2][2] = (double)-5 / 2 / (dx * dx);
-        D.M[2][3] = (double)4 / 3 / (dx * dx);
-        D.M[2][4] = (double)-1 / 12 / (dx * dx);
+        D.M[2][0] =  -1.0 / 12.0 / (dx * dx); // Central-scheme (fourth-order)
+        D.M[2][1] =   4.0 /  3.0 / (dx * dx);
+        D.M[2][2] =  -5.0 /  2.0 / (dx * dx);
+        D.M[2][3] =   4.0 /  3.0 / (dx * dx);
+        D.M[2][4] =  -1.0 / 12.0 / (dx * dx);
         for (i = 3; i < (n - 3); i++)
         {
-            D.M[i][i - 3] = (double)1 / 90 / (dx * dx);
-            D.M[i][i - 2] = (double)-3 / 20 / (dx * dx);
-            D.M[i][i - 1] = (double)3 / 2 / (dx * dx);
-            D.M[i][i] = (double)-49 / 18 / (dx * dx);
-            D.M[i][i + 1] = (double)3 / 2 / (dx * dx);
-            D.M[i][i + 2] = (double)-3 / 20 / (dx * dx);
-            D.M[i][i + 3] = (double)1 / 90 / (dx * dx);
+            D.M[i][i - 3] =   1.0 / 90.0 / (dx * dx);
+            D.M[i][i - 2] =  -3.0 / 20.0 / (dx * dx);
+            D.M[i][i - 1] =   3.0 /  2.0 / (dx * dx);
+            D.M[i][i] =     -49.0 / 18.0 / (dx * dx);
+            D.M[i][i + 1] =   3.0 /  2.0 / (dx * dx);
+            D.M[i][i + 2] =  -3.0 / 20.0 / (dx * dx);
+            D.M[i][i + 3] =   1.0 / 90.0 / (dx * dx);
         }
         D.M[n - 1][n - 1] = D.M[0][0];
         D.M[n - 1][n - 2] = D.M[0][1];

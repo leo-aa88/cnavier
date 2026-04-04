@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
 #include "linearalg.h"
 
 void zerosm(mtrx A)
@@ -245,7 +246,7 @@ vec gaussian(mtrx A, vec b)
         for (k = i + 1; k < m; k++)
         {
             // If diagonal element(absolute vallue) is smaller than any of the terms below it
-            if (abs(a[i][i]) < abs(a[k][i]))
+            if (fabs(a[i][i]) < fabs(a[k][i]))
             {
                 // Swap the rows
                 for (j = 0; j < n; j++)
