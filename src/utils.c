@@ -48,7 +48,7 @@ void printvtk(mtrx A, char *title)
     fprintf(pf, "SPACING 1 1 1\n");
     fprintf(pf, "POINT_DATA %d\n", A.m * A.n);
     fprintf(pf, "SCALARS values float\n");
-    fprintf(pf, "LOOKUP_TABLE default");
+    fprintf(pf, "LOOKUP_TABLE default\n");
 
     for (i = 0; i < A.m; i++)
     {
