@@ -29,7 +29,8 @@ int main(int argc, char *argv[])
     double poisson_tol = 1E-3;
     int output_interval = 10;
     int poisson_type = 3; // 1=Gauss-Seidel  2=SOR  3=FFT (direct, exact)
-    double beta = 0.5 * (2 / (1 + sin(PI / (nx + 1))) + 2 / (1 + sin(PI / (ny + 1))));
+    double rho  = 0.5 * (cos(PI / nx) + cos(PI / ny)); // spectral radius of Gauss-Seidel
+    double beta  = 2.0 / (1.0 + sqrt(1.0 - rho * rho));  // optimal SOR parameter
 
     printf("Poisson SOR parameter: %lf\n", beta);
 
