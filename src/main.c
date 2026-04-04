@@ -28,7 +28,8 @@ int main(int argc, char *argv[])
     int poisson_max_it = 10000;
     double poisson_tol = 1E-3;
     int output_interval = 10;
-    int poisson_type = 3; // 1=Gauss-Seidel  2=SOR  3=FFT (direct, exact)
+    int poisson_type  = 3; // 1=Gauss-Seidel  2=SOR  3=FFT (direct, exact)
+    int time_scheme   = 2; // 1=Euler  2=RK4
     double rho  = 0.5 * (cos(PI / nx) + cos(PI / ny)); // spectral radius of Gauss-Seidel
     double beta  = 2.0 / (1.0 + sqrt(1.0 - rho * rho));  // optimal SOR parameter
 
@@ -61,6 +62,14 @@ int main(int argc, char *argv[])
 
     freesm(sd_x); freesm(sd_y); freesm(sd_x2); freesm(sd_y2);
     freesm(sIx);  freesm(sIy);
+
+    // RK4 workspace (allocated once, reused every timestep)
+    rk4_ctx ctx = rk4_alloc(nx, ny);
+    ctx.DX = &DX; ctx.DY = &DY; ctx.DX2 = &DX2; ctx.DY2 = &DY2;
+    ctx.Re = Re; ctx.dx = dx; ctx.dy = dy;
+    ctx.poisson_type = poisson_type;
+    ctx.poisson_max_it = poisson_max_it; ctx.poisson_tol = poisson_tol;
+    ctx.beta = beta;
 
     int N = nx * ny;
 
@@ -153,28 +162,35 @@ int main(int argc, char *argv[])
         spmv(DX2, flat_w, flat_tmp);  unflatten(flat_tmp, d2wdx2, nx, ny);
         spmv(DY2, flat_w, flat_tmp);  unflatten(flat_tmp, d2wdy2, nx, ny);
 
-        // Time advancement (Euler)
-        euler(w, dwdx, dwdy, d2wdx2, d2wdy2, u, v, Re, dt);
+        // Time advancement + Poisson solve
+        if (time_scheme == 1)
+        {
+            // Euler: single RHS evaluation
+            euler(w, dwdx, dwdy, d2wdx2, d2wdy2, u, v, Re, dt);
 
-        // Poisson solve: nabla^2 psi = -w
+            invsig(w);
+            if (poisson_type == 1)
+                poisson(w, psi, psi_scratch, dx, dy, poisson_max_it, poisson_tol);
+            else if (poisson_type == 2)
+                poisson_SOR(w, psi, psi_scratch, dx, dy, poisson_max_it, poisson_tol, beta);
+            else
+                poisson_FFT(w, psi, dx, dy);
+            invsig(w);
 
-        invsig(w);
-        if (poisson_type == 1)
-            poisson(w, psi, psi_scratch, dx, dy, poisson_max_it, poisson_tol);
-        else if (poisson_type == 2)
-            poisson_SOR(w, psi, psi_scratch, dx, dy, poisson_max_it, poisson_tol, beta);
+            flatten(psi, flat_psi, nx, ny);
+            spmv(DY, flat_psi, flat_tmp);  unflatten(flat_tmp, dpsidy, nx, ny);
+            spmv(DX, flat_psi, flat_tmp);  unflatten(flat_tmp, dpsidx, nx, ny);
+            mtrxcpy(u, dpsidy);
+            invsig(dpsidx);
+            mtrxcpy(v, dpsidx);
+        }
         else
-            poisson_FFT(w, psi, dx, dy);
-        invsig(w);
-
-        // Velocities from stream function: u = dpsi/dy, v = -dpsi/dx
-        flatten(psi, flat_psi, nx, ny);
-        spmv(DY, flat_psi, flat_tmp);  unflatten(flat_tmp, dpsidy, nx, ny);
-        spmv(DX, flat_psi, flat_tmp);  unflatten(flat_tmp, dpsidx, nx, ny);
-
-        mtrxcpy(u, dpsidy);
-        invsig(dpsidx);
-        mtrxcpy(v, dpsidx);
+        {
+            // RK4: four RHS evaluations, each with a Poisson solve
+            // u and v are updated to be consistent with w on return
+            rk4(w, u, v, dt, &ctx);
+            // Sync psi, dpsidx, dpsidy for output (already done inside rk4)
+        }
 
         // Continuity check: du/dx + dv/dy ~ 0
         flatten(u, flat_u, nx, ny);
@@ -217,6 +233,7 @@ int main(int argc, char *argv[])
     // Free sparse operators
     freesm(DX); freesm(DY); freesm(DX2); freesm(DY2);
 
+    rk4_free(&ctx);
     if (poisson_type == 3) fft_cleanup();
 
     printf("Simulation complete!\n");
