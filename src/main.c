@@ -37,6 +37,7 @@ int main(int argc, char *argv[])
 
     if (poisson_type == 3) fft_setup(nx, ny);
 
+
     // Boundary conditions (Dirichlet)
     double ui = 0., vi = 0.;
     double u1 = 0., u2 = 0., u3 = 0., u4 = 1.;
@@ -211,6 +212,9 @@ int main(int argc, char *argv[])
         if (t % output_interval == 0)
             printvtk(w, "vorticity");
     }
+
+    // Write centerline profiles and compare against Ghia et al. (1982)
+    print_centerline(u, v, nx, ny, dx, dy);
 
     // Free dense fields
     freem(&u);
