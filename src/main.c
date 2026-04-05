@@ -14,7 +14,7 @@ int main(int argc, char *argv[])
     int i, j, t;
 
     // Physical parameters
-    double Re = 1000.;
+    double Re = 100.;
     int Lx = 1;
     int Ly = 1;
 
@@ -22,12 +22,12 @@ int main(int argc, char *argv[])
     int nx = 64;
     int ny = 64;
     double dt = 0.005;
-    double tf = 20;
+    double tf = 30;
     double max_co = 1.;
     int order = 6;
     int poisson_max_it = 10000;
     double poisson_tol = 1E-3;
-    int output_interval = 10;
+    int output_interval = 20;
     int poisson_type  = 3; // 1=Gauss-Seidel  2=SOR  3=FFT (direct, exact)
     int time_scheme   = 2; // 1=Euler  2=RK4
     double rho  = 0.5 * (cos(PI / nx) + cos(PI / ny)); // spectral radius of Gauss-Seidel
@@ -211,6 +211,18 @@ int main(int argc, char *argv[])
 
         if (t % output_interval == 0)
             printvtk(w, "vorticity");
+    }
+
+    // Re-apply wall BCs before sampling centerline
+    for (j = 0; j < ny; j++)
+    {
+        MAt(u, 0, j)    = u3;  MAt(v, 0, j)    = v3;
+        MAt(u, nx-1, j) = u4;  MAt(v, nx-1, j) = v4;
+    }
+    for (i = 0; i < nx; i++)
+    {
+        MAt(u, i, 0)    = u1;  MAt(v, i, 0)    = v1;
+        MAt(u, i, ny-1) = u2;  MAt(v, i, ny-1) = v2;
     }
 
     // Write centerline profiles and compare against Ghia et al. (1982)
