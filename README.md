@@ -39,10 +39,16 @@ At each timestep:
 
 - `gcc`
 - `libfftw3` — required for the FFT Poisson solver
+- **OpenMP** — optional; used only if you build with `make OPENMP=1` (see below)
 
 **Ubuntu/Debian**
 ```bash
 sudo apt install libfftw3-dev
+```
+
+For parallel builds, install a full GCC toolchain (OpenMP comes with GCC as **libgomp**; nothing extra beyond the compiler is usually required):
+```bash
+sudo apt install build-essential
 ```
 
 **Arch Linux**
@@ -50,10 +56,23 @@ sudo apt install libfftw3-dev
 sudo pacman -S fftw
 ```
 
+GCC on Arch already includes OpenMP support for `make OPENMP=1`.
+
 **macOS**
 ```bash
 brew install fftw
 ```
+
+Apple’s default compiler is often Clang without OpenMP enabled for `-fopenmp`. To use OpenMP, install GCC from Homebrew and point `CC` at it (the exact version suffix may vary):
+```bash
+brew install gcc
+CC=gcc-14 make OPENMP=1
+```
+Alternatively, install `libomp` and use Clang with the appropriate `-fopenmp` / `-lomp` flags if you maintain a custom toolchain.
+
+### OpenMP (quick facts)
+
+You typically **do not** install a package named “openmp” alone. **GCC** implements OpenMP and links the runtime (**libgomp** on Linux). If `gcc -fopenmp` works on your system, `make OPENMP=1` should work.
 
 ## Build
 
