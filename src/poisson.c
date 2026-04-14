@@ -19,7 +19,7 @@ double error(mtrx u1, mtrx u2)
 // u and u0 are pre-allocated by the caller; u holds the result on return.
 void poisson(mtrx f, mtrx u, mtrx u0, double dx, double dy, int itmax, double tol)
 {
-    int i, j, k;
+    int i, k;
     int nx = f.m, ny = f.n;
     double e;
     double dx2 = dx * dx, dy2 = dy * dy;
@@ -30,12 +30,35 @@ void poisson(mtrx f, mtrx u, mtrx u0, double dx, double dy, int itmax, double to
     for (k = 0; k < itmax; k++)
     {
         mtrxcpy(u0, u);
+#ifdef _OPENMP
+        /* Red–black ordering: two parallel phases (sequential GS is not safe to omp parallel for). */
+#pragma omp parallel for schedule(static)
         for (i = 1; i < nx - 1; i++)
-            for (j = 1; j < ny - 1; j++)
+        {
+            int j0 = (i & 1) ? 1 : 2;
+            int j;
+            for (j = j0; j < ny - 1; j += 2)
                 MAt(u, i, j) = (dy2 * (MAt(u, i+1, j) + MAt(u, i-1, j))
                             + dx2 * (MAt(u, i, j+1) + MAt(u, i, j-1))
                             - dx2 * dy2 * MAt(f, i, j)) / denom;
-
+        }
+#pragma omp parallel for schedule(static)
+        for (i = 1; i < nx - 1; i++)
+        {
+            int j0 = (i & 1) ? 2 : 1;
+            int j;
+            for (j = j0; j < ny - 1; j += 2)
+                MAt(u, i, j) = (dy2 * (MAt(u, i+1, j) + MAt(u, i-1, j))
+                            + dx2 * (MAt(u, i, j+1) + MAt(u, i, j-1))
+                            - dx2 * dy2 * MAt(f, i, j)) / denom;
+        }
+#else
+        for (i = 1; i < nx - 1; i++)
+            for (int j = 1; j < ny - 1; j++)
+                MAt(u, i, j) = (dy2 * (MAt(u, i+1, j) + MAt(u, i-1, j))
+                            + dx2 * (MAt(u, i, j+1) + MAt(u, i, j-1))
+                            - dx2 * dy2 * MAt(f, i, j)) / denom;
+#endif
         e = error(u, u0);
         if (e < tol)
         {
@@ -51,7 +74,7 @@ void poisson(mtrx f, mtrx u, mtrx u0, double dx, double dy, int itmax, double to
 // u and u0 are pre-allocated by the caller; u holds the result on return.
 void poisson_SOR(mtrx f, mtrx u, mtrx u0, double dx, double dy, int itmax, double tol, double beta)
 {
-    int i, j, k;
+    int i, k;
     int nx = f.m, ny = f.n;
     double e;
     double dx2 = dx * dx, dy2 = dy * dy;
@@ -62,13 +85,37 @@ void poisson_SOR(mtrx f, mtrx u, mtrx u0, double dx, double dy, int itmax, doubl
     for (k = 0; k < itmax; k++)
     {
         mtrxcpy(u0, u);
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static)
         for (i = 1; i < nx - 1; i++)
-            for (j = 1; j < ny - 1; j++)
+        {
+            int j0 = (i & 1) ? 1 : 2;
+            int j;
+            for (j = j0; j < ny - 1; j += 2)
                 MAt(u, i, j) = beta  * (dy2 * (MAt(u, i+1, j) + MAt(u, i-1, j))
                                     + dx2 * (MAt(u, i, j+1) + MAt(u, i, j-1))
                                     - dx2 * dy2 * MAt(f, i, j)) / denom
                            + (1.0 - beta) * MAt(u0, i, j);
-
+        }
+#pragma omp parallel for schedule(static)
+        for (i = 1; i < nx - 1; i++)
+        {
+            int j0 = (i & 1) ? 2 : 1;
+            int j;
+            for (j = j0; j < ny - 1; j += 2)
+                MAt(u, i, j) = beta  * (dy2 * (MAt(u, i+1, j) + MAt(u, i-1, j))
+                                    + dx2 * (MAt(u, i, j+1) + MAt(u, i, j-1))
+                                    - dx2 * dy2 * MAt(f, i, j)) / denom
+                           + (1.0 - beta) * MAt(u0, i, j);
+        }
+#else
+        for (i = 1; i < nx - 1; i++)
+            for (int j = 1; j < ny - 1; j++)
+                MAt(u, i, j) = beta  * (dy2 * (MAt(u, i+1, j) + MAt(u, i-1, j))
+                                    + dx2 * (MAt(u, i, j+1) + MAt(u, i, j-1))
+                                    - dx2 * dy2 * MAt(f, i, j)) / denom
+                           + (1.0 - beta) * MAt(u0, i, j);
+#endif
         e = error(u, u0);
         if (e < tol)
         {
@@ -131,14 +178,20 @@ void fft_cleanup(void)
 
 void poisson_FFT(mtrx f, mtrx u, double dx, double dy)
 {
-    int i, j;
+    int i;
     int nx = fft_nx;
     int ny = fft_ny;
 
     // Copy interior RHS into the work buffer (boundaries stay 0 by Dirichlet)
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static)
+#endif
     for (i = 0; i < nx; i++)
+    {
+        int j;
         for (j = 0; j < ny; j++)
             fft_buf[i * ny + j] = MAt(f, i, j);
+    }
 
     // Forward DST-I
     fftw_execute(plan_fwd);
@@ -147,10 +200,14 @@ void poisson_FFT(mtrx f, mtrx u, double dx, double dy)
     //   λ_ij = (2*cos(π*(i+1)/(nx+1)) - 2) / dx²
     //         + (2*cos(π*(j+1)/(ny+1)) - 2) / dy²
     double inv_norm = 1.0 / (4.0 * (double)(nx + 1) * (double)(ny + 1));
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static)
+#endif
     for (i = 0; i < nx; i++)
     {
         double lambda_i = (2.0 * cos(PI * (i + 1) / (double)(nx + 1)) - 2.0)
                           / (dx * dx);
+        int j;
         for (j = 0; j < ny; j++)
         {
             double lambda_j = (2.0 * cos(PI * (j + 1) / (double)(ny + 1)) - 2.0)
@@ -163,7 +220,13 @@ void poisson_FFT(mtrx f, mtrx u, double dx, double dy)
     fftw_execute(plan_inv);
 
     // Write normalised result into u
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static)
+#endif
     for (i = 0; i < nx; i++)
+    {
+        int j;
         for (j = 0; j < ny; j++)
             MAt(u, i, j) = fft_buf[i * ny + j] * inv_norm;
+    }
 }

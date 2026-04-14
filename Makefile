@@ -2,6 +2,12 @@ CC=gcc
 CC_FLAGS=-g -Wall
 CC_LIBS=-lm -lfftw3
 
+# Parallel shared-memory build: make OPENMP=1
+ifeq ($(OPENMP),1)
+  CC_FLAGS += -fopenmp
+  CC_LIBS += -fopenmp
+endif
+
 SRC_DIR=src
 HDR_DIR=include/
 OBJ_DIR=obj

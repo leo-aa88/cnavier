@@ -61,6 +61,14 @@ brew install fftw
 make
 ```
 
+Optional **OpenMP** (shared-memory parallelism in the hot loops — SpMV, Euler/RK4 RHS, Poisson):
+
+```bash
+make OPENMP=1
+```
+
+Thread count follows `OMP_NUM_THREADS` (and the OpenMP runtime defaults). The default `make` build is unchanged (no OpenMP).
+
 This produces the `cnavier` binary. Output VTK files are written to `output/` — create it first:
 
 ```bash
