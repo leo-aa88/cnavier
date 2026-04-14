@@ -6,7 +6,8 @@ Solves the 2D lid-driven cavity problem using the **vorticity-streamfunction for
 
 ## Results
 
-![Re=1000 lid-driven cavity flow](Re1000_cavity_flow_example.png)
+![Re=1000 lid-driven cavity flow](re1000.gif)
+
 *Vorticity field for the lid-driven cavity at Re=1000.*
 
 ## Method
