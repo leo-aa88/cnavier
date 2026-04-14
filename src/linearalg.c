@@ -312,10 +312,14 @@ void freesm(smtrx A)
 
 void spmv(smtrx A, double *x, double *y)
 {
-    int i, k;
+    int i;
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static)
+#endif
     for (i = 0; i < A.m; i++)
     {
         double sum = 0.0;
+        int k;
         for (k = A.row_ptr[i]; k < A.row_ptr[i + 1]; k++)
             sum += A.values[k] * x[A.col_idx[k]];
         y[i] = sum;

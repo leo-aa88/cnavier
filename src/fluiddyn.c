@@ -5,10 +5,14 @@
 
 void euler(mtrx w, mtrx dwdx, mtrx dwdy, mtrx d2wdx2, mtrx d2wdy2, mtrx u, mtrx v, double Re, double dt)
 {
-    int i, j;
+    int i;
 
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static)
+#endif
     for (i = 0; i < w.m; i++)
     {
+        int j;
         for (j = 0; j < w.n; j++)
         {
             MAt(w, i, j) = (-MAt(u, i, j) * MAt(dwdx, i, j) - MAt(v, i, j) * MAt(dwdy, i, j) + (1. / Re) * (MAt(d2wdx2, i, j) + MAt(d2wdy2, i, j))) * dt + MAt(w, i, j);
@@ -94,7 +98,7 @@ void rk4_free(rk4_ctx *ctx)
 // out = -u*(dw/dx) - v*(dw/dy) + (1/Re)*(d2w/dx2 + d2w/dy2)
 void dwdt(mtrx w, mtrx u, mtrx v, mtrx out, rk4_ctx *ctx)
 {
-    int i, j;
+    int i;
     int nx = ctx->nx, ny = ctx->ny;
 
     // Derivatives of w
@@ -125,49 +129,79 @@ void dwdt(mtrx w, mtrx u, mtrx v, mtrx out, rk4_ctx *ctx)
     mtrxcpy(v, ctx->dpsidx);
 
     // RHS: dw/dt = -u*dw/dx - v*dw/dy + (1/Re)*(d2w/dx2 + d2w/dy2)
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static)
+#endif
     for (i = 0; i < nx; i++)
+    {
+        int j;
         for (j = 0; j < ny; j++)
             MAt(out, i, j) = - MAt(u, i, j) * MAt(ctx->dwdx,   i, j)
                              - MAt(v, i, j) * MAt(ctx->dwdy,   i, j)
                              + (1.0 / ctx->Re) * (MAt(ctx->d2wdx2, i, j)
                                                 + MAt(ctx->d2wdy2, i, j));
+    }
 }
 
 // Classical RK4: w_{n+1} = w_n + (dt/6)*(k1 + 2*k2 + 2*k3 + k4)
 // u and v are updated to be consistent with w_{n+1} on return.
 void rk4(mtrx w, mtrx u, mtrx v, double dt, rk4_ctx *ctx)
 {
-    int i, j;
+    int i;
     int nx = ctx->nx, ny = ctx->ny;
 
     // k1 = f(w_n)
     dwdt(w, u, v, ctx->k1, ctx);
 
     // k2 = f(w_n + dt/2 * k1)
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static)
+#endif
     for (i = 0; i < nx; i++)
+    {
+        int j;
         for (j = 0; j < ny; j++)
             MAt(ctx->w_tmp, i, j) = MAt(w, i, j) + 0.5 * dt * MAt(ctx->k1, i, j);
+    }
     dwdt(ctx->w_tmp, u, v, ctx->k2, ctx);
 
     // k3 = f(w_n + dt/2 * k2)
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static)
+#endif
     for (i = 0; i < nx; i++)
+    {
+        int j;
         for (j = 0; j < ny; j++)
             MAt(ctx->w_tmp, i, j) = MAt(w, i, j) + 0.5 * dt * MAt(ctx->k2, i, j);
+    }
     dwdt(ctx->w_tmp, u, v, ctx->k3, ctx);
 
     // k4 = f(w_n + dt * k3)
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static)
+#endif
     for (i = 0; i < nx; i++)
+    {
+        int j;
         for (j = 0; j < ny; j++)
             MAt(ctx->w_tmp, i, j) = MAt(w, i, j) + dt * MAt(ctx->k3, i, j);
+    }
     dwdt(ctx->w_tmp, u, v, ctx->k4, ctx);
 
     // Combine: w_{n+1} = w_n + (dt/6)*(k1 + 2*k2 + 2*k3 + k4)
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static)
+#endif
     for (i = 0; i < nx; i++)
+    {
+        int j;
         for (j = 0; j < ny; j++)
             MAt(w, i, j) += (dt / 6.0) * (MAt(ctx->k1, i, j)
                                        + 2.0 * MAt(ctx->k2, i, j)
                                        + 2.0 * MAt(ctx->k3, i, j)
                                            + MAt(ctx->k4, i, j));
+    }
 
     // Final Poisson solve so u, v are consistent with w_{n+1}
     dwdt(w, u, v, ctx->k1, ctx); // k1 reused as scratch — u, v updated as side effect
