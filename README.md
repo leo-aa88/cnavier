@@ -14,9 +14,9 @@ Solves the 2D lid-driven cavity problem using the **vorticity-streamfunction for
 The governing equations are:
 
 ```
-∂ω/∂t + u·∂ω/∂x + v·∂ω/∂y = (1/Re) ∇²ω     (vorticity transport)
+∂ω/∂t + u·∂ω/∂x + v·∂ω/∂y = (1/Re) ∇²ω          (vorticity transport)
 ∇²ψ = −ω                                        (Poisson equation)
-u = ∂ψ/∂y,  v = −∂ψ/∂x                         (velocity recovery)
+u = ∂ψ/∂y,  v = −∂ψ/∂x                          (velocity recovery)
 ω = ∂v/∂x − ∂u/∂y                               (vorticity definition)
 ```
 
