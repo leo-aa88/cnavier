@@ -412,10 +412,24 @@ gpu_solver *gpu_init(const rk4_ctx *ctx, double dt, int time_scheme, const wall_
     int i, count = 0;
     int nx = ctx->nx, ny = ctx->ny, n = nx * ny;
 
+    // Probe for a device. cudaFree(0) forces the context to be created, so a
+    // device that is present but cannot be used is also reported here.
     if (cudaGetDeviceCount(&count) != cudaSuccess || count < 1)
         return NULL;
-    if (cudaSetDevice(0) != cudaSuccess)
+    if (cudaSetDevice(0) != cudaSuccess || cudaFree(0) != cudaSuccess)
         return NULL;
+
+    if (nx != ny)
+    {
+        // The Kronecker operators and the field layout only agree on square grids
+        printf("** Error: non-square grids are not supported (nx must equal ny) **\n");
+        exit(1);
+    }
+    if (ctx->poisson_type < 1 || ctx->poisson_type > 3)
+    {
+        printf("** Error: valid Poisson solver types are 1, 2 or 3 **\n");
+        exit(1);
+    }
 
     gpu_solver *g = (gpu_solver *)calloc(1, sizeof(gpu_solver));
     if (!g)

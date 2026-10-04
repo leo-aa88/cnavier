@@ -3,6 +3,8 @@
 #include <string.h>
 #include <math.h>
 #include <time.h>
+#include <errno.h>
+#include <limits.h>
 #include <getopt.h>
 #include "linearalg.h"
 #include "finitediff.h"
@@ -13,11 +15,42 @@
 #include "cudasolver.h"
 #endif
 
+// Largest supported grid: keeps nx*ny, the CSR non-zero count (up to 7 per
+// row) and the FFT extension 4*(nx+1)*(ny+1) within int range
+#define MAX_GRID 16384
+
+// Parse a whole string as an int. Returns 0 if it is not one.
+static int parse_int(const char *s, int *out)
+{
+    char *end;
+    long val;
+
+    errno = 0;
+    val = strtol(s, &end, 10);
+    if (errno != 0 || end == s || *end != '\0' || val < INT_MIN || val > INT_MAX)
+        return 0;
+    *out = (int)val;
+    return 1;
+}
+
+// Parse a whole string as a finite double. Returns 0 if it is not one.
+static int parse_double(const char *s, double *out)
+{
+    char *end;
+    double val;
+
+    errno = 0;
+    val = strtod(s, &end);
+    if (errno != 0 || end == s || *end != '\0' || !isfinite(val))
+        return 0;
+    *out = val;
+    return 1;
+}
+
 static void usage(const char *prog)
 {
     printf("Usage: %s [options]\n", prog);
-    printf("  --nx N               grid points in x\n");
-    printf("  --ny N               grid points in y\n");
+    printf("  --n N                grid points per side (the grid is N x N)\n");
     printf("  --dt DT              time step\n");
     printf("  --tf TF              final time\n");
     printf("  --output-interval N  write VTK every N iterations (0 = never)\n");
@@ -53,8 +86,7 @@ int main(int argc, char *argv[])
 
     // Command-line overrides
     static struct option long_opts[] = {
-        {"nx",              required_argument, 0, 'x'},
-        {"ny",              required_argument, 0, 'y'},
+        {"n",               required_argument, 0, 'n'},
         {"dt",              required_argument, 0, 'd'},
         {"tf",              required_argument, 0, 'f'},
         {"output-interval", required_argument, 0, 'o'},
@@ -62,32 +94,55 @@ int main(int argc, char *argv[])
         {"help",            no_argument,       0, 'h'},
         {0, 0, 0, 0}
     };
-    int opt;
-    while ((opt = getopt_long(argc, argv, "", long_opts, NULL)) != -1)
+    int opt, opt_index;
+    while ((opt = getopt_long(argc, argv, "", long_opts, &opt_index)) != -1)
     {
+        int ok = 1;
         switch (opt)
         {
-        case 'x': nx = atoi(optarg); break;
-        case 'y': ny = atoi(optarg); break;
-        case 'd': dt = atof(optarg); break;
-        case 'f': tf = atof(optarg); break;
-        case 'o': output_interval = atoi(optarg); break;
+        case 'n': ok = parse_int(optarg, &nx); ny = nx; break;
+        case 'd': ok = parse_double(optarg, &dt); break;
+        case 'f': ok = parse_double(optarg, &tf); break;
+        case 'o': ok = parse_int(optarg, &output_interval); break;
         case 'c': use_gpu = 0; break;
         case 'h': usage(argv[0]); return 0;
         default:  usage(argv[0]); return 1;
         }
+        if (!ok)
+        {
+            printf("** Error: invalid value '%s' for --%s **\n", optarg, long_opts[opt_index].name);
+            return 1;
+        }
     }
-    if (optind < argc || nx < 8 || ny < 8 || dt <= 0. || tf <= 0. || output_interval < 0)
+    if (optind < argc)
     {
-        printf("** Error: invalid arguments **\n");
+        printf("** Error: unexpected argument '%s' **\n", argv[optind]);
         usage(argv[0]);
         return 1;
     }
 
-    if (nx != ny)
+    // Reject what the solver cannot handle. The tests on dt and tf are
+    // written so that a NaN fails them.
+    if (nx < 8 || nx > MAX_GRID || ny < 8 || ny > MAX_GRID)
     {
-        // The Kronecker operators and the field layout only agree on square grids
-        printf("** Error: nx and ny must be equal (non-square grids are not supported) **\n");
+        printf("** Error: grid size must be between 8 and %d **\n", MAX_GRID);
+        return 1;
+    }
+    if (!(dt > 0.) || !isfinite(dt) || !(tf > 0.) || !isfinite(tf))
+    {
+        printf("** Error: dt and tf must be positive and finite **\n");
+        return 1;
+    }
+    if (output_interval < 0)
+    {
+        printf("** Error: output interval must not be negative **\n");
+        return 1;
+    }
+    // The number of timesteps is checked as a double, before it becomes an int
+    if (!(tf / dt >= 1.) || tf / dt > (double)INT_MAX)
+    {
+        printf("** Error: tf/dt gives %g timesteps; it must be between 1 and %d **\n",
+               tf / dt, INT_MAX);
         return 1;
     }
 
@@ -232,7 +287,7 @@ int main(int argc, char *argv[])
         }
 
         printf("Iteration: %d | Time: %.4lf | Progress: %.2lf%%\n",
-               t, (double)t * dt, (double)100 * t / it_max);
+               t, (double)t * dt, it_max > 0 ? (double)100 * t / it_max : 100.);
         printf("Continuity max: %E | min: %E\n", cmax, cmin);
 
         if (output_interval > 0 && t % output_interval == 0)

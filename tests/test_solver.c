@@ -1,5 +1,8 @@
 // Test suite: make test            (CPU solver)
 //             make CUDA=1 test     (CPU solver + GPU backend checked against it)
+//
+// Exit status: 0 = every check ran and passed, 1 = a check failed,
+// 77 = nothing failed but the GPU tests could not run (no usable device).
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,8 +16,11 @@
 #include "cudasolver.h"
 #endif
 
+#define EXIT_SKIPPED 77 // conventional "skipped" status: neither a pass nor a failure
+
 static int n_checks = 0;
 static int n_failed = 0;
+static int n_skipped = 0; // GPU tests that could not run
 
 // Pass when value <= limit (a NaN value fails)
 static void check(const char *name, double value, double limit)
@@ -329,11 +335,11 @@ static void test_gpu_poisson(int n, int poisson_type, const char *label, double 
 // Run the same case on both backends and compare the fields afterwards.
 // bc == NULL keeps the lid-driven cavity.
 static void test_gpu_step(int n, int steps, double dt, int time_scheme, int poisson_type,
-                          const wall_bc *bc, const char *label, double limit)
+                          double poisson_tol, const wall_bc *bc, const char *label, double limit)
 {
     int t, N = n * n;
     char name[96];
-    problem p = problem_alloc(n, time_scheme, poisson_type, dt, 1E-10);
+    problem p = problem_alloc(n, time_scheme, poisson_type, dt, poisson_tol);
     problem_bind(&p);
     if (bc) p.bc = *bc;
     gpu_solver *g = gpu_for(&p);
@@ -398,40 +404,56 @@ static void test_gpu_fields(int n)
     problem_free(&p);
 }
 
+// Run a GPU test, or count it as skipped when there is no device to run it on
+#define GPU_TEST(call) do { if (have_gpu) call; else n_skipped++; } while (0)
+
 static void run_gpu_tests(void)
 {
     // A different velocity on every wall, so a wall mix-up cannot go unnoticed
     wall_bc four_walls = {{0.3, -0.2, 0.5, 1.0}, {0.1, -0.4, 0.2, -0.3}};
 
-    // Probe for a device first so that machines without one skip cleanly
+    // Probe for a device first
     problem probe = problem_alloc(16, 2, 3, 0.002, 1E-3);
     problem_bind(&probe);
     gpu_solver *g = gpu_init(&probe.ctx, probe.dt, probe.time_scheme, &probe.bc);
+    int have_gpu = (g != NULL);
     problem_free(&probe);
-    if (!g)
-    {
+    if (have_gpu)
+        gpu_free(g);
+    else
         printf("GPU: no usable CUDA device - GPU tests SKIPPED\n");
-        return;
-    }
-    gpu_free(g);
 
     // 300x300 is large enough for the reductions to span several passes
-    test_gpu_fields(16);
-    test_gpu_fields(300);
-    test_gpu_spmv(32);
-    test_gpu_spmv(45);
-    test_gpu_spmv(300);
-    test_gpu_poisson(32, 3, "FFT", 1E-12);
-    test_gpu_poisson(45, 3, "FFT", 1E-12);
-    test_gpu_poisson(24, 2, "SOR", 1E-7);
-    test_gpu_poisson(24, 1, "Gauss-Seidel", 1E-7);
-    test_gpu_step(32, 50, 0.002, 2, 3, NULL, "RK4 + FFT", 1E-11);
-    test_gpu_step(32, 50, 0.002, 1, 3, NULL, "Euler + FFT", 1E-11);
-    test_gpu_step(45, 50, 0.002, 2, 3, NULL, "RK4 + FFT", 1E-11);
-    test_gpu_step(128, 10, 0.0005, 2, 3, NULL, "RK4 + FFT", 1E-11);
-    test_gpu_step(32, 20, 0.002, 2, 3, &four_walls, "RK4 + FFT, four moving walls", 1E-11);
-    test_gpu_step(24, 3, 0.002, 2, 2, NULL, "RK4 + SOR", 1E-7);
-    test_gpu_step(24, 3, 0.002, 1, 1, NULL, "Euler + Gauss-Seidel", 1E-7);
+    GPU_TEST(test_gpu_fields(16));
+    GPU_TEST(test_gpu_fields(300));
+    GPU_TEST(test_gpu_spmv(32));
+    GPU_TEST(test_gpu_spmv(45));
+    GPU_TEST(test_gpu_spmv(300));
+    GPU_TEST(test_gpu_poisson(32, 3, "FFT", 1E-12));
+    GPU_TEST(test_gpu_poisson(45, 3, "FFT", 1E-12));
+    GPU_TEST(test_gpu_poisson(24, 2, "SOR", 1E-7));
+    GPU_TEST(test_gpu_poisson(24, 1, "Gauss-Seidel", 1E-7));
+    GPU_TEST(test_gpu_step(32, 50, 0.002, 2, 3, 1E-10, NULL, "RK4 + FFT", 1E-11));
+    GPU_TEST(test_gpu_step(32, 50, 0.002, 1, 3, 1E-10, NULL, "Euler + FFT", 1E-11));
+    GPU_TEST(test_gpu_step(45, 50, 0.002, 2, 3, 1E-10, NULL, "RK4 + FFT", 1E-11));
+    GPU_TEST(test_gpu_step(128, 10, 0.0005, 2, 3, 1E-10, NULL, "RK4 + FFT", 1E-11));
+    GPU_TEST(test_gpu_step(32, 20, 0.002, 2, 3, 1E-10, &four_walls,
+                           "RK4 + FFT, four moving walls", 1E-11));
+
+    // The iterative solvers are run to a tight tolerance here. The default
+    // CPU build sweeps lexicographically and the GPU red-black, so the two
+    // only agree once the iteration has converged.
+    GPU_TEST(test_gpu_step(24, 3, 0.002, 2, 2, 1E-10, NULL, "RK4 + SOR", 1E-7));
+    GPU_TEST(test_gpu_step(24, 3, 0.002, 1, 1, 1E-10, NULL, "Euler + Gauss-Seidel", 1E-7));
+#ifdef _OPENMP
+    // With OPENMP=1 the CPU sweeps red-black too, so the backends must also
+    // agree at the shipped tolerance, where the iteration stops far from
+    // convergence.
+    GPU_TEST(test_gpu_step(64, 10, 0.005, 2, 2, 1E-3, NULL,
+                           "RK4 + SOR, shipped tolerance", 1E-9));
+    GPU_TEST(test_gpu_step(24, 10, 0.002, 1, 1, 1E-3, NULL,
+                           "Euler + Gauss-Seidel, shipped tolerance", 1E-9));
+#endif
 }
 
 #endif // USE_CUDA
@@ -444,10 +466,17 @@ int main(void)
     test_cpu_step(1, "Euler");
 #ifdef USE_CUDA
     run_gpu_tests();
-#else
-    printf("GPU: built without CUDA=1 - GPU tests not compiled\n");
 #endif
 
-    printf("\n%d checks, %d failed\n", n_checks, n_failed);
-    return n_failed ? 1 : 0;
+    printf("\n%d checks, %d failed", n_checks, n_failed);
+#ifdef USE_CUDA
+    if (n_skipped)
+        printf(", %d GPU tests SKIPPED (no usable CUDA device)", n_skipped);
+#else
+    printf(" (CPU only: the GPU tests need CUDA=1)");
+#endif
+    printf("\n");
+
+    if (n_failed) return 1;
+    return n_skipped ? EXIT_SKIPPED : 0;
 }

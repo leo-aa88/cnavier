@@ -61,6 +61,13 @@ mtrx vorticity(mtrx dudy, mtrx dvdx)
 rk4_ctx rk4_alloc(int nx, int ny)
 {
     rk4_ctx ctx;
+
+    if (nx != ny)
+    {
+        // The Kronecker operators and the field layout only agree on square grids
+        printf("** Error: non-square grids are not supported (nx must equal ny) **\n");
+        exit(1);
+    }
     ctx.nx = nx; ctx.ny = ny;
     ctx.dwdx    = initm(nx, ny); ctx.dwdy    = initm(nx, ny);
     ctx.d2wdx2  = initm(nx, ny); ctx.d2wdy2  = initm(nx, ny);
@@ -107,8 +114,13 @@ static void velocity_from_vorticity(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx)
     else if (ctx->poisson_type == 2)
         poisson_SOR(w, ctx->psi, ctx->psi_scratch, ctx->dx, ctx->dy,
                     ctx->poisson_max_it, ctx->poisson_tol, ctx->beta);
-    else
+    else if (ctx->poisson_type == 3)
         poisson_FFT(w, ctx->psi, ctx->dx, ctx->dy);
+    else
+    {
+        printf("** Error: valid Poisson solver types are 1, 2 or 3 **\n");
+        exit(1);
+    }
     invsig(w);
 
     // Recover u = dpsi/dy, v = -dpsi/dx
@@ -212,7 +224,7 @@ void rk4(mtrx w, mtrx u, mtrx v, double dt, rk4_ctx *ctx)
     }
 
     // Final Poisson solve so u, v are consistent with w_{n+1}
-    dwdt(w, u, v, ctx->k1, ctx); // k1 reused as scratch — u, v updated as side effect
+    velocity_from_vorticity(w, u, v, ctx);
 }
 
 // ---------------------------------------------------------------------------

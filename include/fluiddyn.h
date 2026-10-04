@@ -28,7 +28,8 @@ typedef struct {
     double poisson_tol, beta, dx, dy, Re;
 } rk4_ctx;
 
-// Allocate all RK4 workspace for an nx*ny grid
+// Allocate all RK4 workspace for an nx*ny grid. Only square grids are
+// supported: exits with an error unless nx == ny.
 rk4_ctx rk4_alloc(int nx, int ny);
 // Free all RK4 workspace
 void rk4_free(rk4_ctx *ctx);

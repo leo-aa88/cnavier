@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  cpu:
+    name: CPU build and tests
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y libfftw3-dev
+      - name: Serial build and tests
+        run: make test
+      - name: OpenMP build and tests
+        run: make OPENMP=1 test
+
+  cuda:
+    name: CUDA build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y libfftw3-dev nvidia-cuda-toolkit
+      - name: Build solver and tests with CUDA
+        run: make CUDA=1 cnavier test_cnavier
+      # Hosted runners have no GPU, so the GPU tests cannot run here. The CPU
+      # checks must pass and the suite must say the GPU ones were skipped
+      # (exit status 77) rather than report a clean pass.
+      - name: CPU checks pass and GPU tests report as skipped
+        run: |
+          status=0
+          ./test_cnavier || status=$?
+          echo "exit status: $status"
+          test "$status" -eq 77
