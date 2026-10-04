@@ -178,7 +178,7 @@ All parameters are set at the top of `src/main.c`:
 ### Physical
 | Parameter | Default | Description |
 |---|---|---|
-| `Re` | `1000` | Reynolds number |
+| `Re` | `100` | Reynolds number |
 | `Lx`, `Ly` | `1` | Domain size |
 
 ### Numerical
@@ -186,11 +186,11 @@ All parameters are set at the top of `src/main.c`:
 |---|---|---|
 | `nx`, `ny` | `64` | Grid points in x and y |
 | `dt` | `0.005` | Time step |
-| `tf` | `20` | Final time |
+| `tf` | `30` | Final time |
 | `order` | `6` | Finite difference order (2, 4, or 6) |
 | `time_scheme` | `2` | `1` = Euler, `2` = RK4 |
 | `poisson_type` | `3` | `1` = Gauss-Seidel, `2` = SOR, `3` = FFT |
-| `output_interval` | `10` | Write VTK every N iterations |
+| `output_interval` | `20` | Write VTK every N iterations |
 
 ### Command-line options
 A few numerical parameters can be overridden without recompiling; anything not given keeps its value from `src/main.c`:
