@@ -1,0 +1,1037 @@
+\documentclass[11pt,a4paper]{article}
+
+% -----------------------------------------------------------------------------
+% cnavier scientific methodology / user manual
+% Repository state reviewed: main @ d015a85087de383ae4a97b7c2266ff8b7d2b8b98
+% Generated: 2026-10-04
+% -----------------------------------------------------------------------------
+
+\usepackage[margin=2.5cm]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{amsmath,amssymb,bm}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{hyperref}
+\usepackage{cleveref}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue!50!black,
+  citecolor=blue!50!black,
+  urlcolor=blue!60!black,
+  pdftitle={cnavier: Numerical Methodology and Scientific User Manual}
+}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  frame=single,
+  breaklines=true,
+  columns=fullflexible,
+  keepspaces=true,
+  showstringspaces=false
+}
+
+\newcommand{\Rey}{\mathrm{Re}}
+\newcommand{\dd}{\mathrm{d}}
+\newcommand{\dt}{\Delta t}
+\newcommand{\dx}{\Delta x}
+\newcommand{\dy}{\Delta y}
+\newcommand{\Oh}{\mathcal{O}}
+\newcommand{\code}[1]{\texttt{\detokenize{#1}}}
+
+\title{\textbf{cnavier}\\[0.5em]
+\large Numerical Methodology and Scientific User Manual}
+\author{cnavier project}
+\date{Repository state: \code{main} at \code{d015a85087de383ae4a97b7c2266ff8b7d2b8b98}\\4 October 2026}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+\texttt{cnavier} is a compact two-dimensional incompressible Navier--Stokes solver written in C, with optional OpenMP and CUDA acceleration.  The code advances the scalar vorticity equation and reconstructs a divergence-free velocity field from a stream function.  Spatial derivatives are represented by finite-difference matrices of selectable interior order (second, fourth, or sixth), assembled into two-dimensional sparse operators through Kronecker products and applied in compressed sparse row (CSR) form.  Time integration is explicit, using either forward Euler or classical fourth-order Runge--Kutta (RK4).  The stream-function Poisson equation may be solved by Gauss--Seidel, successive over-relaxation (SOR), or a direct discrete-sine-transform solver implemented with FFTW3 on the CPU and cuFFT on the GPU.
+
+This document describes the mathematical model, the exact discretizations present in the source code, solver sequencing, boundary treatment, stability considerations, verification and validation strategy, parallel backends, usage, and current numerical limitations.  It is intended to be both a scientific description of the methodology and a practical reference for users and developers.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% =============================================================================
+\section{Introduction}
+% =============================================================================
+
+The objective of \texttt{cnavier} is to provide a small, inspectable computational fluid dynamics (CFD) code for two-dimensional incompressible viscous flow.  Its reference problem is the square lid-driven cavity: three stationary no-slip walls and one tangentially moving wall.  Despite the small code base, the project contains several numerical alternatives that are useful for study and benchmarking: multiple finite-difference stencil widths, two explicit time integrators, three elliptic solvers, a sparse-operator formulation, shared-memory parallelism, and an optional CUDA implementation of the complete time loop.
+
+The code uses a \emph{vorticity--streamfunction} formulation rather than the primitive-variable $(u,v,p)$ equations.  This choice removes pressure from the evolution system and replaces the pressure--velocity coupling problem by a scalar Poisson equation.  In two dimensions, the streamfunction definition also gives a particularly strong discrete incompressibility property: when the discrete $x$- and $y$-derivative operators commute, the recovered velocity has zero discrete divergence to round-off.
+
+The solver is designed primarily as an educational and experimental code rather than as a general-purpose production CFD package.  The current implementation assumes a rectangular Cartesian domain, a square computational array, constant Reynolds number, explicit time stepping, and Dirichlet wall velocities.  These constraints simplify the formulation sufficiently that each numerical operation can be followed directly from the governing equations to its C or CUDA implementation.
+
+\subsection{Repository organization}
+
+The main numerical components are:
+
+\begin{itemize}[leftmargin=2em]
+  \item \code{src/main.c}: run configuration, operator construction, backend selection, time loop, diagnostics, and output;
+  \item \code{src/finitediff.c}: one-dimensional first- and second-derivative finite-difference matrices and CSR conversion;
+  \item \code{src/linearalg.c}: dense storage utilities, CSR sparse matrices, sparse matrix--vector multiplication, and Kronecker products;
+  \item \code{src/fluiddyn.c}: wall conditions, vorticity transport, Euler and RK4 integration, streamfunction-to-velocity recovery, and full timesteps;
+  \item \code{src/poisson.c}: Gauss--Seidel, SOR, and FFTW/DST-I Poisson solvers;
+  \item \code{src/cudasolver.cu}: CUDA implementations of the time loop, sparse operators, elliptic solvers, and diagnostics;
+  \item \code{src/utils.c}: VTK output and centerline data for comparison with Ghia et al.;
+  \item \code{tests/test_solver.c}: CPU verification and CPU--GPU parity tests.
+\end{itemize}
+
+% =============================================================================
+\section{Governing Equations}
+% =============================================================================
+
+\subsection{Nondimensional incompressible Navier--Stokes equations}
+
+For an incompressible Newtonian fluid of constant density and viscosity, the nondimensional two-dimensional Navier--Stokes equations are
+\begin{align}
+\frac{\partial \bm{u}}{\partial t}
++ (\bm{u}\cdot\nabla)\bm{u}
+&= -\nabla p + \frac{1}{\Rey}\nabla^2\bm{u},
+\label{eq:NS}\\
+\nabla\cdot\bm{u} &= 0,
+\label{eq:continuity}
+\end{align}
+where
+\[
+\bm{u}=(u,v)^T
+\]
+is the velocity, $p$ is the kinematic pressure, and
+\[
+\Rey=\frac{U_{\mathrm{ref}}L_{\mathrm{ref}}}{\nu}
+\]
+is the Reynolds number.
+
+For the default lid-driven cavity, $L_{\mathrm{ref}}=1$ and the lid speed is $U_{\mathrm{ref}}=1$, so the default nondimensional boundary data are
+\begin{align*}
+(u,v)&=(1,0) &&\text{on the moving lid},\\
+(u,v)&=(0,0) &&\text{on the other three walls}.
+\end{align*}
+
+\subsection{Vorticity--streamfunction formulation}
+
+Define the scalar vorticity
+\begin{equation}
+\omega = \frac{\partial v}{\partial x}-\frac{\partial u}{\partial y}.
+\label{eq:vorticity-def}
+\end{equation}
+Taking the curl of \cref{eq:NS} eliminates pressure and yields the vorticity transport equation
+\begin{equation}
+\frac{\partial \omega}{\partial t}
++u\frac{\partial\omega}{\partial x}
++v\frac{\partial\omega}{\partial y}
+=\frac{1}{\Rey}\left(
+\frac{\partial^2\omega}{\partial x^2}
++\frac{\partial^2\omega}{\partial y^2}
+\right).
+\label{eq:vort-transport}
+\end{equation}
+
+Introduce a streamfunction $\psi$ by
+\begin{equation}
+ u=\frac{\partial\psi}{\partial y},
+ \qquad
+ v=-\frac{\partial\psi}{\partial x}.
+\label{eq:velocity-streamfunction}
+\end{equation}
+Substitution into \cref{eq:vorticity-def} gives
+\begin{equation}
+\nabla^2\psi=-\omega.
+\label{eq:poisson}
+\end{equation}
+Thus a timestep consists conceptually of transporting $\omega$, solving the elliptic problem \cref{eq:poisson}, and differentiating $\psi$ to obtain the velocity.
+
+\subsection{Why incompressibility is naturally enforced}
+
+At the continuous level, \cref{eq:velocity-streamfunction} gives
+\[
+\nabla\cdot\bm{u}
+=\frac{\partial^2\psi}{\partial x\partial y}
+-\frac{\partial^2\psi}{\partial y\partial x}=0.
+\]
+The code mirrors this property discretely.  Let $D_x$ and $D_y$ denote the two-dimensional derivative matrices.  The recovered velocity is
+\begin{equation}
+\bm{u}_h =
+\begin{bmatrix}
+D_y\bm{\psi}\\
+-D_x\bm{\psi}
+\end{bmatrix}.
+\end{equation}
+The discrete divergence is therefore
+\begin{equation}
+D_xD_y\bm{\psi}-D_yD_x\bm{\psi}.
+\end{equation}
+Because the operators are built as Kronecker products acting in separate coordinate directions, they commute algebraically under the implemented layout.  Consequently, the divergence diagnostic is expected to be near machine precision, apart from floating-point effects and details of the boundary rows.  This behavior is explicitly tested by the project.
+
+% =============================================================================
+\section{Computational Grid and Data Layout}
+% =============================================================================
+
+\subsection{Domain and spacing}
+
+The physical domain is specified by $L_x$ and $L_y$ and the computational array by $n_x\times n_y$.  The implementation defines
+\begin{equation}
+\dx=\frac{L_x}{n_x},
+\qquad
+\dy=\frac{L_y}{n_y}.
+\label{eq:grid-spacing}
+\end{equation}
+At present, the public command line accepts a single \code{--n} value and the solver requires
+\[
+n_x=n_y.
+\]
+The allowed range is 8 through 16384 samples per direction.
+
+Fields are stored as contiguous row-major arrays wrapped by the \code{mtrx} structure.  Flattening a field is therefore a direct memory copy, and the two-dimensional derivative operations are implemented as sparse matrix--vector products.
+
+\subsection{Grid convention in the current implementation}
+
+The current source combines two closely related conventions:
+
+\begin{enumerate}[leftmargin=2em]
+  \item The FFT/DST Poisson solver treats the $n_x\times n_y$ transformed values as the interior unknowns of a homogeneous-Dirichlet problem, with the zero streamfunction boundary represented implicitly by the sine basis.
+  \item The velocity and vorticity routines treat the first and last array rows/columns as the locations at which wall values are imposed and one-sided finite-difference closures are evaluated.  Centerline CSV output labels samples using coordinates of the form $(i+1/2)\Delta x$ or $(j+1/2)\Delta y$.
+\end{enumerate}
+
+This convention works consistently enough for the present cavity calculations and verification suite, but it should be made geometrically explicit before claiming a strict global order of accuracy or extending the method to more complicated boundary conditions.  A future refactor could choose either a fully nodal layout with $\Delta x=L/(n-1)$ or an explicitly cell-centered layout with separate boundary/ghost values.  The scientific interpretation of grid-convergence studies should take this implementation detail into account.
+
+% =============================================================================
+\section{Finite-Difference Spatial Discretization}
+% =============================================================================
+
+\subsection{First derivative}
+
+The code supplies nominal second-, fourth-, and sixth-order centered stencils in the interior.  For a uniform mesh and a sufficiently interior point,
+
+\paragraph{Second order}
+\begin{equation}
+ f'_i \approx \frac{f_{i+1}-f_{i-1}}{2\Delta x}
+ +\Oh(\Delta x^2).
+\end{equation}
+
+\paragraph{Fourth order}
+\begin{equation}
+ f'_i \approx
+ \frac{f_{i-2}-8f_{i-1}+8f_{i+1}-f_{i+2}}
+ {12\Delta x}
+ +\Oh(\Delta x^4).
+\end{equation}
+
+\paragraph{Sixth order}
+\begin{equation}
+ f'_i \approx
+ \frac{-f_{i-3}+9f_{i-2}-45f_{i-1}+45f_{i+1}-9f_{i+2}+f_{i+3}}
+ {60\Delta x}
+ +\Oh(\Delta x^6).
+\label{eq:first-sixth}
+\end{equation}
+
+These coefficients correspond directly to the entries created by \code{Diff1()}.
+
+\subsection{Second derivative}
+
+For the Laplacian terms in the vorticity transport equation, \code{Diff2()} implements:
+
+\paragraph{Second order}
+\begin{equation}
+ f''_i \approx
+ \frac{f_{i-1}-2f_i+f_{i+1}}{\Delta x^2}
+ +\Oh(\Delta x^2).
+\end{equation}
+
+\paragraph{Fourth order}
+\begin{equation}
+ f''_i \approx
+ \frac{-f_{i-2}+16f_{i-1}-30f_i+16f_{i+1}-f_{i+2}}
+ {12\Delta x^2}
+ +\Oh(\Delta x^4).
+\end{equation}
+
+\paragraph{Sixth order}
+\begin{equation}
+ f''_i \approx
+ \frac{2f_{i-3}-27f_{i-2}+270f_{i-1}-490f_i+270f_{i+1}-27f_{i+2}+2f_{i+3}}
+ {180\Delta x^2}
+ +\Oh(\Delta x^6).
+\label{eq:second-sixth}
+\end{equation}
+
+\subsection{Boundary closure and formal order}
+
+The requested \code{order} controls the widest interior stencil, but the boundary rows deliberately use narrower formulas.  The closures are summarized in \cref{tab:closure}.
+
+\begin{table}[htbp]
+\centering
+\caption{Effective stencil order near an array boundary in the current finite-difference matrices.  The pattern is mirrored at the opposite boundary.}
+\label{tab:closure}
+\begin{tabular}{@{}llll@{}}
+\toprule
+Requested order & Location & First derivative & Second derivative \\
+\midrule
+2 & boundary row & 1st-order forward & 2nd-order one-sided \\
+2 & interior & 2nd-order centered & 2nd-order centered \\
+\addlinespace
+4 & boundary row & 1st-order forward & 2nd-order one-sided \\
+4 & first interior row & 2nd-order centered & 2nd-order centered \\
+4 & deeper interior & 4th-order centered & 4th-order centered \\
+\addlinespace
+6 & boundary row & 1st-order forward & 2nd-order one-sided \\
+6 & first interior row & 2nd-order centered & 2nd-order centered \\
+6 & second interior row & 4th-order centered & 4th-order centered \\
+6 & deeper interior & 6th-order centered & 6th-order centered \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Therefore, statements such as ``sixth-order spatial discretization'' should be read as \emph{sixth-order centered interior stencils}, not as a demonstrated sixth-order global convergence rate.  The global rate depends on the boundary closure, the Poisson discretization, the solution regularity, and the grid convention discussed above.
+
+\subsection{Two-dimensional operators by Kronecker product}
+
+Let $d_x$, $d_y$ denote the one-dimensional first-derivative matrices, $d_{xx}$ and $d_{yy}$ the one-dimensional second-derivative matrices, and $I_x$, $I_y$ identity matrices.  The code assembles
+\begin{align}
+D_x &= I_y\otimes d_x, &
+D_y &= d_y\otimes I_x,\\
+D_{xx} &= I_y\otimes d_{xx}, &
+D_{yy} &= d_{yy}\otimes I_x.
+\label{eq:kron-ops}
+\end{align}
+This is a convenient algebraic representation of tensor-product finite differences on a Cartesian grid.
+
+The one-dimensional matrices are initially constructed densely because this happens only once at startup.  They are then converted to compressed sparse row (CSR) form, and the two-dimensional Kronecker products are assembled directly in CSR form.  For the widest sixth-order stencil, each derivative row has only a small fixed number of nonzero entries, so sparse matrix--vector multiplication scales linearly with the number of grid points rather than quadratically or cubically in the matrix dimension.
+
+% =============================================================================
+\section{Boundary Conditions and Wall Vorticity}
+% =============================================================================
+
+\subsection{Velocity boundary conditions}
+
+The \code{wall\_bc} structure stores a constant $(u,v)$ value for each of four array edges.  At the beginning of every timestep, \code{apply\_wall\_bc()} writes those values directly into the edge rows and columns of the velocity arrays.
+
+For the default cavity,
+\begin{equation}
+\bm{u}_{\mathrm{lid}}=(1,0),
+\qquad
+\bm{u}_{\mathrm{other\ walls}}=(0,0).
+\end{equation}
+No-slip and no-penetration are therefore represented through prescribed wall velocity.
+
+\subsection{Vorticity boundary treatment}
+
+A vorticity--streamfunction method requires a boundary value for $\omega$ that is consistent with the velocity boundary condition.  The current code computes the velocity derivatives with the same finite-difference operators used elsewhere,
+\begin{equation}
+\left.\omega\right|_{\partial\Omega}
+=\left.\left(D_x v-D_y u\right)\right|_{\partial\Omega},
+\label{eq:wall-vorticity}
+\end{equation}
+and overwrites the boundary entries of $\omega$ before advancing the field.
+
+This differs from the frequently used Thom-type wall formula, which derives wall vorticity directly from a neighboring streamfunction value and wall velocity.  In \texttt{cnavier}, the wall vorticity is instead obtained through one-sided/narrow derivative rows acting on the explicitly imposed velocity field.  This design has the advantage of reusing one operator family for both interior and boundary derivatives, but it also means that the low-order boundary closure in \cref{tab:closure} directly influences the wall vorticity accuracy.
+
+\subsection{Streamfunction boundary condition}
+
+The Poisson solvers impose homogeneous Dirichlet conditions on the streamfunction.  For a closed cavity, setting a constant value of $\psi$ on every wall is consistent with no normal flow; the arbitrary constant is chosen to be zero:
+\begin{equation}
+\psi|_{\partial\Omega}=0.
+\end{equation}
+Tangential wall motion is then communicated to the interior through the vorticity boundary values rather than through a nonzero streamfunction value.
+
+% =============================================================================
+\section{Vorticity Transport Discretization}
+% =============================================================================
+
+Define the semi-discrete right-hand side
+\begin{equation}
+\mathcal{F}(\omega;u,v)
+=-u\odot(D_x\omega)
+-v\odot(D_y\omega)
++\frac{1}{\Rey}\left(D_{xx}\omega+D_{yy}\omega\right),
+\label{eq:semi-discrete}
+\end{equation}
+where $\odot$ denotes pointwise multiplication.  This is exactly the operation implemented in the CPU \code{dwdt()} routine and in the CUDA \code{rhs\_kernel}.
+
+The convective terms are centered in the interior for all three selectable orders.  Centered advection is nondissipative, which is attractive for accuracy but provides no built-in upwind damping.  Consequently, timestep choice and adequate viscous resolution become important, particularly as $\Rey$ increases.
+
+% =============================================================================
+\section{Time Integration}
+% =============================================================================
+
+\subsection{Forward Euler}
+
+With \code{time\_scheme = 1}, the update is
+\begin{equation}
+\omega^{n+1}
+=\omega^n+\dt\,\mathcal{F}(\omega^n;u^n,v^n).
+\label{eq:euler}
+\end{equation}
+After the explicit vorticity update, the Poisson equation is solved once and the velocity is reconstructed from the new streamfunction.  Thus Euler requires one elliptic solve per full timestep.
+
+Forward Euler is first-order accurate in time.  Its stability region does not include a finite segment of the imaginary axis, so centered advection by itself is not Euler-stable.  Viscosity may stabilize a particular discretization and timestep, but the method should be treated as the low-cost/low-order option rather than the recommended high-Reynolds-number integrator.
+
+\subsection{Classical fourth-order Runge--Kutta}
+
+With \code{time\_scheme = 2}, the code uses classical RK4:
+\begin{align}
+k_1 &= \mathcal{F}(\omega^n),\\
+k_2 &= \mathcal{F}\left(\omega^n+\frac{\dt}{2}k_1\right),\\
+k_3 &= \mathcal{F}\left(\omega^n+\frac{\dt}{2}k_2\right),\\
+k_4 &= \mathcal{F}\left(\omega^n+\dt k_3\right),\\
+\omega^{n+1} &= \omega^n+
+\frac{\dt}{6}\left(k_1+2k_2+2k_3+k_4\right).
+\label{eq:rk4}
+\end{align}
+
+The velocity depends on the stage vorticity through \cref{eq:poisson}--\cref{eq:velocity-streamfunction}.  Accordingly, every call to the RK4 right-hand side performs a Poisson solve and recovers a stage-consistent $(u,v)$ field.  Four Poisson solves are therefore required for the four RK stages, followed by one final solve to make $(u^{n+1},v^{n+1})$ consistent with $\omega^{n+1}$.  In total, RK4 performs five Poisson solves per timestep.
+
+For a sufficiently smooth semi-discrete system, classical RK4 is fourth-order accurate in time.  In the complete CFD method, the observed convergence order may instead be limited by the spatial boundary treatment, the second-order Poisson discretization, or insufficient temporal/spatial resolution.
+
+% =============================================================================
+\section{Poisson Equation for the Streamfunction}
+% =============================================================================
+
+At each velocity reconstruction, the code solves
+\begin{equation}
+\nabla^2\psi=-\omega.
+\end{equation}
+Three algorithms are available.
+
+\subsection{Five-point discrete Poisson operator}
+
+The iterative solvers and the spectral eigenvalues correspond to the conventional second-order five-point Laplacian.  At an interior point,
+\begin{equation}
+\frac{\psi_{i+1,j}-2\psi_{i,j}+\psi_{i-1,j}}{\dx^2}
++
+\frac{\psi_{i,j+1}-2\psi_{i,j}+\psi_{i,j-1}}{\dy^2}
+=f_{i,j},
+\qquad f=-\omega.
+\label{eq:5point}
+\end{equation}
+This is an important distinction: selecting fourth- or sixth-order finite-difference operators for vorticity transport and velocity differentiation does \emph{not} change the order of the Poisson operator.  The streamfunction solve remains based on the second-order discrete Laplacian.
+
+\subsection{Gauss--Seidel}
+
+Solving \cref{eq:5point} for the center value gives the Gauss--Seidel update
+\begin{equation}
+\psi_{i,j}^{\mathrm{GS}}
+=
+\frac{
+\dy^2(\psi_{i+1,j}+\psi_{i-1,j})
++\dx^2(\psi_{i,j+1}+\psi_{i,j-1})
+-\dx^2\dy^2 f_{i,j}
+}{2(\dx^2+\dy^2)}.
+\label{eq:gs}
+\end{equation}
+The serial CPU build sweeps lexicographically.  The OpenMP build uses red--black ordering so that all nodes of one color can be updated in parallel.  The CUDA implementation also uses red--black ordering.
+
+\subsection{Successive over-relaxation}
+
+SOR applies a relaxation factor $\beta$:
+\begin{equation}
+\psi_{i,j}^{(k+1)}
+=\beta\,\psi_{i,j}^{\mathrm{GS}}
++(1-\beta)\psi_{i,j}^{(k)}.
+\label{eq:sor}
+\end{equation}
+The default program estimates an optimal relaxation parameter using
+\begin{align}
+\rho &= \frac{1}{2}\left[\cos\left(\frac{\pi}{n_x}\right)
++\cos\left(\frac{\pi}{n_y}\right)\right],\\
+\beta &= \frac{2}{1+\sqrt{1-\rho^2}}.
+\label{eq:sor-beta}
+\end{align}
+
+The default maximum iteration count is 10000 and the shipped convergence threshold is $10^{-3}$.
+
+\paragraph{Stopping metric.}
+The implementation function named \code{error()} computes
+\begin{equation}
+E^{(k)}=\sum_{i,j}\left|\psi_{i,j}^{(k+1)}-\psi_{i,j}^{(k)}\right|,
+\label{eq:iterate-change}
+\end{equation}
+not a residual norm and not a root-sum-square norm.  The console string currently labels this quantity ``RSS error'', but scientifically it is an $L_1$ iterate-change metric.  Verification tests separately compute the actual five-point Poisson residual.
+
+Because the default tolerance can stop the iteration before full convergence, the sweep ordering can affect the returned approximation.  This is why the serial lexicographic CPU result and the red--black GPU result need not be identical at the shipped tolerance; they approach the same solution as the tolerance is tightened.
+
+\subsection{Direct FFT/DST-I solver}
+
+The default \code{poisson\_type = 3} uses a two-dimensional discrete sine transform of type I (DST-I).  Homogeneous Dirichlet conditions are built into the sine basis.  For each spectral mode $(p,q)$, the standard second-difference Laplacian has eigenvalue
+\begin{equation}
+\lambda_{p,q}
+=
+\frac{2\cos\left(\frac{\pi p}{n_x+1}\right)-2}{\dx^2}
++
+\frac{2\cos\left(\frac{\pi q}{n_y+1}\right)-2}{\dy^2},
+\label{eq:dst-eigenvalue}
+\end{equation}
+with $p=1,\dots,n_x$ and $q=1,\dots,n_y$.
+
+The algorithm is:
+\begin{enumerate}[leftmargin=2em]
+  \item transform the right-hand side with a two-dimensional DST-I;
+  \item divide each transformed coefficient by $\lambda_{p,q}$;
+  \item apply the DST-I again;
+  \item multiply by the inverse transform normalization
+  \[
+  \frac{1}{4(n_x+1)(n_y+1)}.
+  \]
+\end{enumerate}
+
+On the CPU, FFTW3 \code{RODFT00} plans are created once at startup and reused.  The asymptotic cost is $\Oh(N\log N)$ with $N=n_xn_y$, compared with a potentially large number of $\Oh(N)$ sweeps for Gauss--Seidel or SOR.
+
+The FFT solver is ``direct'' with respect to the \emph{discrete second-order Poisson problem}: once the transform is performed, no iterative convergence tolerance is required.  It is not an exact solver for the continuous Poisson equation; the continuous truncation error remains that of the discrete Laplacian and the grid representation.
+
+% =============================================================================
+\section{Complete Timestep Algorithms}
+% =============================================================================
+
+\subsection{Euler sequence}
+
+One CPU Euler timestep performs the following operations:
+\begin{enumerate}[leftmargin=2em]
+  \item impose wall velocities on $u$ and $v$;
+  \item compute $D_yu$ and $D_xv$;
+  \item overwrite boundary vorticity using $\omega=D_xv-D_yu$;
+  \item compute $D_x\omega$, $D_y\omega$, $D_{xx}\omega$, and $D_{yy}\omega$;
+  \item update $\omega$ by forward Euler;
+  \item solve $\nabla^2\psi=-\omega$;
+  \item recover $u=D_y\psi$ and $v=-D_x\psi$.
+\end{enumerate}
+
+\subsection{RK4 sequence}
+
+One RK4 timestep begins with the same wall-velocity and wall-vorticity update.  Each of the four stage right-hand-side evaluations then:
+\begin{enumerate}[leftmargin=2em]
+  \item differentiates the current stage vorticity;
+  \item solves the Poisson equation for the stage streamfunction;
+  \item recovers a stage-consistent velocity field;
+  \item evaluates the nonlinear convective and viscous terms.
+\end{enumerate}
+After combining $k_1$ through $k_4$, a fifth Poisson solve recovers velocity for the completed step.
+
+\subsection{Pseudocode}
+
+\begin{lstlisting}[language={}]
+construct sparse DX, DY, DX2, DY2
+allocate reusable solver workspace
+initialize u, v, omega
+
+for each timestep:
+    impose wall velocities
+    omega_wall = DX*v - DY*u on array edges
+
+    if Euler:
+        rhs = -u*(DX*omega) - v*(DY*omega)
+              + (1/Re)*(DX2*omega + DY2*omega)
+        omega += dt*rhs
+        solve Laplacian(psi) = -omega
+        u = DY*psi
+        v = -DX*psi
+
+    if RK4:
+        for each RK stage:
+            solve Laplacian(psi_stage) = -omega_stage
+            u_stage = DY*psi_stage
+            v_stage = -DX*psi_stage
+            k_stage = RHS(omega_stage, u_stage, v_stage)
+        omega = RK4 combination
+        solve Laplacian(psi) = -omega
+        u = DY*psi
+        v = -DX*psi
+
+    evaluate discrete divergence DX*u + DY*v
+    optionally write VTK
+\end{lstlisting}
+
+% =============================================================================
+\section{Stability and Timestep Selection}
+% =============================================================================
+
+Because both time integrators are explicit, the timestep is restricted by the spectra of the discrete advection and diffusion operators.
+
+\subsection{Implemented Courant check}
+
+Before starting a run, \code{main.c} computes, for the default moving-wall velocity,
+\begin{equation}
+C_x=U_{\mathrm{lid}}\frac{\dt}{\dx},
+\qquad
+C_y=U_{\mathrm{lid}}\frac{\dt}{\dy},
+\end{equation}
+and aborts if either exceeds \code{max\_co = 1}.  This is a useful sanity check but should not be interpreted as a complete stability proof.  The actual interior velocity can differ from the lid velocity, and diffusion imposes a separate explicit restriction.
+
+\subsection{Diffusive scaling}
+
+For the simple second-order Laplacian with forward Euler, the familiar two-dimensional diffusion restriction is approximately
+\begin{equation}
+\frac{1}{\Rey}\dt
+\left(\frac{1}{\dx^2}+\frac{1}{\dy^2}\right)
+\lesssim \frac{1}{2}.
+\label{eq:diffusion-cfl}
+\end{equation}
+For $\dx=\dy=h$, this reduces to
+\begin{equation}
+\dt\lesssim \frac{\Rey\,h^2}{4}.
+\end{equation}
+The precise limit changes with the higher-order second-derivative stencil and with RK4, but the important scaling remains
+\begin{equation}
+\dt=\Oh(h^2)
+\end{equation}
+when explicit viscous stability controls the calculation.  The repository benchmarks therefore use a timestep proportional to $1/n^2$.
+
+\subsection{Centered advection}
+
+The interior convective derivative is centered.  Such a discretization contributes nearly imaginary eigenvalues for pure linear advection.  RK4 has a finite stability interval along the imaginary axis and is therefore much better suited than Euler to centered advection.  At high Reynolds number, however, neither time integrator substitutes for spatial stabilization if the grid is too coarse to resolve the vorticity gradients.
+
+\subsection{Recommended practice}
+
+For scientific runs:
+\begin{itemize}[leftmargin=2em]
+  \item prefer RK4 over Euler unless Euler is being used deliberately for a comparison;
+  \item reduce $\dt$ under grid refinement, normally at least proportionally to $h^2$ until temporal error is demonstrated to be negligible;
+  \item verify timestep independence by repeating selected calculations with $\dt/2$;
+  \item monitor divergence, extrema, and visual smoothness of the vorticity field;
+  \item treat a run that merely passes the implemented $C\le 1$ check as \emph{admissible input}, not automatically as a stable or converged simulation.
+\end{itemize}
+
+% =============================================================================
+\section{Sparse Linear Algebra}
+% =============================================================================
+
+The dominant derivative operation is a CSR sparse matrix--vector multiplication
+\begin{equation}
+\bm{y}=A\bm{x}.
+\end{equation}
+For each row, \code{spmv()} loops only over the nonzero entries stored between consecutive elements of \code{row\_ptr}.  Since the finite-difference bandwidth is fixed, the cost is $\Oh(N)$ for $N=n_xn_y$.
+
+The main dense field arrays are contiguous.  Reusable flat buffers and RK4 work arrays are allocated once before the time loop; no per-stage dynamic memory allocation is needed.  This improves both CPU cache behavior and GPU transfer strategy.
+
+% =============================================================================
+\section{Parallel Implementations}
+% =============================================================================
+
+\subsection{OpenMP}
+
+Building with
+\begin{lstlisting}[language=bash]
+make OPENMP=1
+\end{lstlisting}
+enables shared-memory parallel loops in the principal CSR operations, explicit right-hand-side loops, and suitable Poisson operations.  Iterative elliptic solves use red--black coloring because a naive parallelization of lexicographic Gauss--Seidel would violate its data dependence.
+
+Changing the sweep order is numerically relevant when the solver is stopped before convergence.  Therefore, at a loose iterate-change tolerance, serial Gauss--Seidel/SOR and OpenMP red--black Gauss--Seidel/SOR can return slightly different intermediate approximations even though they converge to the same discrete solution when the tolerance is sufficiently tight.
+
+\subsection{CUDA}
+
+Building with
+\begin{lstlisting}[language=bash]
+make CUDA=1
+\end{lstlisting}
+adds a GPU backend.  The four CSR derivative matrices and all primary fields are uploaded once and remain on the device throughout the time loop.  CUDA kernels implement:
+\begin{itemize}[leftmargin=2em]
+  \item wall velocity and wall-vorticity updates;
+  \item CSR sparse derivatives;
+  \item Euler and RK4 stage algebra;
+  \item velocity recovery;
+  \item red--black Gauss--Seidel/SOR;
+  \item the FFT-based Poisson solver;
+  \item the divergence diagnostic and reductions.
+\end{itemize}
+
+All solver arithmetic is double precision.
+
+\subsection{GPU sine transform through odd extension}
+
+cuFFT does not expose a native DST-I.  The CUDA backend therefore constructs the odd extension of an $n_x\times n_y$ real field on a
+\begin{equation}
+2(n_x+1)\times 2(n_y+1)
+\end{equation}
+grid.  A real-to-complex FFT of this odd extension contains the sine-transform modes required for the Dirichlet Poisson problem.  The code extracts those modes, divides by the same eigenvalues as \cref{eq:dst-eigenvalue}, applies the construction again, and scales by the DST normalization.
+
+This makes the GPU FFT algorithm mathematically equivalent to the CPU FFTW DST-I solver, up to floating-point round-off and the details of the FFT implementations.
+
+% =============================================================================
+\section{Diagnostics and Output}
+% =============================================================================
+
+\subsection{Discrete continuity diagnostic}
+
+After every timestep, the CPU path computes
+\begin{equation}
+\epsilon_{\nabla\cdot u}=D_xu+D_yv
+\end{equation}
+and prints its maximum and minimum.  The CUDA path computes the same field on-device and reduces it to its extrema.  Since velocity is recovered from a streamfunction, these values are expected to remain close to floating-point round-off for the compatible operator pair.
+
+This diagnostic should be interpreted as a consistency check on the streamfunction-to-velocity machinery.  It is not, by itself, evidence that the momentum/vorticity equations are spatially converged.
+
+\subsection{VTK output}
+
+By default, vorticity is written to legacy ASCII VTK files in \code{output/}.  The output interval is configurable and may be disabled with
+\begin{lstlisting}[language=bash]
+./cnavier --output-interval 0
+\end{lstlisting}
+for performance measurements.
+
+\subsection{Centerline profiles}
+
+At the end of a run, the code writes four CSV files:
+\begin{itemize}[leftmargin=2em]
+  \item \code{centerline\_u\_sim.csv};
+  \item \code{centerline\_u\_ghia.csv};
+  \item \code{centerline\_v\_sim.csv};
+  \item \code{centerline\_v\_ghia.csv}.
+\end{itemize}
+The reference data are the classical lid-driven-cavity values of Ghia, Ghia, and Shin at $\Rey=100$ \cite{ghia1982}.  The project exports both numerical and reference profiles, but does not currently compute an automated interpolation-based error norm between them.
+
+% =============================================================================
+\section{Verification and Validation}
+% =============================================================================
+
+It is useful to separate \emph{verification} from \emph{validation}.  Verification asks whether the implementation solves its stated discrete equations correctly.  Validation asks whether those equations reproduce accepted physical/reference results to the required accuracy.
+
+\subsection{Analytic verification of the FFT Poisson solver}
+
+The test suite constructs a discrete sine eigenmode
+\begin{equation}
+f_{ij}=\sin\left(\frac{\pi p(i+1)}{n+1}\right)
+       \sin\left(\frac{\pi q(j+1)}{n+1}\right)
+\end{equation}
+with $n=32$, $p=3$, and $q=5$.  Since this is an exact eigenvector of the discrete Laplacian, the exact discrete solution is
+\begin{equation}
+\psi=\frac{f}{\lambda_{p,q}}.
+\end{equation}
+The test requires the maximum relative difference to be no larger than $10^{-10}$.  This directly verifies the transform, eigenvalue division, and normalization.
+
+\subsection{Residual verification of the iterative Poisson solvers}
+
+For random right-hand-side data on a $24\times24$ grid, Gauss--Seidel and SOR are run with a tight iterate-change tolerance of $10^{-9}$.  The test then evaluates the actual five-point residual
+\begin{equation}
+r_{ij}=\left(L_h\psi\right)_{ij}-f_{ij}
+\end{equation}
+and requires
+\begin{equation}
+\|r\|_{\infty}\le 10^{-4}.
+\end{equation}
+This is valuable because the production stopping criterion is based on successive iterate change rather than directly on $r$.
+
+\subsection{Short cavity integration tests}
+
+Both Euler and RK4 are exercised for 50 timesteps on a $32\times32$ lid-driven cavity at $\Rey=100$, with sixth-order interior derivative operators, the FFT Poisson solver, and $\dt=0.002$.  The tests require:
+\begin{itemize}[leftmargin=2em]
+  \item finite fields with bounded vorticity magnitude;
+  \item a nontrivial velocity response to the moving lid;
+  \item maximum discrete divergence no larger than $10^{-9}$.
+\end{itemize}
+These are integration/smoke tests rather than accuracy tests against a fully converged reference solution.
+
+\subsection{CPU--GPU equivalence tests}
+
+When built with CUDA and run on a usable GPU, the test suite checks:
+\begin{itemize}[leftmargin=2em]
+  \item host/device field round trips;
+  \item continuity reductions on grids up to $300\times300$;
+  \item all four CSR derivative operators on several grid sizes;
+  \item FFT, SOR, and Gauss--Seidel Poisson solutions;
+  \item Euler and RK4 full timesteps;
+  \item multiple grid sizes, including $128\times128$;
+  \item a case with four independently moving walls.
+\end{itemize}
+Typical comparison thresholds in the tests are $10^{-12}$ for CSR and FFT building blocks, $10^{-11}$ for full FFT-based timesteps, and $10^{-7}$ for converged iterative-solver comparisons.  With OpenMP enabled, additional tests compare CPU and GPU red--black iterative solvers at the shipped production tolerance.
+
+A CUDA test build with no usable GPU returns exit status 77 rather than reporting a false pass.
+
+\subsection{Physical validation against Ghia et al.}
+
+The code embeds the standard $\Rey=100$ centerline velocity values from Ghia et al. \cite{ghia1982} and writes them alongside the simulation profile.  This supports a conventional cavity-flow validation workflow:
+\begin{enumerate}[leftmargin=2em]
+  \item run to a demonstrably steady state;
+  \item interpolate the numerical centerline velocity to the Ghia sample coordinates, or vice versa;
+  \item compute $L_2$, $L_\infty$, and selected pointwise errors;
+  \item repeat on successively refined grids;
+  \item repeat with smaller timesteps to separate spatial and temporal error.
+\end{enumerate}
+
+At present, these error norms and grid-convergence rates are not automated in \code{make test}.  Therefore the repository has strong code-level verification, while quantitative benchmark validation remains a user-facing post-processing step.
+
+\subsection{Recommended extension: formal grid-convergence study}
+
+A publishable or thesis-grade validation should add at least three systematically refined meshes and estimate the observed order
+\begin{equation}
+p_{\mathrm{obs}}
+=\frac{\log\left(\|e_h\|/\|e_{h/r}\|\right)}{\log r},
+\end{equation}
+where $r$ is the refinement ratio.  Because of the lower-order wall closure and second-order streamfunction Poisson operator, one should not assume in advance that \code{order=6} will produce sixth-order global convergence.
+
+% =============================================================================
+\section{Performance Characteristics}
+% =============================================================================
+
+The default FFT-based Poisson solver generally dominates the timestep cost, especially under RK4 where five elliptic solves are performed per step.  The repository reports the following representative RK4+FFT timings for a laptop Intel i7-12650H and NVIDIA RTX 3050 Laptop GPU under WSL2; these figures are implementation benchmarks rather than universal performance guarantees.
+
+\begin{table}[htbp]
+\centering
+\caption{Representative reported time per timestep for RK4 + FFT, $\Rey=100$, with VTK output disabled.}
+\label{tab:performance}
+\begin{tabular}{@{}rrrrr@{}}
+\toprule
+Grid & CPU \code{make} & CPU \code{-O2} & OpenMP \code{-O2}, 8 threads & CUDA \\
+\midrule
+$63^2$   & 2.19 ms & 1.14 ms & 0.98 ms & 0.87 ms \\
+$127^2$  & 8.98 ms & 3.68 ms & 3.31 ms & 1.61 ms \\
+$255^2$  & 39.6 ms & 19.9 ms & 15.5 ms & 5.01 ms \\
+$511^2$  & 162 ms & 91.8 ms & 67.0 ms & 20.9 ms \\
+$1023^2$ & 804 ms & 486 ms & 301 ms & 82.4 ms \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+For transform performance, grid sizes for which $n+1$ factors into small primes are advantageous because the sine transform acts through FFT lengths proportional to $2(n+1)$.  This is why sizes such as 63, 127, 255, 511, and 1023 can outperform an adjacent nominally round number such as 1024.
+
+The GPU becomes increasingly advantageous as the grid grows because the fixed kernel-launch overhead is amortized over more work.  Double-precision FFT throughput is a major cost on consumer GPUs, so larger speedups may be observed on hardware with stronger FP64 capability.
+
+% =============================================================================
+\section{Building and Running}
+% =============================================================================
+
+\subsection{Dependencies}
+
+The CPU solver requires a C compiler, the math library, and FFTW3.  OpenMP is optional.  CUDA requires the NVIDIA CUDA toolkit and cuFFT.
+
+On Ubuntu/Debian, a typical CPU setup is
+\begin{lstlisting}[language=bash]
+sudo apt install build-essential libfftw3-dev
+\end{lstlisting}
+For CUDA development, the distribution toolkit or NVIDIA's toolkit packages may be used.
+
+\subsection{Build modes}
+
+\begin{lstlisting}[language=bash]
+make                    # serial CPU
+make OPENMP=1           # OpenMP CPU
+make CUDA=1             # CUDA-enabled binary
+make OPENMP=1 CUDA=1    # CUDA plus OpenMP CPU fallback/tests
+\end{lstlisting}
+
+The Makefile records the active compiler flags so that changing OpenMP/CUDA modes triggers the required rebuild automatically.
+
+\subsection{Tests}
+
+\begin{lstlisting}[language=bash]
+make test
+make CUDA=1 test
+make OPENMP=1 CUDA=1 test
+\end{lstlisting}
+
+The test program returns 0 when all executed checks pass, 1 when any check fails, and 77 when a CUDA test build cannot execute its GPU checks because no usable device is present.
+
+\subsection{Runtime options}
+
+The current binary accepts:
+
+\begin{longtable}{@{}>{\ttfamily}p{0.30\textwidth}p{0.62\textwidth}@{}}
+\toprule
+\normalfont Option & Description \\
+\midrule
+\endhead
+--n N & Number of computational samples per side; the grid is $N\times N$. \\
+--dt DT & Timestep. \\
+--tf TF & Final simulation time. \\
+--output-interval N & Write VTK every $N$ steps; zero disables VTK output. \\
+--cpu & In a CUDA build, force the CPU backend. \\
+--help & Print command-line help. \\
+\bottomrule
+\end{longtable}
+
+Example:
+\begin{lstlisting}[language=bash]
+mkdir -p output
+./cnavier --n 127 --dt 6.2e-4 --tf 20 --output-interval 50
+\end{lstlisting}
+
+Parameters such as Reynolds number, finite-difference order, Poisson method, and time integrator are presently configured in \code{src/main.c} rather than through command-line flags.
+
+% =============================================================================
+\section{Default Numerical Configuration}
+% =============================================================================
+
+At the repository state documented here, the source defaults are summarized in \cref{tab:defaults}.
+
+\begin{table}[htbp]
+\centering
+\caption{Principal defaults in \code{src/main.c}.}
+\label{tab:defaults}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Quantity & Default & Meaning \\
+\midrule
+$\Rey$ & 100 & Reynolds number \\
+$L_x,L_y$ & 1, 1 & domain lengths \\
+$n_x,n_y$ & 64, 64 & computational array size \\
+$\dt$ & 0.005 & timestep \\
+$t_f$ & 30 & final time \\
+finite-difference \code{order} & 6 & sixth-order interior stencil \\
+\code{time\_scheme} & 2 & classical RK4 \\
+\code{poisson\_type} & 3 & FFT/DST-I direct discrete solver \\
+Poisson iterate tolerance & $10^{-3}$ & GS/SOR iterate-change threshold \\
+Poisson max iterations & 10000 & GS/SOR iteration cap \\
+VTK output interval & 20 & steps between output files \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% =============================================================================
+\section{Numerical Interpretation and Current Limitations}
+% =============================================================================
+
+The following points are important when interpreting results scientifically.
+
+\subsection{Mixed formal spatial order}
+
+The transport derivatives may be sixth-order in the deep interior, but the boundary closures are lower order and the Poisson solve is based on a second-order discrete Laplacian.  Consequently, the complete algorithm has not been demonstrated to be globally sixth-order in space.  A formal convergence study is required to establish its observed order.
+
+\subsection{Poisson operator differs from transport Laplacian}
+
+The diffusion term in \cref{eq:vort-transport} uses the selected $D_{xx}+D_{yy}$ operator, while the streamfunction equation always uses the standard five-point second-order Laplacian.  This is a legitimate mixed discretization, but it should be described explicitly because the \code{order} setting does not uniformly change every spatial operator in the solver.
+
+\subsection{Boundary vorticity accuracy}
+
+Wall vorticity is reconstructed from differentiated wall velocities rather than from a dedicated high-order streamfunction wall formula.  Its accuracy is therefore tied to the one-sided derivative closure and the array-edge interpretation.
+
+\subsection{Explicit stability}
+
+Only a simple lid-speed Courant check is enforced at startup.  No automatic spectral stability bound is computed for the selected finite-difference order, Reynolds number, and time integrator.  Users remain responsible for timestep-convergence studies.
+
+\subsection{Steady-state convergence}
+
+The default driver advances to a specified final time; it does not terminate based on a physical steady-state residual such as $\|\omega^{n+1}-\omega^n\|$ or a momentum residual.  For steady cavity studies, $t_f$ should be selected after checking that monitored fields and centerline profiles no longer change materially.
+
+\subsection{Pressure is not solved}
+
+Pressure is absent from the vorticity--streamfunction formulation.  This is an advantage for the cavity velocity field but means that pressure output is not currently a native solved quantity.  If pressure is required, it must be reconstructed from an additional pressure-Poisson or momentum-based relation with suitable boundary conditions.
+
+\subsection{Geometry and dimensionality}
+
+The current method is two-dimensional, Cartesian, and square-grid-only at the public solver level.  Curvilinear grids, immersed boundaries, unstructured meshes, three-dimensional vorticity stretching, and general inflow/outflow boundaries are outside the present scope.
+
+% =============================================================================
+\section{Suggested Scientific Workflow}
+% =============================================================================
+
+For a reproducible numerical experiment, the following workflow is recommended:
+
+\begin{enumerate}[leftmargin=2em]
+  \item Record the Git commit, compiler, optimization flags, FFTW/CUDA versions, CPU/GPU, and runtime backend.
+  \item Run \code{make test} for the chosen CPU build; for CUDA work, also run the GPU comparison suite on the actual GPU host.
+  \item Select a baseline grid and timestep conservatively.
+  \item Confirm temporal convergence by reducing $\dt$ while holding the grid fixed.
+  \item Confirm spatial convergence with at least three grids while keeping temporal error smaller than spatial error.
+  \item For the lid-driven cavity, compare centerline profiles against Ghia et al. and report interpolation/error norms.
+  \item For steady solutions, verify that extending $t_f$ does not materially change the solution.
+  \item Report the discrete divergence extrema as an implementation consistency diagnostic, but do not substitute them for solution-convergence metrics.
+\end{enumerate}
+
+% =============================================================================
+\section{Possible Methodological Extensions}
+% =============================================================================
+
+The current architecture makes several research-oriented extensions relatively natural:
+
+\begin{itemize}[leftmargin=2em]
+  \item a consistent fourth- or sixth-order Poisson discretization, solved by an appropriate sparse/direct/iterative method;
+  \item dedicated high-order wall-vorticity formulas and an explicit nodal or cell-centered grid convention;
+  \item adaptive timestep selection from advective and diffusive spectral bounds;
+  \item automated steady-state residual monitoring;
+  \item automated Ghia interpolation and error norms in the test suite;
+  \item manufactured-solution verification of the full vorticity--streamfunction system;
+  \item grid-convergence-index (GCI) reporting;
+  \item alternative convection schemes, such as upwind-biased, compact, WENO, or skew-symmetric energy-conserving formulations;
+  \item multigrid for the Poisson equation when boundary conditions or geometries no longer permit a separable sine transform;
+  \item pressure reconstruction as a post-processing step;
+  \item extension to non-square grids after making the field ordering and Kronecker layout fully general.
+\end{itemize}
+
+% =============================================================================
+\section{Final Remarks}
+% =============================================================================
+
+\texttt{cnavier} implements a mathematically clean and computationally compact route to two-dimensional incompressible flow: evolve vorticity, invert a scalar Poisson equation, and differentiate a streamfunction to recover velocity.  The code is particularly transparent because the spatial derivatives are explicit finite-difference matrices, the two-dimensional operators are tensor products, and both CPU and GPU backends expose the same algorithmic sequence.
+
+The strongest parts of the present methodology are the exact discrete streamfunction enforcement of incompressibility, the direct DST-based Poisson option, reusable sparse operators, RK4 stage consistency, and unusually thorough CPU--GPU equivalence tests for a compact CFD code.  The main scientific qualifications are equally clear: high-order accuracy applies primarily to interior transport derivatives; boundary closures are lower order; the streamfunction Poisson operator is second order; and quantitative benchmark/grid-convergence validation is not yet automated.
+
+For educational CFD, numerical experimentation, backend comparisons, and as a foundation for further research-oriented development, these characteristics make the project both useful and unusually auditable.  For publication-quality quantitative claims, the next step is not to complicate the code immediately, but to formalize its grid convention and add systematic temporal/spatial convergence and benchmark-error measurements.
+
+% =============================================================================
+\appendix
+\section{Mapping Between Equations and Source Code}
+% =============================================================================
+
+\begin{longtable}{@{}p{0.34\textwidth}p{0.58\textwidth}@{}}
+\toprule
+Mathematical operation & Main implementation location \\
+\midrule
+\endhead
+First-derivative stencils & \code{Diff1()}, \code{SDiff1()} in \code{src/finitediff.c} \\
+Second-derivative stencils & \code{Diff2()}, \code{SDiff2()} in \code{src/finitediff.c} \\
+Kronecker operators & \code{skronecker()} in \code{src/linearalg.c}; assembly in \code{src/main.c} \\
+CSR derivative evaluation & \code{spmv()} in \code{src/linearalg.c}; \code{spmv\_kernel} on CUDA \\
+Wall velocity condition & \code{apply\_wall\_bc()} / \code{wall\_bc\_kernel} \\
+Wall vorticity & \code{step()} / \code{vorticity\_bc\_kernel} \\
+Vorticity RHS & \code{dwdt()}, \code{euler()} / \code{rhs\_kernel} \\
+RK4 & \code{rk4()} / CUDA stage kernels in \code{gpu\_step()} \\
+Gauss--Seidel & \code{poisson()} / \code{poisson\_redblack()} \\
+SOR & \code{poisson\_SOR()} / \code{poisson\_redblack()} \\
+FFT/DST-I Poisson & \code{poisson\_FFT()} / \code{poisson\_fft()} \\
+Velocity recovery & \code{velocity\_from\_vorticity()} / \code{velocity\_kernel} \\
+Divergence diagnostic & main-loop CSR operations / \code{continuity\_kernel} \\
+Ghia centerlines & \code{print\_centerline()} in \code{src/utils.c} \\
+Verification suite & \code{tests/test\_solver.c} \\
+\bottomrule
+\end{longtable}
+
+% =============================================================================
+\section{Reproducibility Record}
+% =============================================================================
+
+This document was prepared from the public repository
+\begin{center}
+\url{https://github.com/leo-aa88/cnavier}
+\end{center}
+with \code{main} observed at commit
+\begin{center}
+\code{d015a85087de383ae4a97b7c2266ff8b7d2b8b98}
+\end{center}
+on 4 October 2026.  Numerical details in this manual describe the source code at that repository state; later commits may change defaults or algorithms.
+
+% =============================================================================
+\begin{thebibliography}{9}
+
+\bibitem{ghia1982}
+U. Ghia, K. N. Ghia, and C. T. Shin,
+``High-Re solutions for incompressible flow using the Navier--Stokes equations and a multigrid method,''
+\emph{Journal of Computational Physics}, vol. 48, no. 3, pp. 387--411, 1982.
+
+\bibitem{ferziger}
+J. H. Ferziger, M. Peri\'{c}, and R. L. Street,
+\emph{Computational Methods for Fluid Dynamics}, 4th ed., Springer, 2020.
+
+\bibitem{leveque}
+R. J. LeVeque,
+\emph{Finite Difference Methods for Ordinary and Partial Differential Equations},
+SIAM, 2007.
+
+\bibitem{fftw}
+M. Frigo and S. G. Johnson,
+``The design and implementation of FFTW3,''
+\emph{Proceedings of the IEEE}, vol. 93, no. 2, pp. 216--231, 2005.
+
+\end{thebibliography}
+
+\end{document}
