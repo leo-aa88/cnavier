@@ -94,19 +94,10 @@ void rk4_free(rk4_ctx *ctx)
     free(ctx->flat_tmp);
 }
 
-// Evaluate dw/dt and update u, v consistent with w via Poisson solve.
-// out = -u*(dw/dx) - v*(dw/dy) + (1/Re)*(d2w/dx2 + d2w/dy2)
-void dwdt(mtrx w, mtrx u, mtrx v, mtrx out, rk4_ctx *ctx)
+// Solve nabla^2 psi = -w and recover u = dpsi/dy, v = -dpsi/dx.
+static void velocity_from_vorticity(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx)
 {
-    int i;
     int nx = ctx->nx, ny = ctx->ny;
-
-    // Derivatives of w
-    flatten(w, ctx->flat_w, nx, ny);
-    spmv(*ctx->DX,  ctx->flat_w, ctx->flat_tmp); unflatten(ctx->flat_tmp, ctx->dwdx,   nx, ny);
-    spmv(*ctx->DY,  ctx->flat_w, ctx->flat_tmp); unflatten(ctx->flat_tmp, ctx->dwdy,   nx, ny);
-    spmv(*ctx->DX2, ctx->flat_w, ctx->flat_tmp); unflatten(ctx->flat_tmp, ctx->d2wdx2, nx, ny);
-    spmv(*ctx->DY2, ctx->flat_w, ctx->flat_tmp); unflatten(ctx->flat_tmp, ctx->d2wdy2, nx, ny);
 
     // Poisson solve: nabla^2 psi = -w  =>  invert sign, solve, restore
     invsig(w);
@@ -127,6 +118,23 @@ void dwdt(mtrx w, mtrx u, mtrx v, mtrx out, rk4_ctx *ctx)
     mtrxcpy(u, ctx->dpsidy);
     invsig(ctx->dpsidx);
     mtrxcpy(v, ctx->dpsidx);
+}
+
+// Evaluate dw/dt and update u, v consistent with w via Poisson solve.
+// out = -u*(dw/dx) - v*(dw/dy) + (1/Re)*(d2w/dx2 + d2w/dy2)
+void dwdt(mtrx w, mtrx u, mtrx v, mtrx out, rk4_ctx *ctx)
+{
+    int i;
+    int nx = ctx->nx, ny = ctx->ny;
+
+    // Derivatives of w
+    flatten(w, ctx->flat_w, nx, ny);
+    spmv(*ctx->DX,  ctx->flat_w, ctx->flat_tmp); unflatten(ctx->flat_tmp, ctx->dwdx,   nx, ny);
+    spmv(*ctx->DY,  ctx->flat_w, ctx->flat_tmp); unflatten(ctx->flat_tmp, ctx->dwdy,   nx, ny);
+    spmv(*ctx->DX2, ctx->flat_w, ctx->flat_tmp); unflatten(ctx->flat_tmp, ctx->d2wdx2, nx, ny);
+    spmv(*ctx->DY2, ctx->flat_w, ctx->flat_tmp); unflatten(ctx->flat_tmp, ctx->d2wdy2, nx, ny);
+
+    velocity_from_vorticity(w, u, v, ctx);
 
     // RHS: dw/dt = -u*dw/dx - v*dw/dy + (1/Re)*(d2w/dx2 + d2w/dy2)
 #ifdef _OPENMP
@@ -205,4 +213,71 @@ void rk4(mtrx w, mtrx u, mtrx v, double dt, rk4_ctx *ctx)
 
     // Final Poisson solve so u, v are consistent with w_{n+1}
     dwdt(w, u, v, ctx->k1, ctx); // k1 reused as scratch — u, v updated as side effect
+}
+
+// ---------------------------------------------------------------------------
+// Full timestep
+// ---------------------------------------------------------------------------
+
+void apply_wall_bc(mtrx u, mtrx v, const wall_bc *bc)
+{
+    int i, j;
+    int nx = u.m, ny = u.n;
+
+    for (j = 0; j < ny; j++)
+    {
+        MAt(u, 0, j)    = bc->u[2];  MAt(v, 0, j)    = bc->v[2];
+        MAt(u, nx-1, j) = bc->u[3];  MAt(v, nx-1, j) = bc->v[3];
+    }
+    for (i = 0; i < nx; i++)
+    {
+        MAt(u, i, 0)    = bc->u[0];  MAt(v, i, 0)    = bc->v[0];
+        MAt(u, i, ny-1) = bc->u[1];  MAt(v, i, ny-1) = bc->v[1];
+    }
+}
+
+void step(mtrx w, mtrx u, mtrx v, double dt, int time_scheme, const wall_bc *bc, rk4_ctx *ctx)
+{
+    int i, j;
+    int nx = ctx->nx, ny = ctx->ny;
+    // dpsidx/dpsidy are not needed until velocity recovery — use them as scratch
+    mtrx dvdx = ctx->dpsidx, dudy = ctx->dpsidy;
+
+    apply_wall_bc(u, v, bc);
+
+    // Vorticity BCs: w = dv/dx - du/dy evaluated at boundaries
+    flatten(u, ctx->flat_psi, nx, ny);
+    spmv(*ctx->DY, ctx->flat_psi, ctx->flat_tmp);  unflatten(ctx->flat_tmp, dudy, nx, ny);
+    flatten(v, ctx->flat_psi, nx, ny);
+    spmv(*ctx->DX, ctx->flat_psi, ctx->flat_tmp);  unflatten(ctx->flat_tmp, dvdx, nx, ny);
+
+    for (j = 0; j < ny; j++)
+    {
+        MAt(w, 0, j)    = MAt(dvdx, 0, j)    - MAt(dudy, 0, j);
+        MAt(w, nx-1, j) = MAt(dvdx, nx-1, j) - MAt(dudy, nx-1, j);
+    }
+    for (i = 0; i < nx; i++)
+    {
+        MAt(w, i, 0)    = MAt(dvdx, i, 0)    - MAt(dudy, i, 0);
+        MAt(w, i, ny-1) = MAt(dvdx, i, ny-1) - MAt(dudy, i, ny-1);
+    }
+
+    if (time_scheme == 1)
+    {
+        // Euler: single RHS evaluation, then one Poisson solve
+        flatten(w, ctx->flat_w, nx, ny);
+        spmv(*ctx->DX,  ctx->flat_w, ctx->flat_tmp); unflatten(ctx->flat_tmp, ctx->dwdx,   nx, ny);
+        spmv(*ctx->DY,  ctx->flat_w, ctx->flat_tmp); unflatten(ctx->flat_tmp, ctx->dwdy,   nx, ny);
+        spmv(*ctx->DX2, ctx->flat_w, ctx->flat_tmp); unflatten(ctx->flat_tmp, ctx->d2wdx2, nx, ny);
+        spmv(*ctx->DY2, ctx->flat_w, ctx->flat_tmp); unflatten(ctx->flat_tmp, ctx->d2wdy2, nx, ny);
+
+        euler(w, ctx->dwdx, ctx->dwdy, ctx->d2wdx2, ctx->d2wdy2, u, v, ctx->Re, dt);
+        velocity_from_vorticity(w, u, v, ctx);
+    }
+    else
+    {
+        // RK4: four RHS evaluations, each with a Poisson solve
+        // u and v are updated to be consistent with w on return
+        rk4(w, u, v, dt, ctx);
+    }
 }

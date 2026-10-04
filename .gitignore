@@ -55,3 +55,5 @@ dkms.conf
 .output
 *.vtk
 cnavier
+test_cnavier
+obj/
