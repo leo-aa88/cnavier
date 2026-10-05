@@ -1,5 +1,5 @@
 CC=gcc
-CC_FLAGS=-g -Wall
+CC_FLAGS=-g -O2 -Wall
 CC_LIBS=-lm -lfftw3
 
 # Parallel shared-memory build: make OPENMP=1

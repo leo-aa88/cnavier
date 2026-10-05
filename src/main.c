@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <limits.h>
 #include <getopt.h>
+#include <unistd.h>
 #include "linearalg.h"
 #include "finitediff.h"
 #include "utils.h"
@@ -143,6 +144,20 @@ int main(int argc, char *argv[])
     {
         printf("** Error: tf/dt gives %g timesteps; it must be between 1 and %d **\n",
                tf / dt, INT_MAX);
+        return 1;
+    }
+
+    // Host memory estimate: 26 arrays of nx*ny doubles (fields, derivatives,
+    // RK4 stages, flat buffers, FFT buffer) and four CSR operators with at most
+    // 7 non-zeros per row. Refusing here gives an error message instead of the
+    // process being killed once the pages are touched.
+    double mem_needed = (double)nx * ny * (26.0 * sizeof(double)
+                      + 4.0 * (7.0 * (sizeof(double) + sizeof(int)) + sizeof(int)));
+    double mem_total  = (double)sysconf(_SC_PHYS_PAGES) * (double)sysconf(_SC_PAGESIZE);
+    if (mem_total > 0. && mem_needed > mem_total)
+    {
+        printf("** Error: a %d x %d grid needs about %.1f GB of memory; this machine has %.1f GB **\n",
+               nx, ny, mem_needed / 1E9, mem_total / 1E9);
         return 1;
     }
 

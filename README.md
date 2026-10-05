@@ -150,15 +150,15 @@ make CUDA=1 CUDA_HOME=/opt/cuda
 
 Time per timestep, RK4 + FFT, Re=100, `dt = 10/n²`, VTK output off. Measured on an Intel i7-12650H and an NVIDIA GeForce RTX 3050 Laptop GPU (4 GB) under WSL2 (Ubuntu 22.04, gcc 11.4, CUDA 11.5):
 
-| Grid | CPU, `make` | CPU, `-O2` | OpenMP, `-O2`, 8 threads | CUDA | CUDA vs CPU `-O2` |
-|---|---|---|---|---|---|
-| 63×63 | 2.19 ms | 1.14 ms | 0.98 ms | 0.87 ms | 1.3× |
-| 127×127 | 8.98 ms | 3.68 ms | 3.31 ms | 1.61 ms | 2.3× |
-| 255×255 | 39.6 ms | 19.9 ms | 15.5 ms | 5.01 ms | 4.0× |
-| 511×511 | 162 ms | 91.8 ms | 67.0 ms | 20.9 ms | 4.4× |
-| 1023×1023 | 804 ms | 486 ms | 301 ms | 82.4 ms | 5.9× |
+| Grid | CPU, `make` | OpenMP, 8 threads | CUDA | CUDA vs CPU |
+|---|---|---|---|---|
+| 63×63 | 1.14 ms | 0.98 ms | 0.87 ms | 1.3× |
+| 127×127 | 3.68 ms | 3.31 ms | 1.61 ms | 2.3× |
+| 255×255 | 19.9 ms | 15.5 ms | 5.01 ms | 4.0× |
+| 511×511 | 91.8 ms | 67.0 ms | 20.9 ms | 4.4× |
+| 1023×1023 | 486 ms | 301 ms | 82.4 ms | 5.9× |
 
-These are single runs on a laptop; repeat runs vary by 10–15%. The default `make` compiles without optimisation; the `-O2` columns were built with `make CC="gcc -O2"`. Each row is a run such as:
+These are single runs on a laptop; repeat runs vary by 10–15%. All builds use the Makefile's default `-O2`. Each row is a run such as:
 
 ```bash
 ./cnavier --n 511 --dt 3.83e-5 --tf 7.68e-3 --output-interval 0
@@ -169,7 +169,7 @@ Things to keep in mind:
 - The GPU pays off from roughly 127×127 upwards. On small grids the fixed cost of launching kernels dominates and the CPU is just as fast.
 - About 60% of the GPU time at 511×511 is the double-precision FFTs. Consumer GeForce cards are much slower in double than in single precision, so expect larger gains on workstation/datacenter GPUs.
 - Pick grid sizes where `n + 1` has only small prime factors (63, 127, 255, 511, 1023, ...). The sine transform works on length `2(n+1)`, and awkward lengths are slow on both backends: 1024×1024 takes 132 ms per step on the GPU and 624 ms on the CPU, against 82 ms and 486 ms for 1023×1023.
-- The table is for the FFT solver only. Gauss-Seidel and SOR are on the GPU so that every solver option works there, not because they are fast: the convergence test after each sweep copies a value back to the host, and on the default 64×64 case SOR takes tens of milliseconds per step on the GPU, about the same as the unoptimised CPU build and far behind the FFT solver's 1 ms.
+- The table is for the FFT solver only. Gauss-Seidel and SOR are on the GPU so that every solver option works there, not because they are fast: the convergence test after each sweep copies a value back to the host, and on the default 64×64 case SOR takes tens of milliseconds per step on the GPU, no faster than the CPU and far behind the FFT solver's 1 ms.
 
 ## Configuration
 
@@ -219,7 +219,9 @@ The default case is the **lid-driven cavity**: the top wall moves at u=1, all ot
 
 ## Output
 
-VTK files are written to `output/` and can be opened in [ParaView](https://www.paraview.org/). The vorticity field is exported by default; stream function, velocity components, and pressure can be enabled by uncommenting the relevant `printvtk` calls in `main.c`.
+VTK files are written to `output/` and can be opened in [ParaView](https://www.paraview.org/). Only the vorticity field is exported; other fields can be written by adding `printvtk` calls in `main.c`. Each run overwrites the files of the previous one.
+
+At the end of a run the velocity profiles along the two centerlines are written to `output/centerline_u_sim.csv` and `output/centerline_v_sim.csv`, next to the Ghia et al. (1982) reference data in `centerline_*_ghia.csv`. The `_sim` files are results and are not tracked by git.
 
 ## Tests
 

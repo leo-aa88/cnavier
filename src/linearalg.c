@@ -41,12 +41,19 @@ double *readm(char *filename, int *m, int *n)
     FILE *f;
     double *A;
     f = fopen(filename, "r");
-    fscanf(f, "%d", m);
-    fscanf(f, "%d", n);
+    if (!f || fscanf(f, "%d", m) != 1 || fscanf(f, "%d", n) != 1 || *m < 1 || *n < 1)
+    {
+        printf("** Error: cannot read matrix dimensions from %s **\n", filename);
+        exit(1);
+    }
     A = allocm(*m, *n);
     for (i = 0; i < *m; i++)
         for (j = 0; j < *n; j++)
-            fscanf(f, "%lf", &A[i * (*n) + j]);
+            if (fscanf(f, "%lf", &A[i * (*n) + j]) != 1)
+            {
+                printf("** Error: %s ends before %d x %d values were read **\n", filename, *m, *n);
+                exit(1);
+            }
     fclose(f);
     return A;
 }
@@ -104,10 +111,18 @@ double *readv(char *filename, int *n)
     FILE *f;
     double *v;
     f = fopen(filename, "r");
-    fscanf(f, "%d", n);
+    if (!f || fscanf(f, "%d", n) != 1 || *n < 1)
+    {
+        printf("** Error: cannot read vector length from %s **\n", filename);
+        exit(1);
+    }
     v = allocv(*n);
     for (i = 0; i < *n; i++)
-        fscanf(f, "%lf", &v[i]);
+        if (fscanf(f, "%lf", &v[i]) != 1)
+        {
+            printf("** Error: %s ends before %d values were read **\n", filename, *n);
+            exit(1);
+        }
     fclose(f);
     return v;
 }

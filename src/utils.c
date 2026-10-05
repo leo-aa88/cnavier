@@ -31,7 +31,7 @@ void printvtk(mtrx A, char *title)
 
     snprintf(name, sizeof(name), "./output/%s-1-%d.vtk", title, count);
 
-    if ((pf = fopen(name, "a")) == NULL)
+    if ((pf = fopen(name, "w")) == NULL)
     {
         printf("\nError while opening file\n");
         exit(1);
@@ -101,6 +101,7 @@ void print_centerline(mtrx u, mtrx v, int nx, int ny, double dx, double dy)
     fprintf(f, "y,u\n");
     for (i = 0; i < nx; i++)
         fprintf(f, "%.6f,%.6f\n", (i + 0.5) * dy, MAt(u, i, ci));
+    fclose(f);
 
     // --- u along vertical centerline: Ghia et al. (1982) reference ---
     f = fopen("./output/centerline_u_ghia.csv", "w");

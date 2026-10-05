@@ -174,6 +174,7 @@ void fft_cleanup(void)
     fftw_destroy_plan(plan_fwd);
     fftw_destroy_plan(plan_inv);
     fftw_free(fft_buf);
+    fftw_cleanup(); // release FFTW's planner state, so leak checkers see nothing left
 }
 
 void poisson_FFT(mtrx f, mtrx u, double dx, double dy)
