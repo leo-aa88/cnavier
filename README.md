@@ -209,7 +209,7 @@ Both time schemes are explicit, so `dt` has to shrink with the grid spacing. Bef
 - the Courant number `u dt/dx` must not exceed 1 (`u` is the fastest wall);
 - the viscous stability limit of the chosen scheme. It is computed from the actual second-derivative operator, so it follows the grid, `Re` and the finite-difference order; it scales with `dx²`.
 
-For Euler there is a third limit, `dt ≤ 2/(Re·u²)` (that is `2ν/u²`), the stability limit of forward Euler for centered advection. It assumes the wall speed everywhere and is conservative for the cavity (at Re=1000 runs stayed stable up to about 3× it), so exceeding it only prints a warning.
+For Euler there is a third limit, `dt ≤ 2/(Re·u²)` (that is `2ν/u²`), the stability limit of forward Euler for centered advection. It assumes the wall speed everywhere and is conservative for the cavity (at Re=1000 runs stayed stable up to about 3× it), so exceeding it only prints a warning. When an Euler run is refused, the suggested `dt` respects this limit as well, so following the suggestion does not lead to the warning.
 
 At the defaults (64×64, Re=100, 6th order) the limits are `dt ≤ 0.0056` for RK4 and `dt ≤ 0.0040` for Euler. The benchmarks above use `dt = 10/n²`.
 

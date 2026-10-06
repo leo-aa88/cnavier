@@ -195,27 +195,28 @@ int main(int argc, char *argv[])
         if (fabs(bc.u[i]) > u_max) u_max = fabs(bc.u[i]);
         if (fabs(bc.v[i]) > u_max) u_max = fabs(bc.v[i]);
     }
-    double dt_courant = u_max > 0. ? max_co * fmin(dx, dy) / u_max : HUGE_VAL;
-    double dt_viscous = max_stable_dt(&sd_x2, &sd_y2, Re, time_scheme);
-    double dt_limit   = fmin(dt_courant, dt_viscous);
-    if (dt > dt_limit)
+    dt_limits lim = time_step_limits(&sd_x2, &sd_y2, fmin(dx, dy), Re, u_max, max_co, time_scheme);
+    if (dt > lim.accept)
     {
         printf("** Error: dt = %g is too large; use --dt %.3g or less. Limits: Courant number <= %g "
                "gives dt <= %.3g, the viscous stability limit of the %s scheme for this grid, Re and "
-               "order gives dt <= %.3g **\n",
-               dt, round_down_3(dt_limit), max_co, round_down_3(dt_courant),
-               time_scheme == 1 ? "Euler" : "RK4", round_down_3(dt_viscous));
+               "order gives dt <= %.3g",
+               dt, round_down_3(lim.suggest), max_co, round_down_3(lim.courant),
+               time_scheme == 1 ? "Euler" : "RK4", round_down_3(lim.viscous));
+        if (time_scheme == 1)
+            printf(", forward Euler's limit for centered advection gives dt <= %.3g",
+                   round_down_3(lim.advection));
+        printf(" **\n");
         exit(1);
     }
     // Forward Euler's limit for centered advection is conservative here, so it
     // is a warning, not an error
-    double dt_advection = euler_advection_dt(Re, u_max);
-    if (time_scheme == 1 && dt > dt_advection)
+    if (dt > lim.advection)
         printf("** Warning: dt = %g is above 2/(Re u^2) = %.3g, the stability limit of forward Euler "
                "for centered advection at the wall speed. It assumes that speed everywhere and is "
                "conservative for the cavity (at Re = 1000 runs stayed stable up to about 3x it), so "
                "the run goes ahead, but it may diverge **\n",
-               dt, round_down_3(dt_advection));
+               dt, round_down_3(lim.advection));
 
     // Sparse 2D operators: DX = I_y x d_x,  DY = d_y x I_x
     smtrx DX  = skronecker(sIy,   sd_x);

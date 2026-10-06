@@ -418,6 +418,21 @@ static void test_cpu_time_step_limits(void)
           euler_advection_dt(1000.0, 1.0) >= max_stable_dt(&d2, &d2, 1000.0, 1), 0.0);
     check("no advection limit when the walls are at rest", isinf(euler_advection_dt(100.0, 0.0)) ? 0.0 : 1.0, 0.0);
 
+    // What main() refuses and what it suggests. Euler at Re = 1000 on 64^2:
+    // Courant 1/64 < viscous, so the run is refused above 1/64, but the
+    // suggestion is the advection limit 0.002, which the warning also uses
+    dt_limits l = time_step_limits(&d2, &d2, dx, 1000.0, 1.0, 1.0, 1);
+    check("Euler, Re = 1000: refused above min(Courant, viscous)",
+          fabs(l.accept - fmin(dx, max_stable_dt(&d2, &d2, 1000.0, 1))), 1E-15);
+    check("Euler, Re = 1000: Courant binds the refusal", fabs(l.accept - dx), 1E-15);
+    check("Euler, Re = 1000: suggestion is the advection limit", fabs(l.suggest - 0.002), 1E-15);
+    l = time_step_limits(&d2, &d2, dx, 1000.0, 1.0, 1.0, 2);
+    check("RK4: no advection limit, suggestion = refusal threshold",
+          (isinf(l.advection) ? 0.0 : 1.0) + fabs(l.suggest - l.accept), 0.0);
+    l = time_step_limits(&d2, &d2, dx, 100.0, 1.0, 1.0, 1);
+    check("Euler, Re = 100: viscous binds, suggestion = refusal threshold",
+          fabs(l.accept - max_stable_dt(&d2, &d2, 100.0, 1)) + fabs(l.suggest - l.accept), 1E-15);
+
     // The dt printed as a suggestion must itself be accepted: rounded down,
     // and still within 1% of the limit
     double limits[] = {0.0056250, 0.0040391, 0.0158730, 0.0058050, 1.0, 0.001, 9.9999, 0.00999999,

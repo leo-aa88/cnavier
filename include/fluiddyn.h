@@ -49,6 +49,21 @@ double max_stable_dt(const smtrx *dxx, const smtrx *dyy, double Re, int time_sch
 // stable up to about 3x it). Returns HUGE_VAL if u_max is 0.
 double euler_advection_dt(double Re, double u_max);
 
+// The time-step limits main() checks before a run. h is the smaller grid
+// spacing, u_max the fastest wall speed, max_co the largest Courant number.
+typedef struct
+{
+    double courant;   // max_co * h / u_max (HUGE_VAL if the walls are at rest)
+    double viscous;   // max_stable_dt()
+    double advection; // euler_advection_dt() for Euler, HUGE_VAL for RK4
+    double accept;    // largest dt that is run: min(courant, viscous)
+    double suggest;   // dt to suggest: min of all three. The advection limit
+                      // is conservative, so a dt above it only gets a warning,
+                      // but a suggestion should not be one that is warned about
+} dt_limits;
+dt_limits time_step_limits(const smtrx *dxx, const smtrx *dyy, double h, double Re, double u_max,
+                           double max_co, int time_scheme);
+
 // x rounded down to three significant digits, for suggesting a time step: the
 // value printed with %.3g is then never above x.
 double round_down_3(double x);

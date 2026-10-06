@@ -229,6 +229,18 @@ double euler_advection_dt(double Re, double u_max)
     return u_max > 0.0 ? 2.0 / (Re * u_max * u_max) : HUGE_VAL;
 }
 
+dt_limits time_step_limits(const smtrx *dxx, const smtrx *dyy, double h, double Re, double u_max,
+                           double max_co, int time_scheme)
+{
+    dt_limits l;
+    l.courant   = u_max > 0. ? max_co * h / u_max : HUGE_VAL;
+    l.viscous   = max_stable_dt(dxx, dyy, Re, time_scheme);
+    l.advection = time_scheme == 1 ? euler_advection_dt(Re, u_max) : HUGE_VAL;
+    l.accept    = fmin(l.courant, l.viscous);
+    l.suggest   = fmin(l.accept, l.advection);
+    return l;
+}
+
 double round_down_3(double x)
 {
     if (!(x > 0.0) || !isfinite(x)) return x;
