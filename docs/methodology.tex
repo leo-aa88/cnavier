@@ -334,7 +334,7 @@ A vorticity--streamfunction method requires a boundary value for $\omega$ that i
 =\left.\left(D_x v-D_y u\right)\right|_{\partial\Omega},
 \label{eq:wall-vorticity}
 \end{equation}
-and overwrites the boundary entries of $\omega$ before advancing the field.
+and overwrites the boundary entries of $\omega$ before advancing the field, and again at every RK4 stage.
 
 This differs from the frequently used Thom-type wall formula, which derives wall vorticity directly from a neighboring streamfunction value and wall velocity.  In \texttt{cnavier}, the wall vorticity is instead obtained through one-sided/narrow derivative rows acting on the explicitly imposed velocity field.  This design has the advantage of reusing one operator family for both interior and boundary derivatives, but it also means that the low-order boundary closure in \cref{tab:closure} directly influences the wall vorticity accuracy.
 
@@ -393,7 +393,7 @@ k_4 &= \mathcal{F}\left(\omega^n+\dt k_3\right),\\
 
 The velocity depends on the stage vorticity through \cref{eq:poisson}--\cref{eq:velocity-streamfunction}.  Accordingly, every call to the RK4 right-hand side performs a Poisson solve and recovers a stage-consistent $(u,v)$ field.  Four Poisson solves are therefore required for the four RK stages, followed by one final solve to make $(u^{n+1},v^{n+1})$ consistent with $\omega^{n+1}$.  In total, RK4 performs five Poisson solves per timestep.
 
-For a sufficiently smooth semi-discrete system, classical RK4 is fourth-order accurate in time.  In the complete method it is not: the wall vorticity is set once per timestep, from the velocity at the start of the step (\cref{sec:wall-vorticity-order}), and is not updated between the stages, so the boundary data lag by up to one step.  Measured on the lid-driven cavity ($17\times17$, $\Rey=100$, run to $t=0.2$ and compared with a run at $\dt/16$), halving $\dt$ halves the error for RK4 as for Euler, both at the walls and in the interior: the observed order is about $1.0$--$1.2$ for RK4 and $1.0$ for Euler, and at the same step the interior error of RK4 is about that of Euler.  The test suite checks these observed orders.  Recovering fourth order would need the wall vorticity to be recomputed at every stage, e.g.\ from the stage streamfunction with a wall formula.
+For a sufficiently smooth semi-discrete system, classical RK4 is fourth-order accurate in time.  In the complete method that holds only if the boundary data move with the stages: the wall vorticity \cref{eq:wall-vorticity} depends on the velocity, which changes from stage to stage, so it is recomputed from each stage's velocity before that stage's derivatives are taken (\cref{sec:wall-vorticity-order}).  Earlier versions set it once per timestep, from the velocity at the start of the step.  The boundary data then lagged by up to one step, RK4 converged at first order only, and at the same step its error was about that of Euler.  Measured on the lid-driven cavity ($17\times17$, $\Rey=100$, interior nodes at $t=0.2$ against a run of the same scheme at $\dt/64$), the observed order is now $4.0$ for RK4 and $1.0$ for Euler, and at $\dt=T/64$ the interior error of RK4 is $1.2\times10^{-8}$ against $2.5\times10^{-2}$ for Euler.  The test suite checks both orders.  The steady state is essentially unaffected: at $t=30$ the centerline profiles of the default case move by at most $1.2\times10^{-4}$, and their distance from the Ghia data changes from $0.0024$/$0.0074$ to $0.0023$/$0.0073$ ($u$/$v$).
 
 % =============================================================================
 \section{Poisson Equation for the Streamfunction}
@@ -515,9 +515,10 @@ One CPU Euler timestep performs the following operations:
 
 One RK4 timestep begins with the same wall-velocity and wall-vorticity update.  Each of the four stage right-hand-side evaluations then:
 \begin{enumerate}[leftmargin=2em]
-  \item differentiates the current stage vorticity;
-  \item solves the Poisson equation for the stage streamfunction;
-  \item recovers a stage-consistent velocity field;
+  \item solves the Poisson equation for the stage streamfunction from the interior stage vorticity;
+  \item recovers a stage-consistent velocity field and imposes the wall velocities on it;
+  \item sets the wall vorticity of the stage from that velocity, \cref{eq:wall-vorticity};
+  \item differentiates the stage vorticity;
   \item evaluates the nonlinear convective and viscous terms.
 \end{enumerate}
 After combining $k_1$ through $k_4$, a fifth Poisson solve recovers velocity for the completed step.

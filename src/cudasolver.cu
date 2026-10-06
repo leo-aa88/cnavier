@@ -491,9 +491,13 @@ static void velocity_from_vorticity(gpu_solver *g, const double *w)
 }
 
 // Evaluate dw/dt into out and update u, v consistent with w
-static void dwdt(gpu_solver *g, const double *w, double *out)
+static void dwdt(gpu_solver *g, double *w, double *out)
 {
+    // Velocity of this stage, then the wall vorticity that goes with it, as
+    // in dwdt() in fluiddyn.c
     velocity_from_vorticity(g, w);
+    LAUNCH(wall_bc_kernel, g->n, g->u, g->v, g->cfg.bc, g->nx, g->ny);
+    LAUNCH(vorticity_bc_kernel, g->n, g->DX, g->DY, g->u, g->v, w, g->nx, g->ny);
     LAUNCH(rhs_kernel, g->n, g->DX, g->DY, g->DX2, g->DY2, w, g->u, g->v, g->cfg.Re, out, g->n);
 }
 

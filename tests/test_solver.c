@@ -411,17 +411,14 @@ static double interior_diff(mtrx a, mtrx b)
 
 // Observed order of the time integration: halve dt and compare the interior
 // errors against a run of the same scheme with a much smaller step. Euler is
-// first order. RK4 is fourth order in its stages, but the wall vorticity is
-// set once per step, from the velocities at its start, and not between the
-// stages, so the coupled scheme is first order too, and at the same step its
-// interior error is about Euler's (0.024 against 0.025 here). The RK4 check
-// therefore only guards against it getting worse than first order; it cannot
-// tell RK4 from Euler. Once the wall vorticity is updated at every stage, the
-// interior error converges at fourth order and this test should require it.
+// first order, RK4 fourth order. RK4 is fourth order only because the wall
+// vorticity is set again at every stage; set once per step it was first order
+// with about Euler's error. The wall rows of w are left stale by step() (the
+// next step sets them first), so only interior nodes are compared.
 static void test_temporal_order(void)
 {
     int n = 17, s, k;
-    double T = 0.2, order;
+    double T = 0.2, order, err_at[3];
     char name[96];
 
     printf("Unit: observed order of the time integration, %dx%d grid, t = %g\n", n, n, T);
@@ -436,6 +433,7 @@ static void test_temporal_order(void)
             freem(&w);
         }
         freem(&ref);
+        err_at[s] = err[0];
         order = log2(err[0] / err[1]);
         if (s == 1)
         {
@@ -444,10 +442,12 @@ static void test_temporal_order(void)
         }
         else
         {
-            snprintf(name, sizeof(name), "RK4: observed order %.2f, at least first", order);
-            check(name, isnan(order) ? INFINITY : 1.0 - order, 0.1);
+            snprintf(name, sizeof(name), "RK4: observed order %.2f, |order - 4|", order);
+            check(name, isnan(order) ? INFINITY : fabs(order - 4.0), 0.3);
         }
     }
+    snprintf(name, sizeof(name), "RK4 / Euler interior error at dt = T/64 (%.1e / %.1e)", err_at[2], err_at[1]);
+    check(name, isnan(err_at[2] / err_at[1]) ? INFINITY : err_at[2] / err_at[1], 1E-3);
 }
 
 // Wall velocities go to the right nodes; at the corners the walls x = 0 and

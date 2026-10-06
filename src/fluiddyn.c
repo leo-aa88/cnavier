@@ -115,14 +115,50 @@ static void derivatives(mtrx w, rk4_ctx *ctx)
 
 // Evaluate dw/dt and update u, v consistent with w via Poisson solve.
 // out = -u*(dw/dx) - v*(dw/dy) + (1/Re)*(d2w/dx2 + d2w/dy2)
+// Row r of A x
+static double csr_row(const smtrx *A, const double *x, int r)
+{
+    int k;
+    double sum = 0.0;
+    for (k = A->row_ptr[r]; k < A->row_ptr[r + 1]; k++)
+        sum += A->values[k] * x[A->col_idx[k]];
+    return sum;
+}
+
+// Wall vorticity from the velocity: w = dv/dx - du/dy on the boundary nodes
+static void set_wall_vorticity(mtrx w, mtrx u, mtrx v, const rk4_ctx *ctx)
+{
+    int i, j, nx = ctx->cfg.nx, ny = ctx->cfg.ny;
+    const smtrx *DX = ctx->cfg.DX, *DY = ctx->cfg.DY;
+
+    for (j = 0; j < nx; j++)
+    {
+        int b = j, t = (ny - 1) * nx + j; // bottom and top rows
+        w.M[b] = csr_row(DX, v.M, b) - csr_row(DY, u.M, b);
+        w.M[t] = csr_row(DX, v.M, t) - csr_row(DY, u.M, t);
+    }
+    for (i = 1; i < ny - 1; i++)
+    {
+        int l = i * nx, r = i * nx + nx - 1; // left and right columns
+        w.M[l] = csr_row(DX, v.M, l) - csr_row(DY, u.M, l);
+        w.M[r] = csr_row(DX, v.M, r) - csr_row(DY, u.M, r);
+    }
+}
+
 void dwdt(mtrx w, mtrx u, mtrx v, mtrx out, rk4_ctx *ctx)
 {
     int i;
     int nx = ctx->cfg.nx, ny = ctx->cfg.ny;
 
-    derivatives(w, ctx);
-
+    // Velocity of this stage, then the wall vorticity that goes with it. The
+    // wall vorticity follows the velocity, so it has to be set again at every
+    // RK4 stage: set once per step, it lags the interior and limits RK4 to
+    // first order in time.
     velocity_from_vorticity(w, u, v, ctx);
+    apply_wall_bc(u, v, &ctx->cfg.bc);
+    set_wall_vorticity(w, u, v, ctx);
+
+    derivatives(w, ctx);
 
     // RHS: dw/dt = -u*dw/dx - v*dw/dy + (1/Re)*(d2w/dx2 + d2w/dy2)
 #ifdef _OPENMP
@@ -280,27 +316,11 @@ void step(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx)
 {
     double dt = ctx->cfg.dt;
     const wall_bc *bc = &ctx->cfg.bc;
-    int i, j;
-    int nx = ctx->cfg.nx, ny = ctx->cfg.ny;
-    // dpsidx/dpsidy are not needed until velocity recovery — use them as scratch
-    mtrx dvdx = ctx->dpsidx, dudy = ctx->dpsidy;
 
     apply_wall_bc(u, v, bc);
 
     // Vorticity BCs: w = dv/dx - du/dy evaluated at boundaries
-    spmv(*ctx->cfg.DY, u.M, dudy.M);
-    spmv(*ctx->cfg.DX, v.M, dvdx.M);
-
-    for (j = 0; j < nx; j++)
-    {
-        MAt(w, 0, j) = MAt(dvdx, 0, j) - MAt(dudy, 0, j);
-        MAt(w, ny - 1, j) = MAt(dvdx, ny - 1, j) - MAt(dudy, ny - 1, j);
-    }
-    for (i = 0; i < ny; i++)
-    {
-        MAt(w, i, 0) = MAt(dvdx, i, 0) - MAt(dudy, i, 0);
-        MAt(w, i, nx - 1) = MAt(dvdx, i, nx - 1) - MAt(dudy, i, nx - 1);
-    }
+    set_wall_vorticity(w, u, v, ctx);
 
     if (ctx->cfg.time_scheme == 1)
     {
@@ -312,8 +332,8 @@ void step(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx)
     }
     else
     {
-        // RK4: four RHS evaluations, each with a Poisson solve
-        // u and v are updated to be consistent with w on return
+        // RK4: four RHS evaluations, each with a Poisson solve and its own
+        // wall vorticity; u and v are updated to be consistent with w on return
         rk4(w, u, v, ctx);
     }
 }

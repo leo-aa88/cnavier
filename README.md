@@ -31,7 +31,7 @@ At each timestep:
 ## Features
 
 - **Spatial discretisation**: finite differences of selectable order (2nd, 4th, or 6th)
-- **Time integration**: explicit Euler or classical RK4. The wall vorticity is updated once per step, which limits both to first order in time overall, and RK4 is currently no more accurate than Euler at the same step (measured; see [Tests](#tests))
+- **Time integration**: explicit Euler (1st order) or classical RK4 (4th order in time; the wall vorticity is updated at every stage)
 - **Poisson solver**: three options — Gauss-Seidel, SOR, or FFTW3-based direct DST-I solver (default)
 - **Sparse operators**: 2D derivative operators built as CSR sparse matrices via Kronecker products, replacing dense O(n³) matrix-vector multiplies with O(7n) SpMV
 - **GPU acceleration**: optional CUDA backend that runs the whole time loop on an NVIDIA GPU (see [CUDA](#cuda-gpu))
@@ -263,7 +263,7 @@ builds and runs `test_cnavier`:
 
 - **Building blocks**: sparse operations against dense ones; every row of the finite-difference operators (boundary rows included) exact on the polynomials its stencil is built for, for orders 2, 4 and 6, and rows written out; the derivative operators acting along the right axis on non-square grids; wall velocities, including the corners; the VTK and centerline writers.
 - **Poisson solvers**: the FFT solver against an exact eigenmode, at sizes that exercise every batching case of the transform; FFT, SOR and Gauss-Seidel giving the same answer once converged; residuals of the iterative solvers; SOR iteration counts on anisotropic grids.
-- **Time stepping**: short cavity runs with both schemes on square and non-square grids (finite, divergence-free); the stability limit (0.95× runs, 1.05× diverges) and the suggested `dt`; the observed order in `dt` on the interior nodes. Euler is first order. RK4 is also first order overall, not fourth, and its error is about Euler's: the wall vorticity is computed once per step from the velocities at its start and not updated between the stages. The test checks that RK4 stays at least first order.
+- **Time stepping**: short cavity runs with both schemes on square and non-square grids (finite, divergence-free); the stability limit (0.95× runs, 1.05× diverges) and the suggested `dt`; the observed order in `dt` on the interior nodes: Euler first order, RK4 fourth order, with RK4's error at the same step about a million times smaller than Euler's.
 - **Backends**: driving the solver through `backend.c` gives exactly what calling it directly gives, and every solver ignores changes to the caller's configuration after it is created.
 - **OpenMP** (with `OPENMP=1`): results on 1 and on 4 threads are bitwise identical above the size where loops go parallel.
 
