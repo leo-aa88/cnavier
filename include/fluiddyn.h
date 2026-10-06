@@ -39,10 +39,19 @@ void dwdt(mtrx w, mtrx u, mtrx v, mtrx out, rk4_ctx *ctx);
 void rk4(mtrx w, mtrx u, mtrx v, double dt, rk4_ctx *ctx);
 
 // Largest stable time step of the explicit scheme (time_scheme 1=Euler,
-// 2=RK4) for the viscous term (1/Re) * (DX2 + DY2) on an nx*ny grid, and,
-// for Euler, for advection at speeds up to u_max.
-double max_stable_dt(const smtrx *DX2, const smtrx *DY2, int nx, int ny,
-                     double Re, double u_max, int time_scheme);
+// 2=RK4) for the viscous term (1/Re) * (d_xx + d_yy), from the 1D
+// second-derivative operators in x and y.
+double max_stable_dt(const smtrx *dxx, const smtrx *dyy, double Re, int time_scheme);
+
+// The stability limit of forward Euler with centered advection at speeds up
+// to u_max: dt <= 2 nu / u_max^2 = 2 / (Re u_max^2). It assumes u_max
+// everywhere, so it is conservative for the cavity (at Re = 1000 runs stayed
+// stable up to about 3x it). Returns HUGE_VAL if u_max is 0.
+double euler_advection_dt(double Re, double u_max);
+
+// x rounded down to three significant digits, for suggesting a time step: the
+// value printed with %.3g is then never above x.
+double round_down_3(double x);
 
 // Dirichlet wall velocities, indexed by wall:
 // 0 -> j=0, 1 -> j=ny-1, 2 -> i=0, 3 -> i=nx-1

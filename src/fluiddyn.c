@@ -211,27 +211,31 @@ static double row_abs_sum(const smtrx *A, int r)
     return s;
 }
 
-double max_stable_dt(const smtrx *DX2, const smtrx *DY2, int nx, int ny,
-                     double Re, double u_max, int time_scheme)
+double max_stable_dt(const smtrx *dxx, const smtrx *dyy, double Re, int time_scheme)
 {
-    // Largest |eigenvalue| of each second-derivative operator, taken from a
-    // row in the middle of the grid. The interior stencils are centered with
-    // coefficients of alternating sign, so the sum of their magnitudes is the
-    // value of the stencil's symbol at the highest grid frequency.
-    int centre = (ny / 2) * nx + nx / 2;
-    double lambda = (row_abs_sum(DX2, centre) + row_abs_sum(DY2, centre)) / Re;
+    // Largest |eigenvalue| of each second-derivative operator, taken from the
+    // middle row. The interior stencils are centered with coefficients of
+    // alternating sign, so the sum of their magnitudes is the value of the
+    // stencil's symbol at the highest grid frequency.
+    double lambda = (row_abs_sum(dxx, dxx->m / 2) + row_abs_sum(dyy, dyy->m / 2)) / Re;
 
-    if (time_scheme == 1)
-    {
-        // Forward Euler is stable for real eigenvalues in [-2, 0] ...
-        double dt = 2.0 / lambda;
-        // ... and, with centered advection, only while dt <= 2*nu/u^2
-        if (u_max > 0.0 && 2.0 / (Re * u_max * u_max) < dt)
-            dt = 2.0 / (Re * u_max * u_max);
-        return dt;
-    }
-    // Classical RK4 is stable on the negative real axis down to -2.785293...
-    return 2.785293563405282 / lambda;
+    // Forward Euler is stable for real eigenvalues in [-2, 0], classical RK4
+    // down to -2.785293...
+    return (time_scheme == 1 ? 2.0 : 2.785293563405282) / lambda;
+}
+
+double euler_advection_dt(double Re, double u_max)
+{
+    return u_max > 0.0 ? 2.0 / (Re * u_max * u_max) : HUGE_VAL;
+}
+
+double round_down_3(double x)
+{
+    if (!(x > 0.0) || !isfinite(x)) return x;
+    double scale = pow(10.0, 2.0 - floor(log10(x)));
+    double r = floor(x * scale) / scale;
+    // floor(log10) can be off by one next to a power of ten
+    return r > x ? (floor(x * scale) - 1.0) / scale : r;
 }
 
 // ---------------------------------------------------------------------------

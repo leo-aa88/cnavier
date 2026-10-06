@@ -372,7 +372,9 @@ static void test_cpu_stability_limit(int time_scheme, const char *label)
     {
         problem p = problem_alloc(n, time_scheme, 3, 0.0, 1E-3);
         problem_bind(&p);
-        double limit = max_stable_dt(&p.DX2, &p.DY2, n, n, p.ctx.Re, 1.0, time_scheme);
+        smtrx d2 = SDiff2(n, 6, p.ctx.dx);
+        double limit = max_stable_dt(&d2, &d2, p.ctx.Re, time_scheme);
+        freesm(d2);
         double wmax = 0.0;
 
         p.dt = frac[f] * limit;
@@ -394,6 +396,44 @@ static void test_cpu_stability_limit(int time_scheme, const char *label)
         }
         problem_free(&p);
     }
+}
+
+// The other limits the start-up check uses
+static void test_cpu_time_step_limits(void)
+{
+    int k, n = 64;
+    double dx = 1.0 / n;
+    smtrx d2 = SDiff2(n, 6, dx);
+    char name[96];
+
+    printf("CPU: time-step limits and the suggested dt\n");
+
+    // Forward Euler's centered-advection limit is 2 nu / u^2 = 2 / (Re u^2).
+    // At Re = 1000 it is the binding one, far below the viscous limit.
+    check("Euler advection limit at Re = 1000, u = 1 is 0.002",
+          fabs(euler_advection_dt(1000.0, 1.0) - 0.002), 1E-15);
+    check("Euler advection limit at Re = 100, u = 2 is 0.005",
+          fabs(euler_advection_dt(100.0, 2.0) - 0.005), 1E-15);
+    check("Re = 1000: advection limit binds (below the viscous one)",
+          euler_advection_dt(1000.0, 1.0) >= max_stable_dt(&d2, &d2, 1000.0, 1), 0.0);
+    check("no advection limit when the walls are at rest", isinf(euler_advection_dt(100.0, 0.0)) ? 0.0 : 1.0, 0.0);
+
+    // The dt printed as a suggestion must itself be accepted: rounded down,
+    // and still within 1% of the limit
+    double limits[] = {0.0056250, 0.0040391, 0.0158730, 0.0058050, 1.0, 0.001, 9.9999, 0.00999999,
+                       max_stable_dt(&d2, &d2, 100.0, 1), max_stable_dt(&d2, &d2, 100.0, 2)};
+    double worst = 0.0;
+    for (k = 0; k < (int)(sizeof(limits) / sizeof(limits[0])); k++)
+    {
+        char text[32];
+        snprintf(text, sizeof(text), "%.3g", round_down_3(limits[k]));
+        double back = strtod(text, NULL);
+        if (back > limits[k] || back < 0.99 * limits[k]) worst = fmax(worst, fabs(back - limits[k]) / limits[k]);
+        if (back > limits[k]) worst = INFINITY;
+    }
+    snprintf(name, sizeof(name), "suggested dt <= limit and within 1%%, %d cases", k);
+    check(name, worst, 0.0);
+    freesm(d2);
 }
 
 // ---------------------------------------------------------------------------
@@ -615,6 +655,7 @@ int main(void)
     test_cpu_step(1, "Euler");
     test_cpu_stability_limit(1, "Euler");
     test_cpu_stability_limit(2, "RK4");
+    test_cpu_time_step_limits();
 #ifdef USE_CUDA
     run_gpu_tests();
 #endif

@@ -187,6 +187,36 @@ int main(int argc, char *argv[])
     smtrx sIx   = seye(nx);
     smtrx sIy   = seye(ny);
 
+    // Stability checks, before the 2D operators are built so that a run that
+    // cannot work fails at once. The fastest wall is the velocity scale.
+    double u_max = 0.;
+    for (i = 0; i < 4; i++)
+    {
+        if (fabs(bc.u[i]) > u_max) u_max = fabs(bc.u[i]);
+        if (fabs(bc.v[i]) > u_max) u_max = fabs(bc.v[i]);
+    }
+    double dt_courant = u_max > 0. ? max_co * fmin(dx, dy) / u_max : HUGE_VAL;
+    double dt_viscous = max_stable_dt(&sd_x2, &sd_y2, Re, time_scheme);
+    double dt_limit   = fmin(dt_courant, dt_viscous);
+    if (dt > dt_limit)
+    {
+        printf("** Error: dt = %g is too large; use --dt %.3g or less. Limits: Courant number <= %g "
+               "gives dt <= %.3g, the viscous stability limit of the %s scheme for this grid, Re and "
+               "order gives dt <= %.3g **\n",
+               dt, round_down_3(dt_limit), max_co, round_down_3(dt_courant),
+               time_scheme == 1 ? "Euler" : "RK4", round_down_3(dt_viscous));
+        exit(1);
+    }
+    // Forward Euler's limit for centered advection is conservative here, so it
+    // is a warning, not an error
+    double dt_advection = euler_advection_dt(Re, u_max);
+    if (time_scheme == 1 && dt > dt_advection)
+        printf("** Warning: dt = %g is above 2/(Re u^2) = %.3g, the stability limit of forward Euler "
+               "for centered advection at the wall speed. It assumes that speed everywhere and is "
+               "conservative for the cavity (at Re = 1000 runs stayed stable up to about 3x it), so "
+               "the run goes ahead, but it may diverge **\n",
+               dt, round_down_3(dt_advection));
+
     // Sparse 2D operators: DX = I_y x d_x,  DY = d_y x I_x
     smtrx DX  = skronecker(sIy,   sd_x);
     smtrx DY  = skronecker(sd_y,  sIx);
@@ -207,33 +237,6 @@ int main(int argc, char *argv[])
     int N = nx * ny;
 
     int it_max = (int)((tf / dt) - 1);
-
-    // Stability checks, with the fastest wall as the velocity scale
-    double u_max = 0.;
-    for (i = 0; i < 4; i++)
-    {
-        if (fabs(bc.u[i]) > u_max) u_max = fabs(bc.u[i]);
-        if (fabs(bc.v[i]) > u_max) u_max = fabs(bc.v[i]);
-    }
-
-    // Courant number
-    double r1 = u_max * dt / dx;
-    double r2 = u_max * dt / dy;
-    if ((r1 > max_co) || (r2 > max_co))
-    {
-        printf("** Error: Courant number too large (r1=%lf r2=%lf, limit %lf); use --dt %.3g or less **\n",
-               r1, r2, max_co, max_co * fmin(dx, dy) / u_max);
-        exit(1);
-    }
-
-    // Viscous limit of the explicit time scheme
-    double dt_max = max_stable_dt(&DX2, &DY2, nx, ny, Re, u_max, time_scheme);
-    if (dt > dt_max)
-    {
-        printf("** Error: dt = %g is above the stability limit of the %s scheme for this grid, Re and order; "
-               "use --dt %.3g or less **\n", dt, time_scheme == 1 ? "Euler" : "RK4", dt_max);
-        exit(1);
-    }
 
     // Dense field matrices
     mtrx u   = initm(nx, ny);
