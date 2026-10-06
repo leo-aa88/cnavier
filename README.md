@@ -91,7 +91,7 @@ make OPENMP=1
 
 The default `make` build is unchanged (no OpenMP). Results are bit-identical to the serial build with any number of threads (with Gauss-Seidel/SOR, identical to other OpenMP runs: the parallel sweep order differs from the serial one).
 
-**Threads.** Without `OMP_NUM_THREADS`, the solver uses one thread per physical core it may run on (the distinct cores among the CPUs in its affinity mask, read from Linux sysfs; elsewhere the OpenMP default applies) and prints the count at start-up. Set `OMP_NUM_THREADS` to override.
+**Threads.** Without `OMP_NUM_THREADS`, the solver uses one thread per physical core it may run on (the distinct cores among the CPUs in its affinity mask, read from Linux sysfs; elsewhere the OpenMP default applies) and prints the count at start-up. Set `OMP_NUM_THREADS` to override. If a thread placement is set (`OMP_PROC_BIND`, `OMP_PLACES` or `GOMP_CPU_AFFINITY`), the OpenMP default is kept, which is one thread per logical CPU; combine the placement with `OMP_NUM_THREADS` to choose the count, e.g. `OMP_PLACES=cores OMP_NUM_THREADS=8`.
 
 Time per step on an i7-12650H under WSL2 (which presents it as 8 cores with 2 hardware threads each), RK4 + FFT, best of 2–3 runs:
 

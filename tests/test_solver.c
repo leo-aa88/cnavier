@@ -8,10 +8,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <unistd.h>
 #include "linearalg.h"
 #include "finitediff.h"
 #include "poisson.h"
 #include "fluiddyn.h"
+#include "threads.h"
 #ifdef USE_CUDA
 #include "cudasolver.h"
 #endif
@@ -522,16 +524,16 @@ static void run_threads(int n, int scheme, int poisson_type, int steps, int thre
 // several threads. The results must not depend on how many: with the FFT
 // solver they are bitwise those of one thread, and so are the red-black
 // Gauss-Seidel/SOR sweeps.
-static void test_openmp_thread_count(int poisson_type, const char *label)
+static void test_openmp_thread_count(int scheme, int poisson_type, const char *label)
 {
     int k, n = 65, threads = omp_get_num_procs() > 4 ? 4 : (omp_get_num_procs() > 1 ? omp_get_num_procs() : 2);
     mtrx one[3], many[3];
     char name[96];
 
-    printf("OpenMP: 1 vs %d threads, RK4 + %s, %dx%d grid (above OMP_MIN_WORK = %d points)\n",
+    printf("OpenMP: 1 vs %d threads, %s, %dx%d grid (above OMP_MIN_WORK = %d points)\n",
            threads, label, n, n, OMP_MIN_WORK);
-    run_threads(n, 2, poisson_type, 10, 1, one);
-    run_threads(n, 2, poisson_type, 10, threads, many);
+    run_threads(n, scheme, poisson_type, 10, 1, one);
+    run_threads(n, scheme, poisson_type, 10, threads, many);
     double diff = 0.0;
     for (k = 0; k < 3; k++)
     {
@@ -540,6 +542,46 @@ static void test_openmp_thread_count(int poisson_type, const char *label)
     }
     snprintf(name, sizeof(name), "%s: w, u, v bitwise identical", label);
     check(name, diff, 0.0);
+}
+
+// The thread count default_threads() picks, in a fresh process started with
+// the given environment (OpenMP reads its variables at start-up)
+static int child_threads(const char *env)
+{
+    char self[4096], cmd[4400];
+    int threads = -1;
+    ssize_t len = readlink("/proc/self/exe", self, sizeof(self) - 1);
+    FILE *f;
+
+    if (len <= 0) return -1;
+    self[len] = '\0';
+    snprintf(cmd, sizeof(cmd),
+             "env -u OMP_NUM_THREADS -u OMP_PROC_BIND -u OMP_PLACES -u GOMP_CPU_AFFINITY %s '%s' --default-threads",
+             env, self);
+    if (!(f = popen(cmd, "r"))) return -1;
+    if (fscanf(f, "%d", &threads) != 1) threads = -1;
+    pclose(f);
+    return threads;
+}
+
+// One thread per physical core by default, but a thread placement or count
+// the user sets is respected. With a placement set, the runtime binds the
+// initial thread to one place before main(), so counting cores from its
+// affinity mask would give 1.
+static void test_openmp_default_threads(void)
+{
+    int procs = omp_get_num_procs(), cores = physical_cores();
+    int expect = cores > 0 && cores < procs ? cores : procs;
+    char name[96];
+
+    printf("OpenMP: default thread count (%d CPUs, %d physical cores)\n", procs, cores);
+    snprintf(name, sizeof(name), "no OpenMP settings: %d threads", expect);
+    check(name, child_threads("") != expect, 0.0);
+    snprintf(name, sizeof(name), "OMP_PROC_BIND=close: all %d CPUs", procs);
+    check(name, child_threads("OMP_PROC_BIND=close") != procs, 0.0);
+    snprintf(name, sizeof(name), "OMP_PLACES=cores: all %d CPUs", procs);
+    check(name, child_threads("OMP_PLACES=cores") != procs, 0.0);
+    check("OMP_NUM_THREADS=3: 3 threads", child_threads("OMP_NUM_THREADS=3") != 3, 0.0);
 }
 #endif
 
@@ -752,8 +794,20 @@ static void run_gpu_tests(void)
 
 #endif // USE_CUDA
 
-int main(void)
+int main(int argc, char **argv)
 {
+#ifdef _OPENMP
+    // Used by test_openmp_default_threads()
+    if (argc > 1 && strcmp(argv[1], "--default-threads") == 0)
+    {
+        default_threads();
+        printf("%d\n", omp_get_max_threads());
+        return 0;
+    }
+#else
+    (void)argc;
+    (void)argv;
+#endif
     test_finitediff_exactness();
     test_finitediff_rows();
     test_cpu_poisson_fft(8);
@@ -769,8 +823,10 @@ int main(void)
     test_cpu_stability_limit(2, "RK4");
     test_cpu_time_step_limits();
 #ifdef _OPENMP
-    test_openmp_thread_count(3, "FFT");
-    test_openmp_thread_count(2, "SOR");
+    test_openmp_thread_count(2, 3, "RK4 + FFT");
+    test_openmp_thread_count(2, 2, "RK4 + SOR");
+    test_openmp_thread_count(1, 1, "Euler + Gauss-Seidel");
+    test_openmp_default_threads();
 #endif
 #ifdef USE_CUDA
     run_gpu_tests();

@@ -1,4 +1,3 @@
-#define _GNU_SOURCE // sched_getaffinity
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -7,12 +6,12 @@
 #include <errno.h>
 #include <limits.h>
 #include <getopt.h>
-#include <sched.h>
 #include "linearalg.h"
 #include "finitediff.h"
 #include "utils.h"
 #include "poisson.h"
 #include "fluiddyn.h"
+#include "threads.h"
 #ifdef USE_CUDA
 #include "cudasolver.h"
 #endif
@@ -52,54 +51,6 @@ static int parse_double(const char *s, double *out)
     return 1;
 }
 
-#ifdef _OPENMP
-// Number of distinct physical cores among the CPUs this process may run on:
-// the (package, core) pairs of the CPUs in its affinity mask, read from Linux
-// sysfs. This handles hybrid CPUs, whose cores have different numbers of
-// hardware threads, and affinity masks that cover part of the machine.
-// Returns 0 if it cannot be determined.
-static int physical_cores(void)
-{
-    cpu_set_t set;
-    int cpu, count = 0, n = 0;
-    long seen[CPU_SETSIZE];
-
-    if (sched_getaffinity(0, sizeof(set), &set) != 0) return 0;
-    for (cpu = 0; cpu < CPU_SETSIZE; cpu++)
-    {
-        char path[128];
-        long core = -1, package = -1, key;
-        int k, found = 0;
-        FILE *f;
-
-        if (!CPU_ISSET(cpu, &set)) continue;
-        snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%d/topology/core_id", cpu);
-        if ((f = fopen(path, "r"))) { if (fscanf(f, "%ld", &core) != 1) core = -1; fclose(f); }
-        snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%d/topology/physical_package_id", cpu);
-        if ((f = fopen(path, "r"))) { if (fscanf(f, "%ld", &package) != 1) package = -1; fclose(f); }
-        if (core < 0 || package < 0) return 0;
-
-        key = package * 1000000 + core;
-        for (k = 0; k < n; k++)
-            if (seen[k] == key) { found = 1; break; }
-        if (!found) { seen[n++] = key; count++; }
-    }
-    return count;
-}
-
-// Unless OMP_NUM_THREADS says otherwise, use one thread per physical core the
-// process may run on, instead of the OpenMP default of one per logical CPU.
-// The sparse products and transforms are limited by memory bandwidth, so a
-// second hardware thread per core adds little, and every extra thread is one
-// more to wait for at each of the ~70 barriers per step; on a busy machine
-// that makes surplus threads very costly.
-static void default_threads(void)
-{
-    int cores = physical_cores();
-    if (!getenv("OMP_NUM_THREADS") && cores > 0 && cores < omp_get_max_threads())
-        omp_set_num_threads(cores);
-}
-#endif
 
 static void usage(const char *prog)
 {
