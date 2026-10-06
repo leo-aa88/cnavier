@@ -440,13 +440,14 @@ SOR applies a relaxation factor $\beta$:
 +(1-\beta)\psi_{i,j}^{(k)}.
 \label{eq:sor}
 \end{equation}
-The default program estimates an optimal relaxation parameter from the spectral radius of Jacobi iteration on the $(n_x-2)\times(n_y-2)$ interior nodes,
+The default program estimates an optimal relaxation parameter from the spectral radius of Jacobi iteration on the $(n_x-2)\times(n_y-2)$ interior nodes.  With the weights of the five-point stencil ($\Delta y^2$ on the $x$ neighbours, $\Delta x^2$ on the $y$ neighbours), the slowest Jacobi mode is the lowest sine mode in each direction, so
 \begin{align}
-\rho &= \frac{1}{2}\left[\cos\left(\frac{\pi}{n_x-1}\right)
-+\cos\left(\frac{\pi}{n_y-1}\right)\right],\\
+\rho &= \frac{\Delta y^2\cos\left(\dfrac{\pi}{n_x-1}\right)
++\Delta x^2\cos\left(\dfrac{\pi}{n_y-1}\right)}{\Delta x^2+\Delta y^2},\\
 \beta &= \frac{2}{1+\sqrt{1-\rho^2}}.
 \label{eq:sor-beta}
 \end{align}
+which reduces to $\rho=\cos(\pi/(n-1))$ on a square grid with $\Delta x=\Delta y$.  The five-point stencil is consistently ordered in both the lexicographic and the red--black sweep, so Young's optimum $\beta$ applies to the CPU and the GPU solvers alike.
 
 The default maximum iteration count is 10000 and the shipped convergence threshold is $10^{-3}$.
 
