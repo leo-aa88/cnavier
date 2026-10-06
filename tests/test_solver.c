@@ -57,7 +57,6 @@ static problem problem_alloc_xy(int nx, int ny, int time_scheme, int poisson_typ
     problem p;
     int order = 6;
     double dx = 1.0 / (nx - 1), dy = 1.0 / (ny - 1);
-    double rho = 0.5 * (cos(PI / (nx - 1)) + cos(PI / (ny - 1)));
     wall_bc lid = {{0., 0., 0., 1.}, {0., 0., 0., 0.}};
 
     p.nx = nx; p.ny = ny; p.dt = dt; p.time_scheme = time_scheme;
@@ -82,7 +81,7 @@ static problem problem_alloc_xy(int nx, int ny, int time_scheme, int poisson_typ
     p.ctx.Re = 100.; p.ctx.dx = dx; p.ctx.dy = dy;
     p.ctx.poisson_type = poisson_type;
     p.ctx.poisson_max_it = 200000; p.ctx.poisson_tol = poisson_tol;
-    p.ctx.beta = 2.0 / (1.0 + sqrt(1.0 - rho * rho));
+    p.ctx.beta = sor_beta(nx, ny, dx, dy);
 
     p.u = initm(ny, nx);
     p.v = initm(ny, nx);
@@ -388,8 +387,7 @@ static double poisson_residual(mtrx f, mtrx psi, double dx, double dy)
 static void test_cpu_poisson_agree(int nx, int ny)
 {
     double dx = 1.0 / (nx - 1), dy = 1.0 / (ny - 1);
-    double rho = 0.5 * (cos(PI / (nx - 1)) + cos(PI / (ny - 1)));
-    double beta = 2.0 / (1.0 + sqrt(1.0 - rho * rho));
+    double beta = sor_beta(nx, ny, dx, dy);
     mtrx f = initm(ny, nx), fft = initm(ny, nx), sor = initm(ny, nx), gs = initm(ny, nx);
     mtrx scratch = initm(ny, nx);
 
@@ -411,12 +409,27 @@ static void test_cpu_poisson_agree(int nx, int ny)
     freem(&f); freem(&fft); freem(&sor); freem(&gs); freem(&scratch);
 }
 
+// On a strongly anisotropic grid (dx != dy) the SOR parameter must account
+// for the spacings: the isotropic formula took about 5x the iterations.
+static void test_cpu_sor_anisotropic(int nx, int ny, int max_iterations)
+{
+    double dx = 1.0 / (nx - 1), dy = 1.0 / (ny - 1);
+    mtrx f = initm(ny, nx), psi = initm(ny, nx), scratch = initm(ny, nx);
+    char name[96];
+
+    printf("CPU: SOR iterations on an anisotropic %dx%d grid\n", nx, ny);
+    fill_pseudo_random(f.M, nx * ny, 9u);
+    int k = poisson_SOR(f, psi, scratch, dx, dy, 100000, 1E-3, sor_beta(nx, ny, dx, dy));
+    snprintf(name, sizeof(name), "SOR iterations at the shipped tolerance (%d)", k);
+    check(name, k, max_iterations);
+    freem(&f); freem(&psi); freem(&scratch);
+}
+
 static void test_cpu_poisson_iterative(void)
 {
     int n = 24;
     double dx = 1.0 / (n - 1);
-    double rho = cos(PI / (n - 1));
-    double beta = 2.0 / (1.0 + sqrt(1.0 - rho * rho));
+    double beta = sor_beta(n, n, dx, dx);
     mtrx f = initm(n, n), psi = initm(n, n), scratch = initm(n, n);
 
     printf("CPU: Gauss-Seidel and SOR residuals\n");
@@ -901,6 +914,8 @@ int main(int argc, char **argv)
     test_cpu_poisson_agree(24, 24);
     test_cpu_poisson_agree(26, 15);
     test_cpu_poisson_iterative();
+    test_cpu_sor_anisotropic(10, 200, 200);
+    test_cpu_sor_anisotropic(200, 10, 200);
     test_cpu_step(32, 32, 2, "RK4");
     test_cpu_step(32, 32, 1, "Euler");
     test_cpu_step(40, 24, 2, "RK4");

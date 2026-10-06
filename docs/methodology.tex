@@ -194,7 +194,7 @@ Fields are stored as contiguous row-major arrays wrapped by the \code{mtrx} stru
 
 \subsection{Grid convention}
 
-The grid is nodal.  Node $i$ lies at $x_i=i\,\dx$, $i=0,\dots,n_x-1$, so the first and last rows and columns of the arrays lie on the walls and $n_x$ nodes span $L_x$ with $n_x-1$ intervals, as in \cref{eq:grid-spacing}.  All parts of the code use this convention:
+The grid is nodal.  Column $j$ lies at $x_j=j\,\dx$, $j=0,\dots,n_x-1$, and row $i$ at $y_i=i\,\dy$, $i=0,\dots,n_y-1$, so the first and last rows and columns of the arrays lie on the walls and $n_x$ nodes span $L_x$ with $n_x-1$ intervals, as in \cref{eq:grid-spacing}.  All parts of the code use this convention:
 
 \begin{enumerate}[leftmargin=2em]
   \item wall velocities are imposed on the wall nodes, and the one-sided finite-difference closures are evaluated there;

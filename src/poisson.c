@@ -17,7 +17,7 @@ double error(mtrx u1, mtrx u2)
 
 // Gauss-Seidel Poisson solver.
 // u and u0 are pre-allocated by the caller; u holds the result on return.
-void poisson(mtrx f, mtrx u, mtrx u0, double dx, double dy, int itmax, double tol)
+int poisson(mtrx f, mtrx u, mtrx u0, double dx, double dy, int itmax, double tol)
 {
     int i, k;
     int ny = f.m, nx = f.n; // ny rows (y), nx columns (x)
@@ -63,16 +63,26 @@ void poisson(mtrx f, mtrx u, mtrx u0, double dx, double dy, int itmax, double to
         if (e < tol)
         {
             printf("Poisson solved in %d iterations - RSS error: %E\n", k, e);
-            return;
+            return k;
         }
     }
     printf("Error: max iterations reached for Poisson solver.\n");
     exit(1);
 }
 
+double sor_beta(int nx, int ny, double dx, double dy)
+{
+    double cx = cos(PI / (nx - 1)), cy = cos(PI / (ny - 1));
+    // With dx == dy the weights are equal; average directly so that square
+    // grids keep the exact value they always had
+    double rho = (dx == dy) ? 0.5 * (cx + cy)
+                            : (dy * dy * cx + dx * dx * cy) / (dx * dx + dy * dy);
+    return 2.0 / (1.0 + sqrt(1.0 - rho * rho));
+}
+
 // SOR Poisson solver.
 // u and u0 are pre-allocated by the caller; u holds the result on return.
-void poisson_SOR(mtrx f, mtrx u, mtrx u0, double dx, double dy, int itmax, double tol, double beta)
+int poisson_SOR(mtrx f, mtrx u, mtrx u0, double dx, double dy, int itmax, double tol, double beta)
 {
     int i, k;
     int ny = f.m, nx = f.n; // ny rows (y), nx columns (x)
@@ -120,7 +130,7 @@ void poisson_SOR(mtrx f, mtrx u, mtrx u0, double dx, double dy, int itmax, doubl
         if (e < tol)
         {
             printf("Poisson SOR solved in %d iterations - RSS error: %E\n", k, e);
-            return;
+            return k;
         }
     }
     printf("Error: max iterations reached for Poisson SOR solver.\n");

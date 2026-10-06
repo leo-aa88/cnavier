@@ -78,8 +78,8 @@ struct gpu_solver
 
     // FFT Poisson solver (poisson_type 3)
     cufftHandle         plan;  // real-to-complex FFT of the odd extension
-    double             *ext;   // odd extension of the interior, 2(nx-1) x 2(ny-1)
-    cufftDoubleComplex *spec;  // its spectrum, 2(nx-1) x ny
+    double             *ext;   // odd extension of the interior, 2(ny-1) rows x 2(nx-1)
+    cufftDoubleComplex *spec;  // its spectrum, 2(ny-1) rows x nx
     double *lambda_i, *lambda_j; // eigenvalues of the 1D second differences
 };
 

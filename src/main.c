@@ -174,9 +174,12 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    // Spectral radius of Jacobi on the (nx-2) x (ny-2) interior nodes
-    double rho  = 0.5 * (cos(PI / (nx - 1)) + cos(PI / (ny - 1)));
-    double beta  = 2.0 / (1.0 + sqrt(1.0 - rho * rho));  // optimal SOR parameter
+    // Grid spacing: nodes 0 and nx-1 lie on the walls, so nx nodes span Lx
+    // with nx-1 intervals
+    double dx = (double)Lx / (nx - 1);
+    double dy = (double)Ly / (ny - 1);
+
+    double beta = sor_beta(nx, ny, dx, dy); // optimal SOR parameter
 
     printf("Grid: %d x %d | dt: %lf | tf: %lf\n", nx, ny, dt, tf);
 #ifdef _OPENMP
@@ -186,16 +189,12 @@ int main(int argc, char *argv[])
     printf("Poisson SOR parameter: %lf\n", beta);
 
 
-    // Boundary conditions (Dirichlet)
+    // Boundary conditions (Dirichlet): wall velocities on the left (1), right
+    // (2), bottom (3) and top (4) walls; the top wall is the moving lid
     double ui = 0., vi = 0.;
     double u1 = 0., u2 = 0., u3 = 0., u4 = 1.;
     double v1 = 0., v2 = 0., v3 = 0., v4 = 0.;
     wall_bc bc = {{u1, u2, u3, u4}, {v1, v2, v3, v4}};
-
-    // Grid spacing: nodes 0 and nx-1 lie on the walls, so nx nodes span Lx
-    // with nx-1 intervals
-    double dx = (double)Lx / (nx - 1);
-    double dy = (double)Ly / (ny - 1);
 
     // Build sparse 1D operators then free them after Kronecker
     smtrx sd_x  = SDiff1(nx, order, dx);
@@ -338,7 +337,7 @@ int main(int argc, char *argv[])
 #ifdef USE_CUDA
             if (on_gpu) gpu_get_fields(gpu, NULL, NULL, &w);
 #endif
-            printvtk(w, "vorticity");
+            printvtk(w, "vorticity", dx, dy);
         }
     }
 

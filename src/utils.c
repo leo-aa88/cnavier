@@ -182,7 +182,7 @@ static int next_frame(const char *title)
     return 0;
 }
 
-void printvtk(mtrx A, char *title)
+void printvtk(mtrx A, char *title, double dx, double dy)
 {
     int i, j, count;
     char c[320];
@@ -217,7 +217,7 @@ void printvtk(mtrx A, char *title)
     fprintf(pf, "DATASET STRUCTURED_POINTS\n");
     fprintf(pf, "DIMENSIONS %d %d 1\n", A.n, A.m); // x (columns) varies fastest
     fprintf(pf, "ORIGIN 0 0 0\n");
-    fprintf(pf, "SPACING 1 1 1\n");
+    fprintf(pf, "SPACING %.17g %.17g 1\n", dx, dy);
     fprintf(pf, "POINT_DATA %d\n", A.m * A.n);
     fprintf(pf, "SCALARS values float\n");
     fprintf(pf, "LOOKUP_TABLE default");

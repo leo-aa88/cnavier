@@ -16,9 +16,8 @@ typedef struct gpu_solver gpu_solver;
 // Upload the operators and settings held by ctx and allocate the device workspace.
 // Fields start at zero.
 // Returns NULL if no CUDA device can be initialised, so the caller can fall
-// back to the CPU path. Any failure after that point (out of device memory, a
-// non-square grid, an unknown Poisson solver type) is fatal: it prints an
-// error and exits.
+// back to the CPU path. Any failure after that point (out of device memory,
+// an unknown Poisson solver type) is fatal: it prints an error and exits.
 gpu_solver *gpu_init(const rk4_ctx *ctx, double dt, int time_scheme, const wall_bc *bc);
 void gpu_free(gpu_solver *g);
 
