@@ -166,7 +166,7 @@ These are single runs on a laptop; repeat runs usually vary by 10–15%, occasio
 
 Things to keep in mind:
 
-- The GPU pays off from roughly 127×127 upwards. On small grids the fixed cost of launching kernels dominates and the CPU is just as fast.
+- The GPU pays off from roughly 129×129 upwards. On small grids the fixed cost of launching kernels dominates and the CPU is just as fast.
 - About 60% of the GPU time at 513×513 is the double-precision FFTs. Consumer GeForce cards are much slower in double than in single precision, so expect larger gains on workstation/datacenter GPUs.
 - Pick grid sizes where `n − 1` has only small prime factors (65, 129, 257, 513, 1025, ...). The sine transform of the interior works on length `2(n−1)`, and awkward lengths are slow on both backends: 1024×1024 takes 126 ms per step on the GPU and 573 ms on the CPU, against 80 ms and 390 ms for 1025×1025.
 - The table is for the FFT solver only. Gauss-Seidel and SOR are on the GPU so that every solver option works there, not because they are fast: the convergence test after each sweep copies a value back to the host, and on the default 64×64 case SOR takes tens of milliseconds per step on the GPU, no faster than the CPU and far behind the FFT solver's 1 ms.
@@ -211,7 +211,7 @@ Both time schemes are explicit, so `dt` has to shrink with the grid spacing. Bef
 
 For Euler there is a third limit, `dt ≤ 2/(Re·u²)` (that is `2ν/u²`), the stability limit of forward Euler for centered advection. It assumes the wall speed everywhere and is conservative for the cavity (at Re=1000 runs stayed stable up to about 3× it), so exceeding it only prints a warning. When an Euler run is refused, the suggested `dt` respects this limit as well, so following the suggestion does not lead to the warning.
 
-At the defaults (64×64, Re=100, 6th order) the limits are `dt ≤ 0.0058` for RK4 and `dt ≤ 0.0042` for Euler. The benchmarks above use `dt = 10/n²`.
+At the defaults (64×64, Re=100, 6th order) the limits are `dt ≤ 0.00580` for RK4 and `dt ≤ 0.00417` for Euler. The benchmarks above use `dt = 10/n²`.
 
 ```bash
 ./cnavier --n 127 --dt 6.2e-4 --tf 20

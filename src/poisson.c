@@ -140,7 +140,7 @@ void poisson_SOR(mtrx f, mtrx u, mtrx u0, double dx, double dy, int itmax, doubl
 // in a single pass:
 //   1. Forward DST-I of the interior right-hand side
 //   2. Divide each mode by its eigenvalue
-//   3. Inverse DST-I (= forward DST-I / (2*(mx+1)*(my+1)))
+//   3. Inverse DST-I (= forward DST-I / (4*(mx+1)*(my+1)))
 //
 // FFTW's RODFT00 plan is the DST-I.
 // ---------------------------------------------------------------------------

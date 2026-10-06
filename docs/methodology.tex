@@ -444,10 +444,10 @@ SOR applies a relaxation factor $\beta$:
 +(1-\beta)\psi_{i,j}^{(k)}.
 \label{eq:sor}
 \end{equation}
-The default program estimates an optimal relaxation parameter using
+The default program estimates an optimal relaxation parameter from the spectral radius of Jacobi iteration on the $(n_x-2)\times(n_y-2)$ interior nodes,
 \begin{align}
-\rho &= \frac{1}{2}\left[\cos\left(\frac{\pi}{n_x}\right)
-+\cos\left(\frac{\pi}{n_y}\right)\right],\\
+\rho &= \frac{1}{2}\left[\cos\left(\frac{\pi}{n_x-1}\right)
++\cos\left(\frac{\pi}{n_y-1}\right)\right],\\
 \beta &= \frac{2}{1+\sqrt{1-\rho^2}}.
 \label{eq:sor-beta}
 \end{align}
@@ -585,7 +585,7 @@ taken from the middle row of the one-dimensional operators (which is also the mi
 \qquad
 \rho=\begin{cases}2 & \text{forward Euler},\\ 2.785293\ldots & \text{classical RK4},\end{cases}
 \end{equation}
-$\rho$ being the extent of each method's stability region along the negative real axis, and unless the Courant condition holds; the message names both limits and suggests the smaller one, rounded down so that the suggestion itself passes.  For forward Euler the classical centered advection--diffusion condition $\dt\le 2\nu/U^2 = 2/(\Rey\,U^2)$ is checked as well, but only as a warning, since it is conservative here (below); when an Euler run is refused, the suggested $\dt$ is the smallest of all three limits, so that following it does not trigger the warning.  Measured on the lid-driven cavity, the viscous bound is sharp: for orders 2, 4 and 6, both schemes and $n=64$ and $128$, runs at $0.95$ times the bound stay bounded for 3000 steps and runs at $1.05$ times diverge.  The advection condition is conservative: at $\Rey=1000$, $n=64$, Euler stayed bounded up to about three times it.  At the defaults ($n=64$, $\Rey=100$, sixth order) the bounds are $\dt\le 0.0056$ for RK4 and $\dt\le 0.0040$ for Euler.
+$\rho$ being the extent of each method's stability region along the negative real axis, and unless the Courant condition holds; the message names both limits and suggests the smaller one, rounded down so that the suggestion itself passes.  For forward Euler the classical centered advection--diffusion condition $\dt\le 2\nu/U^2 = 2/(\Rey\,U^2)$ is checked as well, but only as a warning, since it is conservative here (below); when an Euler run is refused, the suggested $\dt$ is the smallest of all three limits, so that following it does not trigger the warning.  Measured on the lid-driven cavity, the viscous bound is sharp: for orders 2, 4 and 6, both schemes and $n=64$ and $128$, runs at $0.95$ times the bound stay bounded for 3000 steps and runs at $1.05$ times diverge.  The advection condition is conservative: at $\Rey=1000$, $n=64$, Euler stayed bounded up to about three times it.  At the defaults ($n=64$, $\Rey=100$, sixth order) the bounds are $\dt\le 0.00580$ for RK4 and $\dt\le 0.00417$ for Euler.
 
 \subsection{Diffusive scaling}
 
@@ -790,11 +790,12 @@ $64\times64$, mixed convention (before) & 0.0594 & 0.0372 & 0.0595 & 0.0301 \\
 $64\times64$, nodal convention & 0.0024 & 0.0014 & 0.0074 & 0.0039 \\
 $65\times65$, nodal convention & 0.0027 & 0.0014 & 0.0077 & 0.0040 \\
 $129\times129$, nodal convention & 0.0045 & 0.0024 & 0.0089 & 0.0049 \\
+$257\times257$, nodal convention & 0.0050 & 0.0025 & 0.0091 & 0.0051 \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-The remaining differences are of the order of the accuracy of the reference data themselves, which were computed on a $129\times129$ grid with a second-order scheme, so they do not decrease further under refinement.
+The solution has converged at these resolutions: at the Ghia points the $129\times129$ and $257\times257$ profiles differ by at most $4.5\times10^{-4}$ ($u$) and $3.5\times10^{-4}$ ($v$), an order of magnitude less than either differs from the reference.  The remaining discrepancy is therefore not grid error of this code; it is of the order of the accuracy of the reference data themselves, which were computed on a $129\times129$ grid with a second-order scheme.  The errors grow slightly from $64\times64$ to $129\times129$: the smaller error of the coarse grid comes partly from its discretisation error cancelling against the difference to the reference, so $64\times64$ should not be read as the most accurate grid.  The $257\times257$ run used $\dt=3\times10^{-4}$.
 
 At present, these error norms and grid-convergence rates are not automated in \code{make test}.  Therefore the repository has strong code-level verification, while quantitative benchmark validation remains a user-facing post-processing step.
 
@@ -811,26 +812,9 @@ where $r$ is the refinement ratio.  Because of the lower-order wall closure and 
 \section{Performance Characteristics}
 % =============================================================================
 
-The default FFT-based Poisson solver generally dominates the timestep cost, especially under RK4 where five elliptic solves are performed per step.  The repository reports the following representative RK4+FFT timings for a laptop Intel i7-12650H and NVIDIA RTX 3050 Laptop GPU under WSL2; these figures are implementation benchmarks rather than universal performance guarantees.
+The default FFT-based Poisson solver generally dominates the timestep cost, especially under RK4 where five elliptic solves are performed per step.  Measured timings per timestep for the CPU, OpenMP and CUDA builds are kept in one place, the Performance section of \code{README.md}, so that they are not maintained in two copies; they are implementation benchmarks on one machine rather than performance guarantees.
 
-\begin{table}[htbp]
-\centering
-\caption{Representative reported time per timestep for RK4 + FFT, $\Rey=100$, with VTK output disabled.}
-\label{tab:performance}
-\begin{tabular}{@{}rrrrr@{}}
-\toprule
-Grid & CPU \code{make} & CPU \code{-O2} & OpenMP \code{-O2}, 8 threads & CUDA \\
-\midrule
-$63^2$   & 2.19 ms & 1.14 ms & 0.98 ms & 0.87 ms \\
-$127^2$  & 8.98 ms & 3.68 ms & 3.31 ms & 1.61 ms \\
-$255^2$  & 39.6 ms & 19.9 ms & 15.5 ms & 5.01 ms \\
-$511^2$  & 162 ms & 91.8 ms & 67.0 ms & 20.9 ms \\
-$1023^2$ & 804 ms & 486 ms & 301 ms & 82.4 ms \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-For transform performance, grid sizes for which $n+1$ factors into small primes are advantageous because the sine transform acts through FFT lengths proportional to $2(n+1)$.  This is why sizes such as 63, 127, 255, 511, and 1023 can outperform an adjacent nominally round number such as 1024.
+For transform performance, grid sizes for which $n-1$ factors into small primes are advantageous, because the sine transform of the $n-2$ interior nodes acts through FFT lengths of $2(n-1)$.  Sizes such as 65, 129, 257, 513 and 1025 are therefore fast, and their neighbours can be several times slower: on the machine of the README benchmarks one serial FFT Poisson solve takes 6.7\,ms at $255^2$ ($2(n-1)=508=4\cdot127$) against 1.6\,ms at $257^2$ ($512$), and 85\,ms at $1023^2$ against 31\,ms at $1025^2$.
 
 The GPU becomes increasingly advantageous as the grid grows because the fixed kernel-launch overhead is amortized over more work.  Double-precision FFT throughput is a major cost on consumer GPUs, so larger speedups may be observed on hardware with stronger FP64 capability.
 
@@ -983,7 +967,7 @@ The current architecture makes several research-oriented extensions relatively n
 
 \begin{itemize}[leftmargin=2em]
   \item a consistent fourth- or sixth-order Poisson discretization, solved by an appropriate sparse/direct/iterative method;
-  \item dedicated high-order wall-vorticity formulas and an explicit nodal or cell-centered grid convention;
+  \item dedicated high-order wall-vorticity formulas;
   \item adaptive timestep selection from advective and diffusive spectral bounds;
   \item automated steady-state residual monitoring;
   \item automated Ghia interpolation and error norms in the test suite;
