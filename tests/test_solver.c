@@ -392,29 +392,27 @@ static mtrx run_to(int n, int scheme, double dt, double T)
     return w;
 }
 
-// Largest |a - b| over the interior nodes. The wall rows of w are left
-// stale by step() (it sets the wall vorticity at the start of the next step),
-// so they say nothing about the time integration.
-static double interior_diff(mtrx a, mtrx b)
+// Largest |a - b| over all nodes, walls included
+static double field_diff(mtrx a, mtrx b)
 {
-    int i, j;
+    int i;
     double m = 0.0;
-    for (i = 1; i < a.m - 1; i++)
-        for (j = 1; j < a.n - 1; j++)
-        {
-            double d = fabs(MAt(a, i, j) - MAt(b, i, j));
-            if (isnan(d)) return NAN;
-            if (d > m) m = d;
-        }
+    for (i = 0; i < a.m * a.n; i++)
+    {
+        double d = fabs(a.M[i] - b.M[i]);
+        if (isnan(d)) return NAN;
+        if (d > m) m = d;
+    }
     return m;
 }
 
-// Observed order of the time integration: halve dt and compare the interior
-// errors against a run of the same scheme with a much smaller step. Euler is
-// first order, RK4 fourth order. RK4 is fourth order only because the wall
-// vorticity is set again at every stage; set once per step it was first order
-// with about Euler's error. The wall rows of w are left stale by step() (the
-// next step sets them first), so only interior nodes are compared.
+// Observed order of the time integration: halve dt and compare the errors in
+// w against a run of the same scheme with a much smaller step. Euler is first
+// order, RK4 fourth order. The whole field is compared: step() returns the
+// wall vorticity of the new velocity, so the walls converge with the
+// interior. RK4 is fourth order only because the wall vorticity is set again
+// at every stage; set once per step it was first order with about Euler's
+// error.
 static void test_temporal_order(void)
 {
     int n = 17, s, k;
@@ -429,7 +427,7 @@ static void test_temporal_order(void)
         for (k = 0; k < 2; k++)
         {
             mtrx w = run_to(n, s, T / (64 << k), T);
-            err[k] = interior_diff(w, ref);
+            err[k] = field_diff(w, ref);
             freem(&w);
         }
         freem(&ref);
@@ -446,7 +444,7 @@ static void test_temporal_order(void)
             check(name, isnan(order) ? INFINITY : fabs(order - 4.0), 0.3);
         }
     }
-    snprintf(name, sizeof(name), "RK4 / Euler interior error at dt = T/64 (%.1e / %.1e)", err_at[2], err_at[1]);
+    snprintf(name, sizeof(name), "RK4 / Euler error at dt = T/64 (%.1e / %.1e)", err_at[2], err_at[1]);
     check(name, isnan(err_at[2] / err_at[1]) ? INFINITY : err_at[2] / err_at[1], 1E-3);
 }
 

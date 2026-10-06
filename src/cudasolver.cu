@@ -661,6 +661,14 @@ void gpu_step(gpu_solver *g)
         // Final Poisson solve so u, v are consistent with w_{n+1}
         velocity_from_vorticity(g, g->w);
     }
+
+    // The wall vorticity of the new velocity in place of the wall entries the
+    // update advanced, with the wall velocities imposed on copies of u and v,
+    // as at the end of step()
+    CUDA_CHECK(cudaMemcpy(g->k1, g->u, n * sizeof(double), cudaMemcpyDeviceToDevice));
+    CUDA_CHECK(cudaMemcpy(g->k2, g->v, n * sizeof(double), cudaMemcpyDeviceToDevice));
+    LAUNCH(wall_bc_kernel, n, g->k1, g->k2, g->cfg.bc, g->nx, g->ny);
+    LAUNCH(vorticity_bc_kernel, n, g->DX, g->DY, g->k1, g->k2, g->w, g->nx, g->ny);
 }
 
 void gpu_continuity(gpu_solver *g, double *cmax, double *cmin)

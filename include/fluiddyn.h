@@ -45,7 +45,6 @@ typedef struct
     solver_config cfg;      // copy taken by rk4_alloc(); do not change
     mtrx dwdx, dwdy;        // first derivatives of w
     mtrx d2wdx2, d2wdy2;    // second derivatives of w
-    mtrx dpsidx, dpsidy;    // scratch for the vorticity boundary values
     mtrx psi, psi_scratch;  // Poisson solution and scratch
     mtrx k1, k2, k3, k4;    // RK4 stage increments
     mtrx w_tmp;             // temporary w for intermediate stages
@@ -58,11 +57,16 @@ rk4_ctx rk4_alloc(const solver_config *cfg);
 // Free the CPU workspace
 void rk4_free(rk4_ctx *ctx);
 
-// Evaluate vorticity RHS: dw/dt = -u*dw/dx - v*dw/dy + (1/Re)*(d2w/dx2 + d2w/dy2)
-// Writes result into out. Updates u and v via Poisson solve for the given w.
+// Evaluate the vorticity RHS dw/dt = -u*dw/dx - v*dw/dy + (1/Re)*(d2w/dx2 + d2w/dy2)
+// into out, for the interior of w. On the way it changes all three inputs:
+// u and v become the velocity of w's interior (Poisson solve) with the wall
+// velocities imposed, and the boundary entries of w become the wall
+// vorticity of that velocity.
 void dwdt(mtrx w, mtrx u, mtrx v, mtrx out, rk4_ctx *ctx);
 
-// RK4 time advancement — advances w, u, v by cfg->dt
+// RK4 time advancement: advances the interior of w by cfg->dt and leaves u, v
+// as the velocity of the new interior (without the wall velocities; step()
+// completes the state)
 void rk4(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx);
 
 // Largest stable time step of the explicit scheme (time_scheme 1=Euler,
@@ -99,7 +103,11 @@ double round_down_3(double x);
 void apply_wall_bc(mtrx u, mtrx v, const wall_bc *bc);
 
 // One full timestep on the CPU: wall BCs, vorticity BCs, time advancement
-// (cfg->time_scheme), Poisson solve and velocity recovery.
+// (cfg->time_scheme), Poisson solve and velocity recovery. On return u and v
+// are the velocity of the new w (from the stream function, walls included;
+// apply_wall_bc() gives the wall velocities), and the boundary of w is the
+// wall vorticity of that velocity with the wall velocities imposed, so w is
+// consistent with u and v, walls included.
 void step(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx);
 
 #endif // FLUIDDYN_H_INCLUDED

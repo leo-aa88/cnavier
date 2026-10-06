@@ -39,8 +39,6 @@ rk4_ctx rk4_alloc(const solver_config *cfg)
     ctx.dwdy = initm(ny, nx);
     ctx.d2wdx2 = initm(ny, nx);
     ctx.d2wdy2 = initm(ny, nx);
-    ctx.dpsidx = initm(ny, nx);
-    ctx.dpsidy = initm(ny, nx);
     ctx.psi = initm(ny, nx);
     ctx.psi_scratch = initm(ny, nx);
     ctx.k1 = initm(ny, nx);
@@ -59,8 +57,6 @@ void rk4_free(rk4_ctx *ctx)
     freem(&ctx->dwdy);
     freem(&ctx->d2wdx2);
     freem(&ctx->d2wdy2);
-    freem(&ctx->dpsidx);
-    freem(&ctx->dpsidy);
     freem(&ctx->psi);
     freem(&ctx->psi_scratch);
     freem(&ctx->k1);
@@ -113,8 +109,6 @@ static void derivatives(mtrx w, rk4_ctx *ctx)
     spmv(*ctx->cfg.DY2, w.M, ctx->d2wdy2.M);
 }
 
-// Evaluate dw/dt and update u, v consistent with w via Poisson solve.
-// out = -u*(dw/dx) - v*(dw/dy) + (1/Re)*(d2w/dx2 + d2w/dy2)
 // Row r of A x
 static double csr_row(const smtrx *A, const double *x, int r)
 {
@@ -145,6 +139,8 @@ static void set_wall_vorticity(mtrx w, mtrx u, mtrx v, const rk4_ctx *ctx)
     }
 }
 
+// out = -u*(dw/dx) - v*(dw/dy) + (1/Re)*(d2w/dx2 + d2w/dy2). Also sets u, v
+// from w's interior and the wall velocities, and w's boundary from u, v.
 void dwdt(mtrx w, mtrx u, mtrx v, mtrx out, rk4_ctx *ctx)
 {
     int i;
@@ -173,7 +169,9 @@ void dwdt(mtrx w, mtrx u, mtrx v, mtrx out, rk4_ctx *ctx)
 }
 
 // Classical RK4: w_{n+1} = w_n + (dt/6)*(k1 + 2*k2 + 2*k3 + k4)
-// u and v are updated to be consistent with w_{n+1} on return.
+// On return u and v are the velocity of the interior of w_{n+1}. The wall
+// entries of w_{n+1} are not meaningful (the combination advances them with
+// the transport RHS at the walls); step() replaces them.
 void rk4(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx)
 {
     double dt = ctx->cfg.dt;
@@ -333,7 +331,18 @@ void step(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx)
     else
     {
         // RK4: four RHS evaluations, each with a Poisson solve and its own
-        // wall vorticity; u and v are updated to be consistent with w on return
+        // wall vorticity
         rk4(w, u, v, ctx);
     }
+
+    // The update advanced the wall entries of w with the transport equation,
+    // which does not hold there. Replace them with the wall vorticity of the
+    // new velocity, so that the w the caller sees (and writes out) is
+    // consistent with u and v. u and v themselves stay the velocity of the
+    // Poisson solution, whose divergence the continuity check measures; the
+    // wall velocities are imposed on copies in the stage buffers.
+    mtrxcpy(ctx->k1, u);
+    mtrxcpy(ctx->k2, v);
+    apply_wall_bc(ctx->k1, ctx->k2, bc);
+    set_wall_vorticity(w, ctx->k1, ctx->k2, ctx);
 }
