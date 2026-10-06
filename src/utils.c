@@ -78,9 +78,12 @@ static void remove_old_series(const char *title)
     len = strlen(prefix);
     while ((e = readdir(d)) != NULL)
     {
-        const char *rest = e->d_name + len;
-        size_t digits = strspn(rest, "0123456789");
-        if (strncmp(e->d_name, prefix, len) == 0 && digits > 0 && strcmp(rest + digits, ".vtk") == 0)
+        const char *rest;
+        size_t digits;
+        if (strncmp(e->d_name, prefix, len) != 0) continue;  // also skips names shorter than prefix
+        rest = e->d_name + len;
+        digits = strspn(rest, "0123456789");
+        if (digits > 0 && strcmp(rest + digits, ".vtk") == 0)
         {
             snprintf(path, sizeof(path), "./output/%s", e->d_name);
             unlink(path);
