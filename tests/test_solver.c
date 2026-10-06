@@ -495,10 +495,17 @@ static void test_output(void)
         int rows = 0;
         f = fopen(c == 0 ? "output/centerline_u_sim.csv" : "output/centerline_v_sim.csv", "r");
         if (!f || !fgets(line, sizeof(line), f)) { worst = INFINITY; break; }
-        while (fscanf(f, "%lf,%lf", &coord, &val) == 2)
+        while (fgets(line, sizeof(line), f))
         {
+            char *end, *comma;
+            coord = strtod(line, &comma);
+            if (comma == line || *comma != ',') break;
+            val = strtod(comma + 1, &end);
+            if (end == comma + 1) break;
             double expect_coord = rows * (c == 0 ? 1.0 / (ny - 1) : 1.0 / (nx - 1));
-            worst = fmax(worst, fabs(val - (c == 0 ? 1.5 : 1.0)) + fabs(coord - expect_coord));
+            double d = fabs(val - (c == 0 ? 1.5 : 1.0)) + fabs(coord - expect_coord);
+            // fmax would drop a NaN; count it as a failure
+            worst = isnan(d) ? INFINITY : fmax(worst, d);
             rows++;
         }
         fclose(f);

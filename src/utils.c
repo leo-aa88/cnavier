@@ -227,7 +227,7 @@ void printvtk(mtrx A, char *title, double dx, double dy)
         fprintf(pf, "\n");
         for (j = 0; j < A.n; j++)
         {
-            if ((j == 0))
+            if (j == 0)
             {
                 sprintf(c, "%.6lf", MAt(A, i, j));
                 fprintf(pf, "%s", c);
