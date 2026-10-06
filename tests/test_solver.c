@@ -48,17 +48,19 @@ typedef struct
     mtrx          u, v, w;
 } problem;
 
-// A lid-driven cavity on a unit square with nx x ny nodes. Fields are ny rows
-// (y) of nx values (x), as in main.c.
-static problem problem_alloc_xy(int nx, int ny, int time_scheme, int poisson_type,
-                                double dt, double poisson_tol)
+// A lid-driven cavity on a unit square with nx x ny nodes (bc == NULL), or
+// the given wall velocities. Fields are ny rows (y) of nx values (x), as in
+// main.c. The configuration is complete, operators included, before the
+// workspace takes its copy, and the configuration points into *p, so p must
+// stay where it is until problem_free().
+static void problem_init(problem *p, int nx, int ny, int time_scheme, int poisson_type, double dt,
+                         double poisson_tol, const wall_bc *bc)
 {
-    problem p;
     int order = 6;
     double dx = 1.0 / (nx - 1), dy = 1.0 / (ny - 1);
     wall_bc lid = {{0., 0., 0., 1.}, {0., 0., 0., 0.}};
 
-    p.nx = nx; p.ny = ny;
+    p->nx = nx; p->ny = ny;
 
     smtrx sd_x  = SDiff1(nx, order, dx);
     smtrx sd_y  = SDiff1(ny, order, dy);
@@ -67,42 +69,26 @@ static problem problem_alloc_xy(int nx, int ny, int time_scheme, int poisson_typ
     smtrx sIx   = seye(nx);
     smtrx sIy   = seye(ny);
 
-    p.DX  = skronecker(sIy,   sd_x);
-    p.DY  = skronecker(sd_y,  sIx);
-    p.DX2 = skronecker(sIy,   sd_x2);
-    p.DY2 = skronecker(sd_y2, sIx);
+    p->DX  = skronecker(sIy,   sd_x);
+    p->DY  = skronecker(sd_y,  sIx);
+    p->DX2 = skronecker(sIy,   sd_x2);
+    p->DY2 = skronecker(sd_y2, sIx);
 
     freesm(sd_x); freesm(sd_y); freesm(sd_x2); freesm(sd_y2);
     freesm(sIx);  freesm(sIy);
 
-    p.cfg.nx = nx; p.cfg.ny = ny; p.cfg.dx = dx; p.cfg.dy = dy;
-    p.cfg.Re = 100.; p.cfg.dt = dt; p.cfg.time_scheme = time_scheme;
-    p.cfg.poisson_type = poisson_type;
-    p.cfg.poisson_max_it = 200000; p.cfg.poisson_tol = poisson_tol;
-    p.cfg.beta = sor_beta(nx, ny, dx, dy);
-    p.cfg.bc = lid;
-    p.ctx = rk4_alloc(&p.cfg);
-
-    p.u = initm(ny, nx);
-    p.v = initm(ny, nx);
-    p.w = initm(ny, nx);
-
-    return p;
-}
-
-static problem problem_alloc(int n, int time_scheme, int poisson_type, double dt, double poisson_tol)
-{
-    return problem_alloc_xy(n, n, time_scheme, poisson_type, dt, poisson_tol);
-}
-
-// The operators are referenced through pointers, so bind them once the
-// problem sits at its final address, and give the workspace the finished
-// configuration. Change p->cfg before this call: like every solver, the
-// workspace keeps its own copy.
-static void problem_bind(problem *p)
-{
+    p->cfg.nx = nx; p->cfg.ny = ny; p->cfg.dx = dx; p->cfg.dy = dy;
+    p->cfg.Re = 100.; p->cfg.dt = dt; p->cfg.time_scheme = time_scheme;
+    p->cfg.poisson_type = poisson_type;
+    p->cfg.poisson_max_it = 200000; p->cfg.poisson_tol = poisson_tol;
+    p->cfg.beta = sor_beta(nx, ny, dx, dy);
+    p->cfg.bc = bc ? *bc : lid;
     p->cfg.DX = &p->DX; p->cfg.DY = &p->DY; p->cfg.DX2 = &p->DX2; p->cfg.DY2 = &p->DY2;
-    p->ctx.cfg = p->cfg;
+    p->ctx = rk4_alloc(&p->cfg);
+
+    p->u = initm(ny, nx);
+    p->v = initm(ny, nx);
+    p->w = initm(ny, nx);
 }
 
 static void problem_free(problem *p)
@@ -288,7 +274,8 @@ static void test_cpu_operator_axes(int nx, int ny)
 {
     int i, j, k, N = nx * ny;
     char name[96];
-    problem p = problem_alloc_xy(nx, ny, 2, 3, 0.002, 1E-3);
+    problem p;
+    problem_init(&p, nx, ny, 2, 3, 0.002, 1E-3, NULL);
     double *f = (double *)malloc(N * sizeof(double));
     double *d = (double *)malloc(N * sizeof(double));
     double *e = (double *)malloc(N * sizeof(double));
@@ -451,8 +438,8 @@ static void test_cpu_step(int nx, int ny, int time_scheme, const char *label)
     int t, N = nx * ny;
     double cmax, cmin;
     char name[96];
-    problem p = problem_alloc_xy(nx, ny, time_scheme, 3, 0.002, 1E-3);
-    problem_bind(&p);
+    problem p;
+    problem_init(&p, nx, ny, time_scheme, 3, 0.002, 1E-3, NULL);
 
     printf("CPU: 50 steps of the lid-driven cavity, %s + FFT, %dx%d grid\n", label, nx, ny);
     for (t = 0; t < 50; t++)
@@ -481,14 +468,13 @@ static void test_cpu_stability_limit(int time_scheme, const char *label)
     printf("CPU: stability limit of %s, %dx%d grid\n", label, n, n);
     for (f = 0; f < 2; f++)
     {
-        problem p = problem_alloc(n, time_scheme, 3, 0.0, 1E-3);
-        smtrx d2 = SDiff2(n, 6, p.cfg.dx);
-        double limit = max_stable_dt(&d2, &d2, p.cfg.Re, time_scheme);
+        problem p;
+        smtrx d2 = SDiff2(n, 6, 1.0 / (n - 1));
+        double limit = max_stable_dt(&d2, &d2, 100.0, time_scheme); // problem_init()'s Re
         freesm(d2);
         double wmax = 0.0;
 
-        p.cfg.dt = frac[f] * limit;
-        problem_bind(&p);
+        problem_init(&p, n, n, time_scheme, 3, frac[f] * limit, 1E-3, NULL);
         for (t = 0; t < 3000 && !(wmax > 1E6); t++)
         {
             step(p.w, p.u, p.v, &p.ctx);
@@ -573,8 +559,8 @@ static void test_cpu_time_step_limits(void)
 static void run_threads(int n, int scheme, int poisson_type, int steps, int threads, mtrx out[3])
 {
     int t, saved = omp_get_max_threads();
-    problem p = problem_alloc(n, scheme, poisson_type, 0.002, 1E-3);
-    problem_bind(&p);
+    problem p;
+    problem_init(&p, n, n, scheme, poisson_type, 0.002, 1E-3, NULL);
     omp_set_num_threads(threads);
     for (t = 0; t < steps; t++)
         step(p.w, p.u, p.v, &p.ctx);
@@ -675,8 +661,8 @@ static void test_openmp_default_threads(void)
 static void test_config_copied(void)
 {
     int t, k, nx = 32, ny = 32, N = nx * ny;
-    problem p = problem_alloc_xy(nx, ny, 2, 3, 0.002, 1E-3);
-    problem_bind(&p);
+    problem p;
+    problem_init(&p, nx, ny, 2, 3, 0.002, 1E-3, NULL);
     solver_config caller = p.cfg;
     backend *cpu = backend_create(&caller, 0);
     mtrx *bw;
@@ -717,8 +703,8 @@ static void test_config_copied(void)
     freem(&gw);
 #endif
     // Twenty steps at the original dt and lid speed, not ten and ten
-    problem q = problem_alloc_xy(nx, ny, 2, 3, 0.002, 1E-3);
-    problem_bind(&q);
+    problem q;
+    problem_init(&q, nx, ny, 2, 3, 0.002, 1E-3, NULL);
     for (t = 0; t < 20; t++)
         step(q.w, q.u, q.v, &q.ctx);
     check("same result as twenty unchanged steps", rel_diff(p.w.M, q.w.M, N), 0.0);
@@ -734,8 +720,8 @@ static void test_backend(void)
 {
     int t, nx = 40, ny = 24, N = nx * ny, steps = 20;
     double cmax, cmin, cmax_ref, cmin_ref;
-    problem p = problem_alloc_xy(nx, ny, 2, 3, 0.002, 1E-3);
-    problem_bind(&p);
+    problem p;
+    problem_init(&p, nx, ny, 2, 3, 0.002, 1E-3, NULL);
     mtrx u = initm(ny, nx), v = initm(ny, nx), w = initm(ny, nx);
     backend *b = backend_create(&p.cfg, 0);
 
@@ -799,8 +785,8 @@ static void test_gpu_spmv(int nx, int ny)
     int op, N = nx * ny;
     char name[96];
     const char *op_name[] = {"DX", "DY", "DX2", "DY2"};
-    problem p = problem_alloc_xy(nx, ny, 2, 3, 0.002, 1E-3);
-    problem_bind(&p);
+    problem p;
+    problem_init(&p, nx, ny, 2, 3, 0.002, 1E-3, NULL);
     gpu_solver *g = gpu_for(&p);
     smtrx *ops[] = {&p.DX, &p.DY, &p.DX2, &p.DY2};
     double *x = (double *)malloc(N * sizeof(double));
@@ -826,8 +812,8 @@ static void test_gpu_poisson(int nx, int ny, int poisson_type, const char *label
 {
     int N = nx * ny;
     char name[96];
-    problem p = problem_alloc_xy(nx, ny, 2, poisson_type, 0.002, 1E-10);
-    problem_bind(&p);
+    problem p;
+    problem_init(&p, nx, ny, 2, poisson_type, 0.002, 1E-10, NULL);
     gpu_solver *g = gpu_for(&p);
     mtrx w = initm(ny, nx), f = initm(ny, nx), psi_cpu = initm(ny, nx), psi_gpu = initm(ny, nx);
 
@@ -867,9 +853,8 @@ static void test_gpu_step(int nx, int ny, int steps, double dt, int time_scheme,
 {
     int t, N = nx * ny;
     char name[96];
-    problem p = problem_alloc_xy(nx, ny, time_scheme, poisson_type, dt, poisson_tol);
-    if (bc) p.cfg.bc = *bc;
-    problem_bind(&p);
+    problem p;
+    problem_init(&p, nx, ny, time_scheme, poisson_type, dt, poisson_tol, bc);
     gpu_solver *g = gpu_for(&p);
     mtrx u = initm(ny, nx), v = initm(ny, nx), w = initm(ny, nx);
 
@@ -901,8 +886,8 @@ static void test_gpu_fields(int n)
 {
     int k, N = n * n;
     double cmax_cpu, cmin_cpu, cmax_gpu, cmin_gpu;
-    problem p = problem_alloc(n, 2, 3, 0.002, 1E-3);
-    problem_bind(&p);
+    problem p;
+    problem_init(&p, n, n, 2, 3, 0.002, 1E-3, NULL);
     gpu_solver *g = gpu_for(&p);
     mtrx u = initm(n, n), v = initm(n, n), w = initm(n, n);
 
@@ -941,8 +926,8 @@ static void run_gpu_tests(void)
     wall_bc four_walls = {{0.3, -0.2, 0.5, 1.0}, {0.1, -0.4, 0.2, -0.3}};
 
     // Probe for a device first
-    problem probe = problem_alloc(16, 2, 3, 0.002, 1E-3);
-    problem_bind(&probe);
+    problem probe;
+    problem_init(&probe, 16, 16, 2, 3, 0.002, 1E-3, NULL);
     gpu_solver *g = gpu_init(&probe.cfg);
     int have_gpu = (g != NULL);
     problem_free(&probe);

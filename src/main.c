@@ -302,7 +302,9 @@ int main(int argc, char *argv[])
 
     backend_fields(solver, &u, &v, &w);
 
-    // Re-apply wall BCs before sampling centerline
+    // Re-apply wall BCs before sampling centerline. This writes to the read
+    // view without backend_set_fields(), which is fine only because the
+    // solver is not stepped again.
     apply_wall_bc(*u, *v, &bc);
 
     // Write centerline profiles and compare against Ghia et al. (1982)

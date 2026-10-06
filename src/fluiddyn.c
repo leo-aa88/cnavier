@@ -72,6 +72,12 @@ static void velocity_from_vorticity(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx)
                     ctx->cfg.poisson_max_it, ctx->cfg.poisson_tol, ctx->cfg.beta);
     else if (ctx->cfg.poisson_type == 3 && ctx->fft)
         poisson_FFT(ctx->fft, ctx->rhs, ctx->psi, ctx->cfg.dx, ctx->cfg.dy);
+    else if (ctx->cfg.poisson_type == 3)
+    {
+        printf("** Error: the workspace has no FFT plans; it was not allocated by rk4_alloc() "
+               "for poisson_type 3 **\n");
+        exit(1);
+    }
     else
     {
         printf("** Error: valid Poisson solver types are 1, 2 or 3 **\n");

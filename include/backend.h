@@ -34,10 +34,14 @@ void backend_step(backend *b);
 // Max and min of du/dx + dv/dy for the current velocity field
 void backend_continuity(backend *b, double *cmax, double *cmin);
 
-// Host copies of the current fields; NULL arguments are skipped. On the CPU
-// these are the solver's own arrays, on the GPU arrays filled from the device
-// by this call. They stay allocated until backend_free() and are current
-// until the next backend_step().
+// A read view of the current fields on the host; NULL arguments are skipped.
+// On the CPU these are the solver's own arrays, on the GPU host arrays
+// filled from the device by this call. They stay allocated until
+// backend_free() and are current until the next backend_step(). Writing to
+// them does not by itself change the solver's state on every backend (the CPU
+// solver sees the write at once, the GPU one never does), so after changing a
+// field through them, pass it to backend_set_fields() before the next
+// backend_step(). That is the only defined way to write to a solver.
 void backend_fields(backend *b, mtrx **u, mtrx **v, mtrx **w);
 
 // Copy fields into and out of the solver. NULL arguments are skipped. The
