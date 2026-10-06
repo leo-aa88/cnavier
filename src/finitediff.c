@@ -110,16 +110,6 @@ static smtrx op_to_csr(op_builder *D, int n)
     return S;
 }
 
-static mtrx csr_to_dense(smtrx S)
-{
-    int i, k;
-    mtrx D = initm(S.m, S.n);
-    for (i = 0; i < S.m; i++)
-        for (k = S.row_ptr[i]; k < S.row_ptr[i + 1]; k++)
-            MAt(D, i, S.col_idx[k]) = S.values[k];
-    return D;
-}
-
 // Computes finite-difference matrices for the first derivative
 static void build_diff1(op_builder *D, int n, int o, double dx)
 {
@@ -307,20 +297,4 @@ smtrx SDiff2(int n, int o, double dx)
     op_builder D = {0};
     build_diff2(&D, n, o, dx);
     return op_to_csr(&D, n);
-}
-
-mtrx Diff1(int n, int o, double dx)
-{
-    smtrx S = SDiff1(n, o, dx);
-    mtrx  D = csr_to_dense(S);
-    freesm(S);
-    return D;
-}
-
-mtrx Diff2(int n, int o, double dx)
-{
-    smtrx S = SDiff2(n, o, dx);
-    mtrx  D = csr_to_dense(S);
-    freesm(S);
-    return D;
 }

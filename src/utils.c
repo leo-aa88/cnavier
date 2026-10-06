@@ -1,13 +1,92 @@
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
+#include <dirent.h>
+#include <unistd.h>
 #include "linearalg.h"
 #include "utils.h"
+
+// Read the first number on the line of `path` that starts with `key` (the
+// whole file if key is ""). Returns -1 if there is none.
+static double read_number(const char *path, const char *key)
+{
+    char line[256];
+    double val = -1.0;
+    FILE *f = fopen(path, "r");
+
+    if (!f) return -1.0;
+    while (fgets(line, sizeof(line), f))
+        if (strncmp(line, key, strlen(key)) == 0)
+        {
+            char *end;
+            double v = strtod(line + strlen(key), &end);
+            if (end != line + strlen(key)) val = v;
+            break;
+        }
+    fclose(f);
+    return val;
+}
+
+double available_memory(void)
+{
+    double avail = -1.0, limit, used;
+
+    // What the kernel thinks can be allocated without swapping
+    double kb = read_number("/proc/meminfo", "MemAvailable:");
+    if (kb > 0) avail = kb * 1024.0;
+    else
+    {
+        long pages = sysconf(_SC_PHYS_PAGES), size = sysconf(_SC_PAGESIZE);
+        if (pages > 0 && size > 0) avail = (double)pages * (double)size;
+    }
+
+    // A memory limit on the process's control group (containers, CI runners)
+    limit = read_number("/sys/fs/cgroup/memory.max", "");              // cgroup v2; "max" reads as none
+    used  = read_number("/sys/fs/cgroup/memory.current", "");
+    if (limit <= 0)
+    {
+        limit = read_number("/sys/fs/cgroup/memory/memory.limit_in_bytes", "");  // cgroup v1
+        used  = read_number("/sys/fs/cgroup/memory/memory.usage_in_bytes", "");
+    }
+    if (limit > 0 && limit < 1E18)
+    {
+        double cg = limit - (used > 0 ? used : 0.0);
+        if (avail < 0 || cg < avail) avail = cg;
+    }
+    return avail;
+}
 
 double randdouble(double min, double max)
 {
     double range = (max - min);
     double div = RAND_MAX / range;
     return min + (rand() / div);
+}
+
+// Delete output/<title>-1-<number>.vtk, the series an earlier run left behind.
+// A shorter run would otherwise leave the earlier run's later frames in place,
+// and ParaView would show them as part of this run's series.
+static void remove_old_series(const char *title)
+{
+    char prefix[64], path[512];
+    size_t len;
+    struct dirent *e;
+    DIR *d = opendir("./output");
+
+    if (!d) return;
+    snprintf(prefix, sizeof(prefix), "%s-1-", title);
+    len = strlen(prefix);
+    while ((e = readdir(d)) != NULL)
+    {
+        const char *rest = e->d_name + len;
+        size_t digits = strspn(rest, "0123456789");
+        if (strncmp(e->d_name, prefix, len) == 0 && digits > 0 && strcmp(rest + digits, ".vtk") == 0)
+        {
+            snprintf(path, sizeof(path), "./output/%s", e->d_name);
+            unlink(path);
+        }
+    }
+    closedir(d);
 }
 
 void printvtk(mtrx A, char *title)
@@ -29,6 +108,7 @@ void printvtk(mtrx A, char *title)
         exit(1);
     }
 
+    if (count == 0) remove_old_series(title);
     snprintf(name, sizeof(name), "./output/%s-1-%d.vtk", title, count);
 
     if ((pf = fopen(name, "w")) == NULL)

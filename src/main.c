@@ -6,7 +6,6 @@
 #include <errno.h>
 #include <limits.h>
 #include <getopt.h>
-#include <unistd.h>
 #include "linearalg.h"
 #include "finitediff.h"
 #include "utils.h"
@@ -149,15 +148,17 @@ int main(int argc, char *argv[])
 
     // Host memory estimate: 26 arrays of nx*ny doubles (fields, derivatives,
     // RK4 stages, flat buffers, FFT buffer) and four CSR operators with at most
-    // 7 non-zeros per row. Refusing here gives an error message instead of the
-    // process being killed once the pages are touched.
+    // 7 non-zeros per row, compared with the memory available now. A run that
+    // would not fit stops here with a message instead of being killed by the
+    // kernel once the pages are touched. Other processes can still take memory
+    // after this check, so it is a guard against the clear cases only.
     double mem_needed = (double)nx * ny * (26.0 * sizeof(double)
                       + 4.0 * (7.0 * (sizeof(double) + sizeof(int)) + sizeof(int)));
-    double mem_total  = (double)sysconf(_SC_PHYS_PAGES) * (double)sysconf(_SC_PAGESIZE);
-    if (mem_total > 0. && mem_needed > mem_total)
+    double mem_avail  = available_memory();
+    if (mem_avail > 0. && mem_needed > mem_avail)
     {
-        printf("** Error: a %d x %d grid needs about %.1f GB of memory; this machine has %.1f GB **\n",
-               nx, ny, mem_needed / 1E9, mem_total / 1E9);
+        printf("** Error: a %d x %d grid needs about %.1f GB of memory; about %.1f GB is available **\n",
+               nx, ny, mem_needed / 1E9, mem_avail / 1E9);
         return 1;
     }
 

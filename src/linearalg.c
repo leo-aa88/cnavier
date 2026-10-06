@@ -35,29 +35,6 @@ void freem(mtrx *A)
     A->M = NULL;
 }
 
-double *readm(char *filename, int *m, int *n)
-{
-    int i, j;
-    FILE *f;
-    double *A;
-    f = fopen(filename, "r");
-    if (!f || fscanf(f, "%d", m) != 1 || fscanf(f, "%d", n) != 1 || *m < 1 || *n < 1)
-    {
-        printf("** Error: cannot read matrix dimensions from %s **\n", filename);
-        exit(1);
-    }
-    A = allocm(*m, *n);
-    for (i = 0; i < *m; i++)
-        for (j = 0; j < *n; j++)
-            if (fscanf(f, "%lf", &A[i * (*n) + j]) != 1)
-            {
-                printf("** Error: %s ends before %d x %d values were read **\n", filename, *m, *n);
-                exit(1);
-            }
-    fclose(f);
-    return A;
-}
-
 void printm(mtrx A)
 {
     int i, j;
@@ -103,28 +80,6 @@ double *freev(vec v)
     if (v.v == NULL) return NULL;
     free(v.v);
     return NULL;
-}
-
-double *readv(char *filename, int *n)
-{
-    int i;
-    FILE *f;
-    double *v;
-    f = fopen(filename, "r");
-    if (!f || fscanf(f, "%d", n) != 1 || *n < 1)
-    {
-        printf("** Error: cannot read vector length from %s **\n", filename);
-        exit(1);
-    }
-    v = allocv(*n);
-    for (i = 0; i < *n; i++)
-        if (fscanf(f, "%lf", &v[i]) != 1)
-        {
-            printf("** Error: %s ends before %d values were read **\n", filename, *n);
-            exit(1);
-        }
-    fclose(f);
-    return v;
 }
 
 void printv(vec v)
