@@ -50,8 +50,8 @@ static problem problem_alloc(int n, int time_scheme, int poisson_type, double dt
 {
     problem p;
     int order = 6;
-    double dx = 1.0 / n, dy = 1.0 / n;
-    double rho = 0.5 * (cos(PI / n) + cos(PI / n));
+    double dx = 1.0 / (n - 1), dy = 1.0 / (n - 1);
+    double rho = 0.5 * (cos(PI / (n - 1)) + cos(PI / (n - 1)));
     wall_bc lid = {{0., 0., 0., 1.}, {0., 0., 0., 0.}};
 
     p.nx = n; p.ny = n; p.dt = dt; p.time_scheme = time_scheme;
@@ -269,22 +269,22 @@ static void test_finitediff_rows(void)
 // CPU tests
 // ---------------------------------------------------------------------------
 
-// A sine mode is an eigenvector of the discrete Laplacian, so the FFT solver
-// must return it divided by its eigenvalue.
+// A sine mode that vanishes on the wall nodes is an eigenvector of the discrete
+// Laplacian, so the FFT solver must return it divided by its eigenvalue.
 static void test_cpu_poisson_fft(void)
 {
     int i, j, n = 32, p = 3, q = 5;
-    double dx = 1.0 / n;
+    double dx = 1.0 / (n - 1);
     mtrx f = initm(n, n), psi = initm(n, n), expected = initm(n, n);
-    double lambda = (2.0 * cos(PI * p / (double)(n + 1)) - 2.0) / (dx * dx)
-                  + (2.0 * cos(PI * q / (double)(n + 1)) - 2.0) / (dx * dx);
+    double lambda = (2.0 * cos(PI * p / (double)(n - 1)) - 2.0) / (dx * dx)
+                  + (2.0 * cos(PI * q / (double)(n - 1)) - 2.0) / (dx * dx);
 
     printf("CPU: FFT Poisson solver against an exact eigenmode\n");
-    for (i = 0; i < n; i++)
-        for (j = 0; j < n; j++)
+    for (i = 1; i < n - 1; i++)
+        for (j = 1; j < n - 1; j++)
         {
-            MAt(f, i, j) = sin(PI * (i + 1) * p / (double)(n + 1))
-                         * sin(PI * (j + 1) * q / (double)(n + 1));
+            MAt(f, i, j) = sin(PI * i * p / (double)(n - 1))
+                         * sin(PI * j * q / (double)(n - 1));
             MAt(expected, i, j) = MAt(f, i, j) / lambda;
         }
 
@@ -294,6 +294,47 @@ static void test_cpu_poisson_fft(void)
     check("psi vs eigenmode / eigenvalue", rel_diff(psi.M, expected.M, n * n), 1E-10);
 
     freem(&f); freem(&psi); freem(&expected);
+}
+
+// Largest |value| on the wall nodes
+static double wall_max(mtrx a)
+{
+    int i, j;
+    double m = 0.0;
+    for (i = 0; i < a.m; i++)
+        for (j = 0; j < a.n; j++)
+            if ((i == 0 || j == 0 || i == a.m - 1 || j == a.n - 1) && fabs(MAt(a, i, j)) > m)
+                m = fabs(MAt(a, i, j));
+    return m;
+}
+
+// All three solvers must solve the same discrete problem: once the iterative
+// ones have converged they agree with the direct one, and all three put
+// psi = 0 on the wall nodes.
+static void test_cpu_poisson_agree(void)
+{
+    int n = 24;
+    double dx = 1.0 / (n - 1);
+    double rho = cos(PI / (n - 1));
+    double beta = 2.0 / (1.0 + sqrt(1.0 - rho * rho));
+    mtrx f = initm(n, n), fft = initm(n, n), sor = initm(n, n), gs = initm(n, n);
+    mtrx scratch = initm(n, n);
+
+    printf("CPU: FFT, SOR and Gauss-Seidel solve the same problem\n");
+    fill_pseudo_random(f.M, n * n, 5u);
+
+    fft_setup(n, n);
+    poisson_FFT(f, fft, dx, dx);
+    fft_cleanup();
+    poisson_SOR(f, sor, scratch, dx, dx, 200000, 1E-13, beta);
+    poisson(f, gs, scratch, dx, dx, 200000, 1E-13);
+
+    check("SOR vs FFT", rel_diff(sor.M, fft.M, n * n), 1E-9);
+    check("Gauss-Seidel vs FFT", rel_diff(gs.M, fft.M, n * n), 1E-9);
+    check("psi on the wall nodes, all three solvers",
+          wall_max(fft) + wall_max(sor) + wall_max(gs), 0.0);
+
+    freem(&f); freem(&fft); freem(&sor); freem(&gs); freem(&scratch);
 }
 
 // Largest residual of the 5-point Laplacian at the interior points
@@ -317,8 +358,8 @@ static double poisson_residual(mtrx f, mtrx psi, double dx, double dy)
 static void test_cpu_poisson_iterative(void)
 {
     int n = 24;
-    double dx = 1.0 / n;
-    double rho = cos(PI / n);
+    double dx = 1.0 / (n - 1);
+    double rho = cos(PI / (n - 1));
     double beta = 2.0 / (1.0 + sqrt(1.0 - rho * rho));
     mtrx f = initm(n, n), psi = initm(n, n), scratch = initm(n, n);
 
@@ -665,6 +706,7 @@ int main(void)
     test_finitediff_exactness();
     test_finitediff_rows();
     test_cpu_poisson_fft();
+    test_cpu_poisson_agree();
     test_cpu_poisson_iterative();
     test_cpu_step(2, "RK4");
     test_cpu_step(1, "Euler");

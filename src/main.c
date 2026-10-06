@@ -16,7 +16,7 @@
 #endif
 
 // Largest supported grid: keeps nx*ny, the CSR non-zero count (up to 7 per
-// row) and the FFT extension 4*(nx+1)*(ny+1) within int range
+// row) and the FFT extension 4*(nx-1)*(ny-1) within int range
 #define MAX_GRID 16384
 
 // Parse a whole string as an int. Returns 0 if it is not one.
@@ -162,7 +162,8 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    double rho  = 0.5 * (cos(PI / nx) + cos(PI / ny)); // spectral radius of Gauss-Seidel
+    // Spectral radius of Jacobi on the (nx-2) x (ny-2) interior nodes
+    double rho  = 0.5 * (cos(PI / (nx - 1)) + cos(PI / (ny - 1)));
     double beta  = 2.0 / (1.0 + sqrt(1.0 - rho * rho));  // optimal SOR parameter
 
     printf("Grid: %d x %d | dt: %lf | tf: %lf\n", nx, ny, dt, tf);
@@ -175,9 +176,10 @@ int main(int argc, char *argv[])
     double v1 = 0., v2 = 0., v3 = 0., v4 = 0.;
     wall_bc bc = {{u1, u2, u3, u4}, {v1, v2, v3, v4}};
 
-    // Cell sizes
-    double dx = (double)Lx / nx;
-    double dy = (double)Ly / ny;
+    // Grid spacing: nodes 0 and nx-1 lie on the walls, so nx nodes span Lx
+    // with nx-1 intervals
+    double dx = (double)Lx / (nx - 1);
+    double dy = (double)Ly / (ny - 1);
 
     // Build sparse 1D operators then free them after Kronecker
     smtrx sd_x  = SDiff1(nx, order, dx);

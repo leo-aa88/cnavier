@@ -130,14 +130,17 @@ void poisson_SOR(mtrx f, mtrx u, mtrx u0, double dx, double dy, int itmax, doubl
 // ---------------------------------------------------------------------------
 // FFT-based direct Poisson solver
 // ---------------------------------------------------------------------------
-// Solves ∇²u = f on [0,Lx] x [0,Ly] with homogeneous Dirichlet BCs (u=0
-// on all boundaries) using the 2D Discrete Sine Transform (DST-I).
+// Solves the 5-point discretisation of nabla^2 u = f with u = 0 on the wall
+// nodes (first and last row and column), the same problem the Gauss-Seidel
+// and SOR solvers solve. The unknowns are the (nx-2) x (ny-2) interior nodes.
 //
-// The DST-I diagonalises the second-derivative finite-difference operator,
-// so the solution is exact (to floating-point precision) in a single pass:
-//   1. Forward DST-I of the interior RHS
+// The 2D Discrete Sine Transform (DST-I) of the interior diagonalises that
+// operator: a DST-I of length m implies zeros at indices -1 and m, which are
+// exactly the wall nodes. The solution is exact (to floating-point precision)
+// in a single pass:
+//   1. Forward DST-I of the interior right-hand side
 //   2. Divide each mode by its eigenvalue
-//   3. Inverse DST-I (= forward DST-I / (2*(nx+1)*(ny+1)))
+//   3. Inverse DST-I (= forward DST-I / (2*(mx+1)*(my+1)))
 //
 // FFTW's RODFT00 plan is the DST-I.
 // ---------------------------------------------------------------------------
@@ -146,24 +149,25 @@ void poisson_SOR(mtrx f, mtrx u, mtrx u0, double dx, double dy, int itmax, doubl
 
 static fftw_plan plan_fwd;
 static fftw_plan plan_inv;
-static double   *fft_buf;  // shared work buffer, size (nx)*(ny)
+static double   *fft_buf;  // shared work buffer for the interior, (nx-2)*(ny-2)
 static int       fft_nx;
 static int       fft_ny;
 
 void fft_setup(int nx, int ny)
 {
+    int mx = nx - 2, my = ny - 2; // interior nodes
+
     fft_nx  = nx;
     fft_ny  = ny;
-    fft_buf = (double *)fftw_malloc((size_t)nx * ny * sizeof(double));
+    fft_buf = (double *)fftw_malloc((size_t)mx * my * sizeof(double));
     if (!fft_buf) { printf("** Error: fftw_malloc failed **\n"); exit(1); }
 
-    // FFTW_RODFT00 = DST-I in both dimensions
-    // The transform operates on an nx x ny array stored row-major.
-    plan_fwd = fftw_plan_r2r_2d(nx, ny,
+    // FFTW_RODFT00 = DST-I in both dimensions, on the interior stored row-major
+    plan_fwd = fftw_plan_r2r_2d(mx, my,
                                  fft_buf, fft_buf,
                                  FFTW_RODFT00, FFTW_RODFT00,
                                  FFTW_MEASURE);
-    plan_inv = fftw_plan_r2r_2d(nx, ny,
+    plan_inv = fftw_plan_r2r_2d(mx, my,
                                  fft_buf, fft_buf,
                                  FFTW_RODFT00, FFTW_RODFT00,
                                  FFTW_MEASURE);
@@ -180,47 +184,47 @@ void fft_cleanup(void)
 void poisson_FFT(mtrx f, mtrx u, double dx, double dy)
 {
     int i;
-    int nx = fft_nx;
-    int ny = fft_ny;
+    int nx = fft_nx, ny = fft_ny;
+    int mx = nx - 2, my = ny - 2;
 
-    // Copy interior RHS into the work buffer (boundaries stay 0 by Dirichlet)
+    // Copy the interior right-hand side into the work buffer
 #ifdef _OPENMP
 #pragma omp parallel for schedule(static)
 #endif
-    for (i = 0; i < nx; i++)
+    for (i = 0; i < mx; i++)
     {
         int j;
-        for (j = 0; j < ny; j++)
-            fft_buf[i * ny + j] = MAt(f, i, j);
+        for (j = 0; j < my; j++)
+            fft_buf[i * my + j] = MAt(f, i + 1, j + 1);
     }
 
     // Forward DST-I
     fftw_execute(plan_fwd);
 
     // Divide by eigenvalues of the 2D Laplacian under DST-I:
-    //   λ_ij = (2*cos(π*(i+1)/(nx+1)) - 2) / dx²
-    //         + (2*cos(π*(j+1)/(ny+1)) - 2) / dy²
-    double inv_norm = 1.0 / (4.0 * (double)(nx + 1) * (double)(ny + 1));
+    //   λ_ij = (2*cos(π*(i+1)/(mx+1)) - 2) / dx²
+    //         + (2*cos(π*(j+1)/(my+1)) - 2) / dy²
+    double inv_norm = 1.0 / (4.0 * (double)(mx + 1) * (double)(my + 1));
 #ifdef _OPENMP
 #pragma omp parallel for schedule(static)
 #endif
-    for (i = 0; i < nx; i++)
+    for (i = 0; i < mx; i++)
     {
-        double lambda_i = (2.0 * cos(PI * (i + 1) / (double)(nx + 1)) - 2.0)
+        double lambda_i = (2.0 * cos(PI * (i + 1) / (double)(mx + 1)) - 2.0)
                           / (dx * dx);
         int j;
-        for (j = 0; j < ny; j++)
+        for (j = 0; j < my; j++)
         {
-            double lambda_j = (2.0 * cos(PI * (j + 1) / (double)(ny + 1)) - 2.0)
+            double lambda_j = (2.0 * cos(PI * (j + 1) / (double)(my + 1)) - 2.0)
                               / (dy * dy);
-            fft_buf[i * ny + j] /= (lambda_i + lambda_j);
+            fft_buf[i * my + j] /= (lambda_i + lambda_j);
         }
     }
 
-    // Inverse DST-I (same transform; normalise by 1/(2(nx+1)) * 1/(2(ny+1)))
+    // Inverse DST-I (same transform; normalise by 1/(2(mx+1)) * 1/(2(my+1)))
     fftw_execute(plan_inv);
 
-    // Write normalised result into u
+    // Write the normalised interior into u; u = 0 on the wall nodes
 #ifdef _OPENMP
 #pragma omp parallel for schedule(static)
 #endif
@@ -228,6 +232,7 @@ void poisson_FFT(mtrx f, mtrx u, double dx, double dy)
     {
         int j;
         for (j = 0; j < ny; j++)
-            MAt(u, i, j) = fft_buf[i * ny + j] * inv_norm;
+            MAt(u, i, j) = (i == 0 || i == nx - 1 || j == 0 || j == ny - 1)
+                         ? 0.0 : fft_buf[(i - 1) * my + (j - 1)] * inv_norm;
     }
 }

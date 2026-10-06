@@ -14,8 +14,9 @@ void printvtk(mtrx A, char *title);        // prints matrix A to a vtk file
 double available_memory(void);
 
 // Write centerline velocity profiles to CSV for validation against Ghia et al. (1982).
-// u_centerline: u-velocity along vertical centerline (x=0.5), sampled at each j
-// v_centerline: v-velocity along horizontal centerline (y=0.5), sampled at each i
+// u along the vertical centerline (x = Lx/2) at every node y = i*dy, and v along
+// the horizontal centerline (y = Ly/2) at every node x = j*dx. Values are
+// interpolated linearly onto the centerline when no node lies on it.
 void print_centerline(mtrx u, mtrx v, int nx, int ny, double dx, double dy);
 
 #endif
