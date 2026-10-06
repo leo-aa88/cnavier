@@ -238,11 +238,11 @@ The code supplies nominal second-, fourth-, and sixth-order centered stencils in
 \label{eq:first-sixth}
 \end{equation}
 
-These coefficients correspond directly to the entries created by \code{Diff1()}.
+These coefficients correspond directly to the entries created by \code{SDiff1()}.
 
 \subsection{Second derivative}
 
-For the Laplacian terms in the vorticity transport equation, \code{Diff2()} implements:
+For the Laplacian terms in the vorticity transport equation, \code{SDiff2()} implements:
 
 \paragraph{Second order}
 \begin{equation}
@@ -978,8 +978,8 @@ For educational CFD, numerical experimentation, backend comparisons, and as a fo
 Mathematical operation & Main implementation location \\
 \midrule
 \endhead
-First-derivative stencils & \code{Diff1()}, \code{SDiff1()} in \code{src/finitediff.c} \\
-Second-derivative stencils & \code{Diff2()}, \code{SDiff2()} in \code{src/finitediff.c} \\
+First-derivative stencils & \code{SDiff1()} in \code{src/finitediff.c} \\
+Second-derivative stencils & \code{SDiff2()} in \code{src/finitediff.c} \\
 Kronecker operators & \code{skronecker()} in \code{src/linearalg.c}; assembly in \code{src/main.c} \\
 CSR derivative evaluation & \code{spmv()} in \code{src/linearalg.c}; \code{spmv\_kernel} on CUDA \\
 Wall velocity condition & \code{apply\_wall\_bc()} / \code{wall\_bc\_kernel} \\
