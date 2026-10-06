@@ -20,7 +20,7 @@ double error(mtrx u1, mtrx u2)
 void poisson(mtrx f, mtrx u, mtrx u0, double dx, double dy, int itmax, double tol)
 {
     int i, k;
-    int nx = f.m, ny = f.n;
+    int ny = f.m, nx = f.n; // ny rows (y), nx columns (x)
     double e;
     double dx2 = dx * dx, dy2 = dy * dy;
     double denom = 2.0 * (dx2 + dy2);
@@ -32,31 +32,31 @@ void poisson(mtrx f, mtrx u, mtrx u0, double dx, double dy, int itmax, double to
         mtrxcpy(u0, u);
 #ifdef _OPENMP
         /* Red–black ordering: two parallel phases (sequential GS is not safe to omp parallel for). */
-#pragma omp parallel for schedule(static) if (nx * ny >= OMP_MIN_WORK)
-        for (i = 1; i < nx - 1; i++)
+#pragma omp parallel for schedule(static) if (ny * nx >= OMP_MIN_WORK)
+        for (i = 1; i < ny - 1; i++)
         {
             int j0 = (i & 1) ? 1 : 2;
             int j;
-            for (j = j0; j < ny - 1; j += 2)
-                MAt(u, i, j) = (dy2 * (MAt(u, i+1, j) + MAt(u, i-1, j))
-                            + dx2 * (MAt(u, i, j+1) + MAt(u, i, j-1))
+            for (j = j0; j < nx - 1; j += 2)
+                MAt(u, i, j) = (dx2 * (MAt(u, i+1, j) + MAt(u, i-1, j))
+                            + dy2 * (MAt(u, i, j+1) + MAt(u, i, j-1))
                             - dx2 * dy2 * MAt(f, i, j)) / denom;
         }
-#pragma omp parallel for schedule(static) if (nx * ny >= OMP_MIN_WORK)
-        for (i = 1; i < nx - 1; i++)
+#pragma omp parallel for schedule(static) if (ny * nx >= OMP_MIN_WORK)
+        for (i = 1; i < ny - 1; i++)
         {
             int j0 = (i & 1) ? 2 : 1;
             int j;
-            for (j = j0; j < ny - 1; j += 2)
-                MAt(u, i, j) = (dy2 * (MAt(u, i+1, j) + MAt(u, i-1, j))
-                            + dx2 * (MAt(u, i, j+1) + MAt(u, i, j-1))
+            for (j = j0; j < nx - 1; j += 2)
+                MAt(u, i, j) = (dx2 * (MAt(u, i+1, j) + MAt(u, i-1, j))
+                            + dy2 * (MAt(u, i, j+1) + MAt(u, i, j-1))
                             - dx2 * dy2 * MAt(f, i, j)) / denom;
         }
 #else
-        for (i = 1; i < nx - 1; i++)
-            for (int j = 1; j < ny - 1; j++)
-                MAt(u, i, j) = (dy2 * (MAt(u, i+1, j) + MAt(u, i-1, j))
-                            + dx2 * (MAt(u, i, j+1) + MAt(u, i, j-1))
+        for (i = 1; i < ny - 1; i++)
+            for (int j = 1; j < nx - 1; j++)
+                MAt(u, i, j) = (dx2 * (MAt(u, i+1, j) + MAt(u, i-1, j))
+                            + dy2 * (MAt(u, i, j+1) + MAt(u, i, j-1))
                             - dx2 * dy2 * MAt(f, i, j)) / denom;
 #endif
         e = error(u, u0);
@@ -75,7 +75,7 @@ void poisson(mtrx f, mtrx u, mtrx u0, double dx, double dy, int itmax, double to
 void poisson_SOR(mtrx f, mtrx u, mtrx u0, double dx, double dy, int itmax, double tol, double beta)
 {
     int i, k;
-    int nx = f.m, ny = f.n;
+    int ny = f.m, nx = f.n; // ny rows (y), nx columns (x)
     double e;
     double dx2 = dx * dx, dy2 = dy * dy;
     double denom = 2.0 * (dx2 + dy2);
@@ -86,33 +86,33 @@ void poisson_SOR(mtrx f, mtrx u, mtrx u0, double dx, double dy, int itmax, doubl
     {
         mtrxcpy(u0, u);
 #ifdef _OPENMP
-#pragma omp parallel for schedule(static) if (nx * ny >= OMP_MIN_WORK)
-        for (i = 1; i < nx - 1; i++)
+#pragma omp parallel for schedule(static) if (ny * nx >= OMP_MIN_WORK)
+        for (i = 1; i < ny - 1; i++)
         {
             int j0 = (i & 1) ? 1 : 2;
             int j;
-            for (j = j0; j < ny - 1; j += 2)
-                MAt(u, i, j) = beta  * (dy2 * (MAt(u, i+1, j) + MAt(u, i-1, j))
-                                    + dx2 * (MAt(u, i, j+1) + MAt(u, i, j-1))
+            for (j = j0; j < nx - 1; j += 2)
+                MAt(u, i, j) = beta  * (dx2 * (MAt(u, i+1, j) + MAt(u, i-1, j))
+                                    + dy2 * (MAt(u, i, j+1) + MAt(u, i, j-1))
                                     - dx2 * dy2 * MAt(f, i, j)) / denom
                            + (1.0 - beta) * MAt(u0, i, j);
         }
-#pragma omp parallel for schedule(static) if (nx * ny >= OMP_MIN_WORK)
-        for (i = 1; i < nx - 1; i++)
+#pragma omp parallel for schedule(static) if (ny * nx >= OMP_MIN_WORK)
+        for (i = 1; i < ny - 1; i++)
         {
             int j0 = (i & 1) ? 2 : 1;
             int j;
-            for (j = j0; j < ny - 1; j += 2)
-                MAt(u, i, j) = beta  * (dy2 * (MAt(u, i+1, j) + MAt(u, i-1, j))
-                                    + dx2 * (MAt(u, i, j+1) + MAt(u, i, j-1))
+            for (j = j0; j < nx - 1; j += 2)
+                MAt(u, i, j) = beta  * (dx2 * (MAt(u, i+1, j) + MAt(u, i-1, j))
+                                    + dy2 * (MAt(u, i, j+1) + MAt(u, i, j-1))
                                     - dx2 * dy2 * MAt(f, i, j)) / denom
                            + (1.0 - beta) * MAt(u0, i, j);
         }
 #else
-        for (i = 1; i < nx - 1; i++)
-            for (int j = 1; j < ny - 1; j++)
-                MAt(u, i, j) = beta  * (dy2 * (MAt(u, i+1, j) + MAt(u, i-1, j))
-                                    + dx2 * (MAt(u, i, j+1) + MAt(u, i, j-1))
+        for (i = 1; i < ny - 1; i++)
+            for (int j = 1; j < nx - 1; j++)
+                MAt(u, i, j) = beta  * (dx2 * (MAt(u, i+1, j) + MAt(u, i-1, j))
+                                    + dy2 * (MAt(u, i, j+1) + MAt(u, i, j-1))
                                     - dx2 * dy2 * MAt(f, i, j)) / denom
                            + (1.0 - beta) * MAt(u0, i, j);
 #endif
@@ -169,7 +169,7 @@ typedef struct
 } dst_pass;
 
 static dst_pass pass_rows, pass_cols;
-static double  *fft_buf;  // interior work buffer, (nx-2) x (ny-2), row-major
+static double  *fft_buf;  // interior work buffer, (ny-2) rows of (nx-2), row-major
 static int      fft_nx;
 static int      fft_ny;
 
@@ -228,15 +228,15 @@ static void dst2d(void)
 
 void fft_setup(int nx, int ny)
 {
-    int mx = nx - 2, my = ny - 2; // interior nodes
+    int rows = ny - 2, cols = nx - 2; // interior nodes; fields are ny rows of nx
 
     fft_nx  = nx;
     fft_ny  = ny;
-    fft_buf = (double *)fftw_malloc((size_t)mx * my * sizeof(double));
+    fft_buf = (double *)fftw_malloc((size_t)rows * cols * sizeof(double));
     if (!fft_buf) { printf("** Error: fftw_malloc failed **\n"); exit(1); }
 
-    pass_rows = make_pass(my, mx, 1, my); // mx rows of my contiguous values
-    pass_cols = make_pass(mx, my, my, 1); // my columns, values my apart
+    pass_rows = make_pass(cols, rows, 1, cols); // rows of cols contiguous values (x)
+    pass_cols = make_pass(rows, cols, cols, 1); // columns, values cols apart (y)
 }
 
 void fft_cleanup(void)
@@ -251,54 +251,54 @@ void poisson_FFT(mtrx f, mtrx u, double dx, double dy)
 {
     int i;
     int nx = fft_nx, ny = fft_ny;
-    int mx = nx - 2, my = ny - 2;
+    int rows = ny - 2, cols = nx - 2; // interior: row index i is y, column j is x
 
     // Copy the interior right-hand side into the work buffer
 #ifdef _OPENMP
 #pragma omp parallel for schedule(static) if (nx * ny >= OMP_MIN_WORK)
 #endif
-    for (i = 0; i < mx; i++)
+    for (i = 0; i < rows; i++)
     {
         int j;
-        for (j = 0; j < my; j++)
-            fft_buf[i * my + j] = MAt(f, i + 1, j + 1);
+        for (j = 0; j < cols; j++)
+            fft_buf[i * cols + j] = MAt(f, i + 1, j + 1);
     }
 
     // Forward DST-I
     dst2d();
 
     // Divide by eigenvalues of the 2D Laplacian under DST-I:
-    //   λ_ij = (2*cos(π*(i+1)/(mx+1)) - 2) / dx²
-    //         + (2*cos(π*(j+1)/(my+1)) - 2) / dy²
-    double inv_norm = 1.0 / (4.0 * (double)(mx + 1) * (double)(my + 1));
+    //   λ_ij = (2*cos(π*(i+1)/(rows+1)) - 2) / dy²
+    //         + (2*cos(π*(j+1)/(cols+1)) - 2) / dx²
+    double inv_norm = 1.0 / (4.0 * (double)(rows + 1) * (double)(cols + 1));
 #ifdef _OPENMP
 #pragma omp parallel for schedule(static) if (nx * ny >= OMP_MIN_WORK)
 #endif
-    for (i = 0; i < mx; i++)
+    for (i = 0; i < rows; i++)
     {
-        double lambda_i = (2.0 * cos(PI * (i + 1) / (double)(mx + 1)) - 2.0)
-                          / (dx * dx);
+        double lambda_i = (2.0 * cos(PI * (i + 1) / (double)(rows + 1)) - 2.0)
+                          / (dy * dy);
         int j;
-        for (j = 0; j < my; j++)
+        for (j = 0; j < cols; j++)
         {
-            double lambda_j = (2.0 * cos(PI * (j + 1) / (double)(my + 1)) - 2.0)
-                              / (dy * dy);
-            fft_buf[i * my + j] /= (lambda_i + lambda_j);
+            double lambda_j = (2.0 * cos(PI * (j + 1) / (double)(cols + 1)) - 2.0)
+                              / (dx * dx);
+            fft_buf[i * cols + j] /= (lambda_i + lambda_j);
         }
     }
 
-    // Inverse DST-I (same transform; normalise by 1/(2(mx+1)) * 1/(2(my+1)))
+    // Inverse DST-I (same transform; normalise by 1/(2(rows+1)) * 1/(2(cols+1)))
     dst2d();
 
     // Write the normalised interior into u; u = 0 on the wall nodes
 #ifdef _OPENMP
 #pragma omp parallel for schedule(static) if (nx * ny >= OMP_MIN_WORK)
 #endif
-    for (i = 0; i < nx; i++)
+    for (i = 0; i < ny; i++)
     {
         int j;
-        for (j = 0; j < ny; j++)
-            MAt(u, i, j) = (i == 0 || i == nx - 1 || j == 0 || j == ny - 1)
-                         ? 0.0 : fft_buf[(i - 1) * my + (j - 1)] * inv_norm;
+        for (j = 0; j < nx; j++)
+            MAt(u, i, j) = (i == 0 || i == ny - 1 || j == 0 || j == nx - 1)
+                         ? 0.0 : fft_buf[(i - 1) * cols + (j - 1)] * inv_norm;
     }
 }

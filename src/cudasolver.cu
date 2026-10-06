@@ -108,14 +108,14 @@ __global__ void spmv_kernel(csr_dev A, const double *x, double *y, int n)
 __global__ void wall_bc_kernel(double *u, double *v, wall_bc bc, int nx, int ny)
 {
     int k = blockIdx.x * blockDim.x + threadIdx.x;
-    if (k >= nx * ny) return;
-    int i = k / ny, j = k % ny;
+    if (k >= ny * nx) return;
+    int i = k / nx, j = k % nx;
     int wall;
 
     if (j == 0)           wall = 0;
-    else if (j == ny - 1) wall = 1;
+    else if (j == nx - 1) wall = 1;
     else if (i == 0)      wall = 2;
-    else if (i == nx - 1) wall = 3;
+    else if (i == ny - 1) wall = 3;
     else return;
 
     u[k] = bc.u[wall];
@@ -127,10 +127,10 @@ __global__ void vorticity_bc_kernel(csr_dev DX, csr_dev DY, const double *u, con
                                     double *w, int nx, int ny)
 {
     int k = blockIdx.x * blockDim.x + threadIdx.x;
-    if (k >= nx * ny) return;
-    int i = k / ny, j = k % ny;
+    if (k >= ny * nx) return;
+    int i = k / nx, j = k % nx;
 
-    if (i == 0 || i == nx - 1 || j == 0 || j == ny - 1)
+    if (i == 0 || i == ny - 1 || j == 0 || j == nx - 1)
         w[k] = csr_row(DX, v, k) - csr_row(DY, u, k);
 }
 
@@ -191,49 +191,50 @@ __global__ void redblack_kernel(double *psi, const double *w, double *delta, int
                                 double dx2, double dy2, double beta, int colour)
 {
     int k = blockIdx.x * blockDim.x + threadIdx.x;
-    if (k >= nx * ny) return;
-    int i = k / ny, j = k % ny;
+    if (k >= ny * nx) return;
+    int i = k / nx, j = k % nx;
 
-    if (i < 1 || i >= nx - 1 || j < 1 || j >= ny - 1 || ((i + j) & 1) != colour)
+    if (i < 1 || i >= ny - 1 || j < 1 || j >= nx - 1 || ((i + j) & 1) != colour)
         return;
 
     double denom = 2.0 * (dx2 + dy2);
     double old = psi[k];
-    double upd = beta * (dy2 * (psi[k + ny] + psi[k - ny])
-                       + dx2 * (psi[k + 1]  + psi[k - 1])
+    double upd = beta * (dx2 * (psi[k + nx] + psi[k - nx])   // y-neighbours
+                       + dy2 * (psi[k + 1]  + psi[k - 1])    // x-neighbours
                        + dx2 * dy2 * w[k]) / denom
                + (1.0 - beta) * old;
     psi[k]   = upd;
     delta[k] = fabs(upd - old);
 }
 
-// Odd extension of the interior of an nx*ny field to 2(nx-1) x 2(ny-1). The
+// Odd extension of the interior of a field of ny rows (y) and nx columns (x)
+// to 2(ny-1) x 2(nx-1). The
 // wall nodes become the zeros of the extension, and the real FFT of the
 // extension is, up to a constant factor, the 2D DST-I of the interior — the
 // transform FFTW calls RODFT00, which cuFFT does not provide.
 __global__ void odd_extend_kernel(const double *src, double *ext, int nx, int ny)
 {
-    int mx = 2 * (nx - 1), my = 2 * (ny - 1);
+    int mx = 2 * (ny - 1), my = 2 * (nx - 1);
     int k = blockIdx.x * blockDim.x + threadIdx.x;
     if (k >= mx * my) return;
     int p = k / my, q = k % my;
 
-    if (p == 0 || p == nx - 1 || q == 0 || q == ny - 1)
+    if (p == 0 || p == ny - 1 || q == 0 || q == nx - 1)
     {
         ext[k] = 0.0;
         return;
     }
-    int i = (p < nx) ? p : mx - p;
-    int j = (q < ny) ? q : my - q;
-    double sign = ((p < nx) == (q < ny)) ? 1.0 : -1.0;
-    ext[k] = sign * src[i * ny + j];
+    int i = (p < ny) ? p : mx - p;
+    int j = (q < nx) ? q : my - q;
+    double sign = ((p < ny) == (q < nx)) ? 1.0 : -1.0;
+    ext[k] = sign * src[i * nx + j];
 }
 
 // Interior node (i, j) corresponds to sine mode (i-1, j-1), which sits at
 // row i, column j of the spectrum of the odd extension.
-__device__ inline int spec_index(int i, int j, int ny)
+__device__ inline int spec_index(int i, int j, int nx)
 {
-    return i * ny + j; // the D2Z output has 2(ny-1)/2 + 1 = ny columns
+    return i * nx + j; // the D2Z output has 2(nx-1)/2 + 1 = nx columns
 }
 
 // Pick the sine modes out of the spectrum of the odd extension and divide
@@ -243,13 +244,13 @@ __global__ void spectral_divide_kernel(const cufftDoubleComplex *spec, double *o
                                        int nx, int ny)
 {
     int k = blockIdx.x * blockDim.x + threadIdx.x;
-    if (k >= nx * ny) return;
-    int i = k / ny, j = k % ny;
+    if (k >= ny * nx) return;
+    int i = k / nx, j = k % nx;
 
-    if (i == 0 || i == nx - 1 || j == 0 || j == ny - 1)
+    if (i == 0 || i == ny - 1 || j == 0 || j == nx - 1)
         out[k] = 0.0;
     else
-        out[k] = spec[spec_index(i, j, ny)].x / (lambda_i[i - 1] + lambda_j[j - 1]);
+        out[k] = spec[spec_index(i, j, nx)].x / (lambda_i[i - 1] + lambda_j[j - 1]);
 }
 
 // Pick the sine modes out of the spectrum of the odd extension and scale them.
@@ -258,13 +259,13 @@ __global__ void spectral_scale_kernel(const cufftDoubleComplex *spec, double *ou
                                       double scale, int nx, int ny)
 {
     int k = blockIdx.x * blockDim.x + threadIdx.x;
-    if (k >= nx * ny) return;
-    int i = k / ny, j = k % ny;
+    if (k >= ny * nx) return;
+    int i = k / nx, j = k % nx;
 
-    if (i == 0 || i == nx - 1 || j == 0 || j == ny - 1)
+    if (i == 0 || i == ny - 1 || j == 0 || j == nx - 1)
         out[k] = 0.0;
     else
-        out[k] = spec[spec_index(i, j, ny)].x * scale;
+        out[k] = spec[spec_index(i, j, nx)].x * scale;
 }
 
 enum { RED_SUM, RED_MAX, RED_MIN };
@@ -434,12 +435,6 @@ gpu_solver *gpu_init(const rk4_ctx *ctx, double dt, int time_scheme, const wall_
     if (cudaSetDevice(0) != cudaSuccess || cudaFree(0) != cudaSuccess)
         return NULL;
 
-    if (nx != ny)
-    {
-        // The Kronecker operators and the field layout only agree on square grids
-        printf("** Error: non-square grids are not supported (nx must equal ny) **\n");
-        exit(1);
-    }
     if (ctx->poisson_type < 1 || ctx->poisson_type > 3)
     {
         printf("** Error: valid Poisson solver types are 1, 2 or 3 **\n");
@@ -476,7 +471,7 @@ gpu_solver *gpu_init(const rk4_ctx *ctx, double dt, int time_scheme, const wall_
 
     if (g->poisson_type == 3)
     {
-        int mx = 2 * (nx - 1), my = 2 * (ny - 1); // odd extension of the interior
+        int mx = 2 * (ny - 1), my = 2 * (nx - 1); // odd extension of the interior, rows x columns
         double *lambda = (double *)malloc((size_t)(nx > ny ? nx : ny) * sizeof(double));
         if (!lambda)
         {
@@ -490,17 +485,17 @@ gpu_solver *gpu_init(const rk4_ctx *ctx, double dt, int time_scheme, const wall_
                               (size_t)mx * (my / 2 + 1) * sizeof(cufftDoubleComplex)));
 
         // Eigenvalues of the 2D Laplacian under the DST-I of the interior, as
-        // in poisson_FFT():
-        //   λ_ij = (2*cos(π*(i+1)/(nx-1)) - 2) / dx²
-        //         + (2*cos(π*(j+1)/(ny-1)) - 2) / dy²
-        g->lambda_i = dev_alloc(nx - 2);
-        g->lambda_j = dev_alloc(ny - 2);
-        for (i = 0; i < nx - 2; i++)
-            lambda[i] = (2.0 * cos(PI * (i + 1) / (double)(nx - 1)) - 2.0) / (g->dx * g->dx);
-        CUDA_CHECK(cudaMemcpy(g->lambda_i, lambda, (nx - 2) * sizeof(double), cudaMemcpyHostToDevice));
+        // in poisson_FFT(); rows (index i) are y, columns (index j) are x:
+        //   λ_ij = (2*cos(π*(i+1)/(ny-1)) - 2) / dy²
+        //         + (2*cos(π*(j+1)/(nx-1)) - 2) / dx²
+        g->lambda_i = dev_alloc(ny - 2);
+        g->lambda_j = dev_alloc(nx - 2);
         for (i = 0; i < ny - 2; i++)
             lambda[i] = (2.0 * cos(PI * (i + 1) / (double)(ny - 1)) - 2.0) / (g->dy * g->dy);
-        CUDA_CHECK(cudaMemcpy(g->lambda_j, lambda, (ny - 2) * sizeof(double), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(g->lambda_i, lambda, (ny - 2) * sizeof(double), cudaMemcpyHostToDevice));
+        for (i = 0; i < nx - 2; i++)
+            lambda[i] = (2.0 * cos(PI * (i + 1) / (double)(nx - 1)) - 2.0) / (g->dx * g->dx);
+        CUDA_CHECK(cudaMemcpy(g->lambda_j, lambda, (nx - 2) * sizeof(double), cudaMemcpyHostToDevice));
         free(lambda);
     }
     return g;

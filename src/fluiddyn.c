@@ -32,20 +32,14 @@ rk4_ctx rk4_alloc(int nx, int ny)
 {
     rk4_ctx ctx;
 
-    if (nx != ny)
-    {
-        // The Kronecker operators and the field layout only agree on square grids
-        printf("** Error: non-square grids are not supported (nx must equal ny) **\n");
-        exit(1);
-    }
     ctx.nx = nx; ctx.ny = ny;
-    ctx.dwdx    = initm(nx, ny); ctx.dwdy    = initm(nx, ny);
-    ctx.d2wdx2  = initm(nx, ny); ctx.d2wdy2  = initm(nx, ny);
-    ctx.dpsidx  = initm(nx, ny); ctx.dpsidy  = initm(nx, ny);
-    ctx.psi     = initm(nx, ny); ctx.psi_scratch = initm(nx, ny);
-    ctx.k1      = initm(nx, ny); ctx.k2      = initm(nx, ny);
-    ctx.k3      = initm(nx, ny); ctx.k4      = initm(nx, ny);
-    ctx.w_tmp   = initm(nx, ny); ctx.rhs     = initm(nx, ny);
+    ctx.dwdx    = initm(ny, nx); ctx.dwdy    = initm(ny, nx);
+    ctx.d2wdx2  = initm(ny, nx); ctx.d2wdy2  = initm(ny, nx);
+    ctx.dpsidx  = initm(ny, nx); ctx.dpsidy  = initm(ny, nx);
+    ctx.psi     = initm(ny, nx); ctx.psi_scratch = initm(ny, nx);
+    ctx.k1      = initm(ny, nx); ctx.k2      = initm(ny, nx);
+    ctx.k3      = initm(ny, nx); ctx.k4      = initm(ny, nx);
+    ctx.w_tmp   = initm(ny, nx); ctx.rhs     = initm(ny, nx);
     return ctx;
 }
 
@@ -107,12 +101,12 @@ void dwdt(mtrx w, mtrx u, mtrx v, mtrx out, rk4_ctx *ctx)
 
     // RHS: dw/dt = -u*dw/dx - v*dw/dy + (1/Re)*(d2w/dx2 + d2w/dy2)
 #ifdef _OPENMP
-#pragma omp parallel for schedule(static) if (nx * ny >= OMP_MIN_WORK)
+#pragma omp parallel for schedule(static) if (ny * nx >= OMP_MIN_WORK)
 #endif
-    for (i = 0; i < nx; i++)
+    for (i = 0; i < ny; i++)
     {
         int j;
-        for (j = 0; j < ny; j++)
+        for (j = 0; j < nx; j++)
             MAt(out, i, j) = - MAt(u, i, j) * MAt(ctx->dwdx,   i, j)
                              - MAt(v, i, j) * MAt(ctx->dwdy,   i, j)
                              + (1.0 / ctx->Re) * (MAt(ctx->d2wdx2, i, j)
@@ -125,55 +119,55 @@ void dwdt(mtrx w, mtrx u, mtrx v, mtrx out, rk4_ctx *ctx)
 void rk4(mtrx w, mtrx u, mtrx v, double dt, rk4_ctx *ctx)
 {
     int i;
-    int nx = ctx->nx, ny = ctx->ny;
+    int ny = ctx->ny, nx = ctx->nx;
 
     // k1 = f(w_n)
     dwdt(w, u, v, ctx->k1, ctx);
 
     // k2 = f(w_n + dt/2 * k1)
 #ifdef _OPENMP
-#pragma omp parallel for schedule(static) if (nx * ny >= OMP_MIN_WORK)
+#pragma omp parallel for schedule(static) if (ny * nx >= OMP_MIN_WORK)
 #endif
-    for (i = 0; i < nx; i++)
+    for (i = 0; i < ny; i++)
     {
         int j;
-        for (j = 0; j < ny; j++)
+        for (j = 0; j < nx; j++)
             MAt(ctx->w_tmp, i, j) = MAt(w, i, j) + 0.5 * dt * MAt(ctx->k1, i, j);
     }
     dwdt(ctx->w_tmp, u, v, ctx->k2, ctx);
 
     // k3 = f(w_n + dt/2 * k2)
 #ifdef _OPENMP
-#pragma omp parallel for schedule(static) if (nx * ny >= OMP_MIN_WORK)
+#pragma omp parallel for schedule(static) if (ny * nx >= OMP_MIN_WORK)
 #endif
-    for (i = 0; i < nx; i++)
+    for (i = 0; i < ny; i++)
     {
         int j;
-        for (j = 0; j < ny; j++)
+        for (j = 0; j < nx; j++)
             MAt(ctx->w_tmp, i, j) = MAt(w, i, j) + 0.5 * dt * MAt(ctx->k2, i, j);
     }
     dwdt(ctx->w_tmp, u, v, ctx->k3, ctx);
 
     // k4 = f(w_n + dt * k3)
 #ifdef _OPENMP
-#pragma omp parallel for schedule(static) if (nx * ny >= OMP_MIN_WORK)
+#pragma omp parallel for schedule(static) if (ny * nx >= OMP_MIN_WORK)
 #endif
-    for (i = 0; i < nx; i++)
+    for (i = 0; i < ny; i++)
     {
         int j;
-        for (j = 0; j < ny; j++)
+        for (j = 0; j < nx; j++)
             MAt(ctx->w_tmp, i, j) = MAt(w, i, j) + dt * MAt(ctx->k3, i, j);
     }
     dwdt(ctx->w_tmp, u, v, ctx->k4, ctx);
 
     // Combine: w_{n+1} = w_n + (dt/6)*(k1 + 2*k2 + 2*k3 + k4)
 #ifdef _OPENMP
-#pragma omp parallel for schedule(static) if (nx * ny >= OMP_MIN_WORK)
+#pragma omp parallel for schedule(static) if (ny * nx >= OMP_MIN_WORK)
 #endif
-    for (i = 0; i < nx; i++)
+    for (i = 0; i < ny; i++)
     {
         int j;
-        for (j = 0; j < ny; j++)
+        for (j = 0; j < nx; j++)
             MAt(w, i, j) += (dt / 6.0) * (MAt(ctx->k1, i, j)
                                        + 2.0 * MAt(ctx->k2, i, j)
                                        + 2.0 * MAt(ctx->k3, i, j)
@@ -244,17 +238,17 @@ double round_down_3(double x)
 void apply_wall_bc(mtrx u, mtrx v, const wall_bc *bc)
 {
     int i, j;
-    int nx = u.m, ny = u.n;
+    int ny = u.m, nx = u.n; // ny rows (y), nx columns (x)
 
-    for (j = 0; j < ny; j++)
+    for (j = 0; j < nx; j++)
     {
         MAt(u, 0, j)    = bc->u[2];  MAt(v, 0, j)    = bc->v[2];
-        MAt(u, nx-1, j) = bc->u[3];  MAt(v, nx-1, j) = bc->v[3];
+        MAt(u, ny-1, j) = bc->u[3];  MAt(v, ny-1, j) = bc->v[3];
     }
-    for (i = 0; i < nx; i++)
+    for (i = 0; i < ny; i++)
     {
         MAt(u, i, 0)    = bc->u[0];  MAt(v, i, 0)    = bc->v[0];
-        MAt(u, i, ny-1) = bc->u[1];  MAt(v, i, ny-1) = bc->v[1];
+        MAt(u, i, nx-1) = bc->u[1];  MAt(v, i, nx-1) = bc->v[1];
     }
 }
 
@@ -271,15 +265,15 @@ void step(mtrx w, mtrx u, mtrx v, double dt, int time_scheme, const wall_bc *bc,
     spmv(*ctx->DY, u.M, dudy.M);
     spmv(*ctx->DX, v.M, dvdx.M);
 
-    for (j = 0; j < ny; j++)
+    for (j = 0; j < nx; j++)
     {
         MAt(w, 0, j)    = MAt(dvdx, 0, j)    - MAt(dudy, 0, j);
-        MAt(w, nx-1, j) = MAt(dvdx, nx-1, j) - MAt(dudy, nx-1, j);
+        MAt(w, ny-1, j) = MAt(dvdx, ny-1, j) - MAt(dudy, ny-1, j);
     }
-    for (i = 0; i < nx; i++)
+    for (i = 0; i < ny; i++)
     {
         MAt(w, i, 0)    = MAt(dvdx, i, 0)    - MAt(dudy, i, 0);
-        MAt(w, i, ny-1) = MAt(dvdx, i, ny-1) - MAt(dudy, i, ny-1);
+        MAt(w, i, nx-1) = MAt(dvdx, i, nx-1) - MAt(dudy, i, nx-1);
     }
 
     if (time_scheme == 1)

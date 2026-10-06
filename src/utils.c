@@ -215,7 +215,7 @@ void printvtk(mtrx A, char *title)
     fprintf(pf, "test\n");
     fprintf(pf, "ASCII\n");
     fprintf(pf, "DATASET STRUCTURED_POINTS\n");
-    fprintf(pf, "DIMENSIONS %d %d 1\n", A.m, A.n);
+    fprintf(pf, "DIMENSIONS %d %d 1\n", A.n, A.m); // x (columns) varies fastest
     fprintf(pf, "ORIGIN 0 0 0\n");
     fprintf(pf, "SPACING 1 1 1\n");
     fprintf(pf, "POINT_DATA %d\n", A.m * A.n);
@@ -269,14 +269,16 @@ void print_centerline(mtrx u, mtrx v, int nx, int ny, double dx, double dy)
     // nodes no node lies on them, so interpolate linearly between the two
     // nearest columns (rows); with an odd number t is 0 and the middle node
     // is used as is.
-    int    cj = (ny - 1) / 2, ci = (nx - 1) / 2;
-    double tj = 0.5 * (ny - 1) - cj, ti = 0.5 * (nx - 1) - ci;
+    // Fields are ny rows (y) of nx values (x): cj is the middle column, ci the
+    // middle row.
+    int    cj = (nx - 1) / 2, ci = (ny - 1) / 2;
+    double tj = 0.5 * (nx - 1) - cj, ti = 0.5 * (ny - 1) - ci;
 
     // --- u along the vertical centerline: simulation data at the nodes y = i*dy ---
     f = fopen("./output/centerline_u_sim.csv", "w");
     if (!f) { printf("Error opening centerline_u_sim.csv\n"); return; }
     fprintf(f, "y,u\n");
-    for (i = 0; i < nx; i++)
+    for (i = 0; i < ny; i++)
         fprintf(f, "%.6f,%.6f\n", i * dy,
                 (1.0 - tj) * MAt(u, i, cj) + (tj > 0.0 ? tj * MAt(u, i, cj + 1) : 0.0));
     fclose(f);
@@ -293,7 +295,7 @@ void print_centerline(mtrx u, mtrx v, int nx, int ny, double dx, double dy)
     f = fopen("./output/centerline_v_sim.csv", "w");
     if (!f) { printf("Error opening centerline_v_sim.csv\n"); return; }
     fprintf(f, "x,v\n");
-    for (j = 0; j < ny; j++)
+    for (j = 0; j < nx; j++)
         fprintf(f, "%.6f,%.6f\n", j * dx,
                 (1.0 - ti) * MAt(v, ci, j) + (ti > 0.0 ? ti * MAt(v, ci + 1, j) : 0.0));
     fclose(f);

@@ -49,23 +49,26 @@ typedef struct
     mtrx    u, v, w;
 } problem;
 
-static problem problem_alloc(int n, int time_scheme, int poisson_type, double dt, double poisson_tol)
+// A lid-driven cavity on a unit square with nx x ny nodes. Fields are ny rows
+// (y) of nx values (x), as in main.c.
+static problem problem_alloc_xy(int nx, int ny, int time_scheme, int poisson_type,
+                                double dt, double poisson_tol)
 {
     problem p;
     int order = 6;
-    double dx = 1.0 / (n - 1), dy = 1.0 / (n - 1);
-    double rho = 0.5 * (cos(PI / (n - 1)) + cos(PI / (n - 1)));
+    double dx = 1.0 / (nx - 1), dy = 1.0 / (ny - 1);
+    double rho = 0.5 * (cos(PI / (nx - 1)) + cos(PI / (ny - 1)));
     wall_bc lid = {{0., 0., 0., 1.}, {0., 0., 0., 0.}};
 
-    p.nx = n; p.ny = n; p.dt = dt; p.time_scheme = time_scheme;
+    p.nx = nx; p.ny = ny; p.dt = dt; p.time_scheme = time_scheme;
     p.bc = lid;
 
-    smtrx sd_x  = SDiff1(n, order, dx);
-    smtrx sd_y  = SDiff1(n, order, dy);
-    smtrx sd_x2 = SDiff2(n, order, dx);
-    smtrx sd_y2 = SDiff2(n, order, dy);
-    smtrx sIx   = seye(n);
-    smtrx sIy   = seye(n);
+    smtrx sd_x  = SDiff1(nx, order, dx);
+    smtrx sd_y  = SDiff1(ny, order, dy);
+    smtrx sd_x2 = SDiff2(nx, order, dx);
+    smtrx sd_y2 = SDiff2(ny, order, dy);
+    smtrx sIx   = seye(nx);
+    smtrx sIy   = seye(ny);
 
     p.DX  = skronecker(sIy,   sd_x);
     p.DY  = skronecker(sd_y,  sIx);
@@ -75,18 +78,23 @@ static problem problem_alloc(int n, int time_scheme, int poisson_type, double dt
     freesm(sd_x); freesm(sd_y); freesm(sd_x2); freesm(sd_y2);
     freesm(sIx);  freesm(sIy);
 
-    p.ctx = rk4_alloc(n, n);
+    p.ctx = rk4_alloc(nx, ny);
     p.ctx.Re = 100.; p.ctx.dx = dx; p.ctx.dy = dy;
     p.ctx.poisson_type = poisson_type;
     p.ctx.poisson_max_it = 200000; p.ctx.poisson_tol = poisson_tol;
     p.ctx.beta = 2.0 / (1.0 + sqrt(1.0 - rho * rho));
 
-    p.u = initm(n, n);
-    p.v = initm(n, n);
-    p.w = initm(n, n);
+    p.u = initm(ny, nx);
+    p.v = initm(ny, nx);
+    p.w = initm(ny, nx);
 
-    if (poisson_type == 3) fft_setup(n, n);
+    if (poisson_type == 3) fft_setup(nx, ny);
     return p;
+}
+
+static problem problem_alloc(int n, int time_scheme, int poisson_type, double dt, double poisson_tol)
+{
+    return problem_alloc_xy(n, n, time_scheme, poisson_type, dt, poisson_tol);
 }
 
 // The operators are referenced through pointers, so bind them once the
@@ -272,33 +280,73 @@ static void test_finitediff_rows(void)
 // CPU tests
 // ---------------------------------------------------------------------------
 
+// Each derivative operator must differentiate along its own axis. The test
+// functions are polynomials every row of the operator (boundary rows
+// included) differentiates exactly, and their derivatives along the other axis
+// are different, so swapping x and y would show up as an O(1) error.
+static void test_cpu_operator_axes(int nx, int ny)
+{
+    int i, j, k, N = nx * ny;
+    char name[96];
+    problem p = problem_alloc_xy(nx, ny, 2, 3, 0.002, 1E-3);
+    double *f = (double *)malloc(N * sizeof(double));
+    double *d = (double *)malloc(N * sizeof(double));
+    double *e = (double *)malloc(N * sizeof(double));
+    double err;
+
+    printf("CPU: derivative operators act along x and y, %dx%d grid\n", nx, ny);
+    // DX of x(1 + y^2) is 1 + y^2; DY of y(1 + x^2) is 1 + x^2;
+    // DX2 of x^2(1 + y) is 2(1 + y); DY2 of y^2(1 + x) is 2(1 + x)
+    for (int op = 0; op < 4; op++)
+    {
+        for (i = 0; i < ny; i++)
+            for (j = 0; j < nx; j++)
+            {
+                double x = j * p.ctx.dx, y = i * p.ctx.dy;
+                k = i * nx + j;
+                if (op == 0) { f[k] = x * (1 + y * y); e[k] = 1 + y * y; }
+                if (op == 1) { f[k] = y * (1 + x * x); e[k] = 1 + x * x; }
+                if (op == 2) { f[k] = x * x * (1 + y); e[k] = 2 * (1 + y); }
+                if (op == 3) { f[k] = y * y * (1 + x); e[k] = 2 * (1 + x); }
+            }
+        spmv(op == 0 ? p.DX : op == 1 ? p.DY : op == 2 ? p.DX2 : p.DY2, f, d);
+        err = rel_diff(d, e, N);
+        snprintf(name, sizeof(name), "%s exact on its test polynomial", op == 0 ? "DX" : op == 1 ? "DY" : op == 2 ? "DX2" : "DY2");
+        check(name, err, 1E-9);
+    }
+
+    free(f); free(d); free(e);
+    problem_free(&p);
+}
+
 // A sine mode that vanishes on the wall nodes is an eigenvector of the discrete
 // Laplacian, so the FFT solver must return it divided by its eigenvalue.
-// n = 8, 9, 10 and 17 cover a transform pass with fewer than one batch of 8
-// rows, exactly one batch, and a full batch plus a short one.
-static void test_cpu_poisson_fft(int n)
+// Fields are ny rows (y) of nx values (x). Sizes 8, 9, 10 and 17 cover a
+// transform pass with fewer than one batch of 8 rows, exactly one batch, and
+// a full batch plus a short one.
+static void test_cpu_poisson_fft(int nx, int ny)
 {
-    int i, j, p = 3 < n - 2 ? 3 : 1, q = 5 < n - 2 ? 5 : 2;
+    int i, j, p = 3 < ny - 2 ? 3 : 1, q = 5 < nx - 2 ? 5 : 2;
     char name[96];
-    double dx = 1.0 / (n - 1);
-    mtrx f = initm(n, n), psi = initm(n, n), expected = initm(n, n);
-    double lambda = (2.0 * cos(PI * p / (double)(n - 1)) - 2.0) / (dx * dx)
-                  + (2.0 * cos(PI * q / (double)(n - 1)) - 2.0) / (dx * dx);
+    double dx = 1.0 / (nx - 1), dy = 1.0 / (ny - 1);
+    mtrx f = initm(ny, nx), psi = initm(ny, nx), expected = initm(ny, nx);
+    double lambda = (2.0 * cos(PI * p / (double)(ny - 1)) - 2.0) / (dy * dy)
+                  + (2.0 * cos(PI * q / (double)(nx - 1)) - 2.0) / (dx * dx);
 
-    printf("CPU: FFT Poisson solver against an exact eigenmode, %dx%d grid\n", n, n);
-    for (i = 1; i < n - 1; i++)
-        for (j = 1; j < n - 1; j++)
+    printf("CPU: FFT Poisson solver against an exact eigenmode, %dx%d grid\n", nx, ny);
+    for (i = 1; i < ny - 1; i++)
+        for (j = 1; j < nx - 1; j++)
         {
-            MAt(f, i, j) = sin(PI * i * p / (double)(n - 1))
-                         * sin(PI * j * q / (double)(n - 1));
+            MAt(f, i, j) = sin(PI * i * p / (double)(ny - 1))
+                         * sin(PI * j * q / (double)(nx - 1));
             MAt(expected, i, j) = MAt(f, i, j) / lambda;
         }
 
-    fft_setup(n, n);
-    poisson_FFT(f, psi, dx, dx);
+    fft_setup(nx, ny);
+    poisson_FFT(f, psi, dx, dy);
     fft_cleanup();
-    snprintf(name, sizeof(name), "psi vs eigenmode / eigenvalue, n = %d", n);
-    check(name, rel_diff(psi.M, expected.M, n * n), 1E-10);
+    snprintf(name, sizeof(name), "psi vs eigenmode / eigenvalue, %dx%d", nx, ny);
+    check(name, rel_diff(psi.M, expected.M, nx * ny), 1E-10);
 
     freem(&f); freem(&psi); freem(&expected);
 }
@@ -315,36 +363,8 @@ static double wall_max(mtrx a)
     return m;
 }
 
-// All three solvers must solve the same discrete problem: once the iterative
-// ones have converged they agree with the direct one, and all three put
-// psi = 0 on the wall nodes.
-static void test_cpu_poisson_agree(void)
-{
-    int n = 24;
-    double dx = 1.0 / (n - 1);
-    double rho = cos(PI / (n - 1));
-    double beta = 2.0 / (1.0 + sqrt(1.0 - rho * rho));
-    mtrx f = initm(n, n), fft = initm(n, n), sor = initm(n, n), gs = initm(n, n);
-    mtrx scratch = initm(n, n);
-
-    printf("CPU: FFT, SOR and Gauss-Seidel solve the same problem\n");
-    fill_pseudo_random(f.M, n * n, 5u);
-
-    fft_setup(n, n);
-    poisson_FFT(f, fft, dx, dx);
-    fft_cleanup();
-    poisson_SOR(f, sor, scratch, dx, dx, 200000, 1E-13, beta);
-    poisson(f, gs, scratch, dx, dx, 200000, 1E-13);
-
-    check("SOR vs FFT", rel_diff(sor.M, fft.M, n * n), 1E-9);
-    check("Gauss-Seidel vs FFT", rel_diff(gs.M, fft.M, n * n), 1E-9);
-    check("psi on the wall nodes, all three solvers",
-          wall_max(fft) + wall_max(sor) + wall_max(gs), 0.0);
-
-    freem(&f); freem(&fft); freem(&sor); freem(&gs); freem(&scratch);
-}
-
-// Largest residual of the 5-point Laplacian at the interior points
+// Largest residual of the 5-point Laplacian at the interior points. Row
+// neighbours (i +- 1) are y-neighbours, column neighbours (j +- 1) x-neighbours.
 static double poisson_residual(mtrx f, mtrx psi, double dx, double dy)
 {
     int i, j;
@@ -353,13 +373,42 @@ static double poisson_residual(mtrx f, mtrx psi, double dx, double dy)
     for (i = 1; i < f.m - 1; i++)
         for (j = 1; j < f.n - 1; j++)
         {
-            r = (MAt(psi, i+1, j) - 2.0 * MAt(psi, i, j) + MAt(psi, i-1, j)) / (dx * dx)
-              + (MAt(psi, i, j+1) - 2.0 * MAt(psi, i, j) + MAt(psi, i, j-1)) / (dy * dy)
+            r = (MAt(psi, i+1, j) - 2.0 * MAt(psi, i, j) + MAt(psi, i-1, j)) / (dy * dy)
+              + (MAt(psi, i, j+1) - 2.0 * MAt(psi, i, j) + MAt(psi, i, j-1)) / (dx * dx)
               - MAt(f, i, j);
             if (isnan(r)) return NAN;
             if (fabs(r) > rmax) rmax = fabs(r);
         }
     return rmax;
+}
+
+// All three solvers must solve the same discrete problem: once the iterative
+// ones have converged they agree with the direct one and satisfy the 5-point
+// equations, and all three put psi = 0 on the wall nodes.
+static void test_cpu_poisson_agree(int nx, int ny)
+{
+    double dx = 1.0 / (nx - 1), dy = 1.0 / (ny - 1);
+    double rho = 0.5 * (cos(PI / (nx - 1)) + cos(PI / (ny - 1)));
+    double beta = 2.0 / (1.0 + sqrt(1.0 - rho * rho));
+    mtrx f = initm(ny, nx), fft = initm(ny, nx), sor = initm(ny, nx), gs = initm(ny, nx);
+    mtrx scratch = initm(ny, nx);
+
+    printf("CPU: FFT, SOR and Gauss-Seidel solve the same problem, %dx%d grid\n", nx, ny);
+    fill_pseudo_random(f.M, nx * ny, 5u);
+
+    fft_setup(nx, ny);
+    poisson_FFT(f, fft, dx, dy);
+    fft_cleanup();
+    poisson_SOR(f, sor, scratch, dx, dy, 400000, 1E-13, beta);
+    poisson(f, gs, scratch, dx, dy, 400000, 1E-13);
+
+    check("FFT residual", poisson_residual(f, fft, dx, dy), 1E-8);
+    check("SOR vs FFT", rel_diff(sor.M, fft.M, nx * ny), 1E-9);
+    check("Gauss-Seidel vs FFT", rel_diff(gs.M, fft.M, nx * ny), 1E-9);
+    check("psi on the wall nodes, all three solvers",
+          wall_max(fft) + wall_max(sor) + wall_max(gs), 0.0);
+
+    freem(&f); freem(&fft); freem(&sor); freem(&gs); freem(&scratch);
 }
 
 static void test_cpu_poisson_iterative(void)
@@ -383,23 +432,23 @@ static void test_cpu_poisson_iterative(void)
 
 // Short lid-driven cavity run: the fields must stay finite, the lid must
 // have spun up the flow, and the velocity field must be divergence-free.
-static void test_cpu_step(int time_scheme, const char *label)
+static void test_cpu_step(int nx, int ny, int time_scheme, const char *label)
 {
-    int t, n = 32;
+    int t, N = nx * ny;
     double cmax, cmin;
     char name[96];
-    problem p = problem_alloc(n, time_scheme, 3, 0.002, 1E-3);
+    problem p = problem_alloc_xy(nx, ny, time_scheme, 3, 0.002, 1E-3);
     problem_bind(&p);
 
-    printf("CPU: 50 steps of the lid-driven cavity, %s + FFT\n", label);
+    printf("CPU: 50 steps of the lid-driven cavity, %s + FFT, %dx%d grid\n", label, nx, ny);
     for (t = 0; t < 50; t++)
         step(p.w, p.u, p.v, p.dt, p.time_scheme, &p.bc, &p.ctx);
     continuity_range(&p, &cmax, &cmin);
 
     snprintf(name, sizeof(name), "%s: fields finite (max |w|)", label);
-    check(name, max_abs(p.w.M, n * n), 1E6);
+    check(name, max_abs(p.w.M, N), 1E6);
     snprintf(name, sizeof(name), "%s: lid drives the flow (-max |u|)", label);
-    check(name, -max_abs(p.u.M, n * n), -1E-3);
+    check(name, -max_abs(p.u.M, N), -1E-3);
     snprintf(name, sizeof(name), "%s: max |du/dx + dv/dy|", label);
     check(name, fmax(fabs(cmax), fabs(cmin)), 1E-9);
 
@@ -623,12 +672,12 @@ static gpu_solver *gpu_for(problem *p)
     return g;
 }
 
-static void test_gpu_spmv(int n)
+static void test_gpu_spmv(int nx, int ny)
 {
-    int op, N = n * n;
+    int op, N = nx * ny;
     char name[96];
     const char *op_name[] = {"DX", "DY", "DX2", "DY2"};
-    problem p = problem_alloc(n, 2, 3, 0.002, 1E-3);
+    problem p = problem_alloc_xy(nx, ny, 2, 3, 0.002, 1E-3);
     problem_bind(&p);
     gpu_solver *g = gpu_for(&p);
     smtrx *ops[] = {&p.DX, &p.DY, &p.DX2, &p.DY2};
@@ -636,7 +685,7 @@ static void test_gpu_spmv(int n)
     double *y_cpu = (double *)malloc(N * sizeof(double));
     double *y_gpu = (double *)malloc(N * sizeof(double));
 
-    printf("GPU: CSR SpMV, %dx%d grid\n", n, n);
+    printf("GPU: CSR SpMV, %dx%d grid\n", nx, ny);
     fill_pseudo_random(x, N, 11u);
     for (op = 0; op < 4; op++)
     {
@@ -651,16 +700,16 @@ static void test_gpu_spmv(int n)
     problem_free(&p);
 }
 
-static void test_gpu_poisson(int n, int poisson_type, const char *label, double limit)
+static void test_gpu_poisson(int nx, int ny, int poisson_type, const char *label, double limit)
 {
-    int N = n * n;
+    int N = nx * ny;
     char name[96];
-    problem p = problem_alloc(n, 2, poisson_type, 0.002, 1E-10);
+    problem p = problem_alloc_xy(nx, ny, 2, poisson_type, 0.002, 1E-10);
     problem_bind(&p);
     gpu_solver *g = gpu_for(&p);
-    mtrx w = initm(n, n), f = initm(n, n), psi_cpu = initm(n, n), psi_gpu = initm(n, n);
+    mtrx w = initm(ny, nx), f = initm(ny, nx), psi_cpu = initm(ny, nx), psi_gpu = initm(ny, nx);
 
-    printf("GPU: %s Poisson solver, %dx%d grid\n", label, n, n);
+    printf("GPU: %s Poisson solver, %dx%d grid\n", label, nx, ny);
     fill_pseudo_random(w.M, N, 23u);
 
     // CPU solvers take the right-hand side f = -w
@@ -691,18 +740,18 @@ static void test_gpu_poisson(int n, int poisson_type, const char *label, double 
 
 // Run the same case on both backends and compare the fields afterwards.
 // bc == NULL keeps the lid-driven cavity.
-static void test_gpu_step(int n, int steps, double dt, int time_scheme, int poisson_type,
+static void test_gpu_step(int nx, int ny, int steps, double dt, int time_scheme, int poisson_type,
                           double poisson_tol, const wall_bc *bc, const char *label, double limit)
 {
-    int t, N = n * n;
+    int t, N = nx * ny;
     char name[96];
-    problem p = problem_alloc(n, time_scheme, poisson_type, dt, poisson_tol);
+    problem p = problem_alloc_xy(nx, ny, time_scheme, poisson_type, dt, poisson_tol);
     problem_bind(&p);
     if (bc) p.bc = *bc;
     gpu_solver *g = gpu_for(&p);
-    mtrx u = initm(n, n), v = initm(n, n), w = initm(n, n);
+    mtrx u = initm(ny, nx), v = initm(ny, nx), w = initm(ny, nx);
 
-    printf("GPU: %d steps, %s, %dx%d grid\n", steps, label, n, n);
+    printf("GPU: %d steps, %s, %dx%d grid\n", steps, label, nx, ny);
     gpu_set_fields(g, &p.u, &p.v, &p.w);
     for (t = 0; t < steps; t++)
     {
@@ -783,32 +832,41 @@ static void run_gpu_tests(void)
     // 300x300 is large enough for the reductions to span several passes
     GPU_TEST(test_gpu_fields(16));
     GPU_TEST(test_gpu_fields(300));
-    GPU_TEST(test_gpu_spmv(32));
-    GPU_TEST(test_gpu_spmv(45));
-    GPU_TEST(test_gpu_spmv(300));
-    GPU_TEST(test_gpu_poisson(32, 3, "FFT", 1E-12));
-    GPU_TEST(test_gpu_poisson(45, 3, "FFT", 1E-12));
-    GPU_TEST(test_gpu_poisson(24, 2, "SOR", 1E-7));
-    GPU_TEST(test_gpu_poisson(24, 1, "Gauss-Seidel", 1E-7));
-    GPU_TEST(test_gpu_step(32, 50, 0.002, 2, 3, 1E-10, NULL, "RK4 + FFT", 1E-11));
-    GPU_TEST(test_gpu_step(32, 50, 0.002, 1, 3, 1E-10, NULL, "Euler + FFT", 1E-11));
-    GPU_TEST(test_gpu_step(45, 50, 0.002, 2, 3, 1E-10, NULL, "RK4 + FFT", 1E-11));
-    GPU_TEST(test_gpu_step(128, 10, 0.0005, 2, 3, 1E-10, NULL, "RK4 + FFT", 1E-11));
-    GPU_TEST(test_gpu_step(32, 20, 0.002, 2, 3, 1E-10, &four_walls,
+    GPU_TEST(test_gpu_spmv(32, 32));
+    GPU_TEST(test_gpu_spmv(45, 45));
+    GPU_TEST(test_gpu_spmv(300, 300));
+    GPU_TEST(test_gpu_spmv(37, 21));
+    GPU_TEST(test_gpu_poisson(32, 32, 3, "FFT", 1E-12));
+    GPU_TEST(test_gpu_poisson(45, 45, 3, "FFT", 1E-12));
+    GPU_TEST(test_gpu_poisson(33, 20, 3, "FFT", 1E-12));
+    GPU_TEST(test_gpu_poisson(20, 33, 3, "FFT", 1E-12));
+    GPU_TEST(test_gpu_poisson(26, 15, 2, "SOR", 1E-7));
+    GPU_TEST(test_gpu_poisson(24, 24, 2, "SOR", 1E-7));
+    GPU_TEST(test_gpu_poisson(24, 24, 1, "Gauss-Seidel", 1E-7));
+    GPU_TEST(test_gpu_step(32, 32, 50, 0.002, 2, 3, 1E-10, NULL, "RK4 + FFT", 1E-11));
+    GPU_TEST(test_gpu_step(32, 32, 50, 0.002, 1, 3, 1E-10, NULL, "Euler + FFT", 1E-11));
+    GPU_TEST(test_gpu_step(45, 45, 50, 0.002, 2, 3, 1E-10, NULL, "RK4 + FFT", 1E-11));
+    GPU_TEST(test_gpu_step(128, 128, 10, 0.0005, 2, 3, 1E-10, NULL, "RK4 + FFT", 1E-11));
+    GPU_TEST(test_gpu_step(40, 24, 50, 0.002, 2, 3, 1E-10, NULL, "RK4 + FFT", 1E-11));
+    GPU_TEST(test_gpu_step(24, 40, 50, 0.002, 1, 3, 1E-10, NULL, "Euler + FFT", 1E-11));
+    GPU_TEST(test_gpu_step(40, 24, 20, 0.002, 2, 3, 1E-10, &four_walls,
+                           "RK4 + FFT, four moving walls", 1E-11));
+    GPU_TEST(test_gpu_step(26, 15, 3, 0.002, 2, 2, 1E-10, NULL, "RK4 + SOR", 1E-7));
+    GPU_TEST(test_gpu_step(32, 32, 20, 0.002, 2, 3, 1E-10, &four_walls,
                            "RK4 + FFT, four moving walls", 1E-11));
 
     // The iterative solvers are run to a tight tolerance here. The default
     // CPU build sweeps lexicographically and the GPU red-black, so the two
     // only agree once the iteration has converged.
-    GPU_TEST(test_gpu_step(24, 3, 0.002, 2, 2, 1E-10, NULL, "RK4 + SOR", 1E-7));
-    GPU_TEST(test_gpu_step(24, 3, 0.002, 1, 1, 1E-10, NULL, "Euler + Gauss-Seidel", 1E-7));
+    GPU_TEST(test_gpu_step(24, 24, 3, 0.002, 2, 2, 1E-10, NULL, "RK4 + SOR", 1E-7));
+    GPU_TEST(test_gpu_step(24, 24, 3, 0.002, 1, 1, 1E-10, NULL, "Euler + Gauss-Seidel", 1E-7));
 #ifdef _OPENMP
     // With OPENMP=1 the CPU sweeps red-black too, so the backends must also
     // agree at the shipped tolerance, where the iteration stops far from
     // convergence.
-    GPU_TEST(test_gpu_step(64, 10, 0.005, 2, 2, 1E-3, NULL,
+    GPU_TEST(test_gpu_step(64, 64, 10, 0.005, 2, 2, 1E-3, NULL,
                            "RK4 + SOR, shipped tolerance", 1E-9));
-    GPU_TEST(test_gpu_step(24, 10, 0.002, 1, 1, 1E-3, NULL,
+    GPU_TEST(test_gpu_step(24, 24, 10, 0.002, 1, 1, 1E-3, NULL,
                            "Euler + Gauss-Seidel, shipped tolerance", 1E-9));
 #endif
 }
@@ -831,15 +889,22 @@ int main(int argc, char **argv)
 #endif
     test_finitediff_exactness();
     test_finitediff_rows();
-    test_cpu_poisson_fft(8);
-    test_cpu_poisson_fft(9);
-    test_cpu_poisson_fft(10);
-    test_cpu_poisson_fft(17);
-    test_cpu_poisson_fft(32);
-    test_cpu_poisson_agree();
+    test_cpu_operator_axes(13, 9);
+    test_cpu_operator_axes(9, 13);
+    test_cpu_poisson_fft(8, 8);
+    test_cpu_poisson_fft(9, 9);
+    test_cpu_poisson_fft(10, 10);
+    test_cpu_poisson_fft(17, 17);
+    test_cpu_poisson_fft(32, 32);
+    test_cpu_poisson_fft(33, 20);
+    test_cpu_poisson_fft(9, 17);
+    test_cpu_poisson_agree(24, 24);
+    test_cpu_poisson_agree(26, 15);
     test_cpu_poisson_iterative();
-    test_cpu_step(2, "RK4");
-    test_cpu_step(1, "Euler");
+    test_cpu_step(32, 32, 2, "RK4");
+    test_cpu_step(32, 32, 1, "Euler");
+    test_cpu_step(40, 24, 2, "RK4");
+    test_cpu_step(24, 40, 2, "RK4");
     test_cpu_stability_limit(1, "Euler");
     test_cpu_stability_limit(2, "RK4");
     test_cpu_time_step_limits();
