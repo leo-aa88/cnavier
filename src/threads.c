@@ -1,5 +1,5 @@
 #ifdef __linux__
-#define _GNU_SOURCE // sched_getaffinity
+#define _GNU_SOURCE // NOLINT(bugprone-reserved-identifier): needed for sched_getaffinity
 #include <sched.h>
 #endif
 #include <stdio.h>

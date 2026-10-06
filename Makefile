@@ -24,6 +24,7 @@ endif
 # Stricter warnings, as in CI: make WERROR=1
 ifeq ($(WERROR),1)
   CC_FLAGS += -Wextra -Werror
+  NVCC_WERROR = -Werror all-warnings -Xcompiler -Wall,-Wextra,-Werror
 endif
 
 # AddressSanitizer and UndefinedBehaviorSanitizer: make SANITIZE=1 (CPU builds)
@@ -59,7 +60,7 @@ $(OBJ_DIR)/%.o: $(SRC_DIR)/%.c $(CONFIG)
 	$(CC) $(CC_FLAGS) -c $< -I$(HDR_DIR) -o $@ $(LFLAGS)
 
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.cu $(CONFIG)
-	$(NVCC) $(NVCC_FLAGS) -c $< -I$(HDR_DIR) -o $@
+	$(NVCC) $(NVCC_FLAGS) $(NVCC_WERROR) -c $< -I$(HDR_DIR) -o $@
 
 $(OBJ_DIR)/%.o: $(TEST_DIR)/%.c $(CONFIG)
 	$(CC) $(CC_FLAGS) -c $< -I$(HDR_DIR) -o $@
@@ -68,7 +69,7 @@ $(OBJ_DIR):
 	mkdir $@
 
 $(CONFIG): FORCE | $(OBJ_DIR)
-	@echo '$(CC) $(CC_FLAGS) $(NVCC) $(NVCC_FLAGS)' | cmp -s - $@ || echo '$(CC) $(CC_FLAGS) $(NVCC) $(NVCC_FLAGS)' > $@
+	@echo '$(CC) $(CC_FLAGS) $(NVCC) $(NVCC_FLAGS) $(NVCC_WERROR)' | cmp -s - $@ || echo '$(CC) $(CC_FLAGS) $(NVCC) $(NVCC_FLAGS) $(NVCC_WERROR)' > $@
 
 # Tests: make test (add CUDA=1 to also check the GPU backend against the CPU)
 $(TEST_BIN): $(OBJ_DIR)/test_solver.o $(filter-out $(OBJ_DIR)/main.o, $(OBJ_FILES))
@@ -107,9 +108,13 @@ cppcheck:
 	$(CPPCHECK) --enable=warning,performance,portability --std=c11 --error-exitcode=1 \
 	            --inline-suppr --quiet -I$(HDR_DIR) $(LINT_FILES)
 
-# Checks are listed in .clang-tidy
+# Checks are listed in .clang-tidy. Run twice so that the code behind
+# #ifdef USE_CUDA and #ifdef _OPENMP is analysed too. cppcheck explores those
+# configurations by itself. Neither tool reads the CUDA source; nvcc's own
+# warnings are errors with WERROR=1.
 tidy:
 	$(CLANG_TIDY) --quiet $(LINT_FILES) -- -I$(HDR_DIR) -std=gnu11
+	$(CLANG_TIDY) --quiet $(LINT_FILES) -- -I$(HDR_DIR) -std=gnu11 -DUSE_CUDA -fopenmp
 
 # Test suite and a short solver run under ASan + UBSan
 test-asan:

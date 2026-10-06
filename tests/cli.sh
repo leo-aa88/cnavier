@@ -1,9 +1,12 @@
 #!/bin/sh
-# Command-line checks: every invalid invocation must exit with a non-zero
-# status and write nothing; the valid edge cases must run.
-# Usage: tests/cli.sh /absolute/path/to/cnavier
+# Command-line checks: every invalid invocation must be refused the way the
+# program refuses input (exit status 1 with an error or usage message) and
+# write nothing; a crash or a missing binary is a failure, not a refusal. The
+# valid edge cases must run.
+# Usage: tests/cli.sh path/to/cnavier
 set -u
-bin=$1
+bin=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
+[ -x "$bin" ] || { echo "no executable at $bin"; exit 1; }
 failed=0
 count=0
 
@@ -21,7 +24,8 @@ expect() {
     if [ "$want" = 0 ]; then
         ok=$([ $status -eq 0 ] && echo yes || echo no)
     else
-        ok=$([ $status -ne 0 ] && [ "$files" -eq 0 ] && echo yes || echo no)
+        refused=$(echo "$out" | grep -cE '\*\* Error|^Usage:')
+        ok=$([ $status -eq 1 ] && [ "$refused" -gt 0 ] && [ "$files" -eq 0 ] && echo yes || echo no)
     fi
     if [ "$ok" = yes ]; then
         echo "  [ ok ] exit $status, $files files: cnavier $*"

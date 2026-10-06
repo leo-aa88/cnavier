@@ -346,41 +346,62 @@ static mtrx run_to(int n, int scheme, double dt, double T)
     return w;
 }
 
-// Observed order of the time integration: halve dt and compare the errors
-// against a run with a much smaller step. Euler is first order. RK4 is
-// fourth order in its stages, but the wall vorticity is updated once per
-// step, from the velocities at its start, so the coupled scheme is first
-// order too; the RK4 check guards against it getting worse than that.
+// Largest |a - b| over the interior nodes. The wall rows of w are left
+// stale by step() (it sets the wall vorticity at the start of the next step),
+// so they say nothing about the time integration.
+static double interior_diff(mtrx a, mtrx b)
+{
+    int i, j;
+    double m = 0.0;
+    for (i = 1; i < a.m - 1; i++)
+        for (j = 1; j < a.n - 1; j++)
+        {
+            double d = fabs(MAt(a, i, j) - MAt(b, i, j));
+            if (isnan(d)) return NAN;
+            if (d > m) m = d;
+        }
+    return m;
+}
+
+// Observed order of the time integration: halve dt and compare the interior
+// errors against a run of the same scheme with a much smaller step. Euler is
+// first order. RK4 is fourth order in its stages, but the wall vorticity is
+// set once per step, from the velocities at its start, and not between the
+// stages, so the coupled scheme is first order too, and at the same step its
+// interior error is about Euler's (0.024 against 0.025 here). The RK4 check
+// therefore only guards against it getting worse than first order; it cannot
+// tell RK4 from Euler. Once the wall vorticity is updated at every stage, the
+// interior error converges at fourth order and this test should require it.
 static void test_temporal_order(void)
 {
     int n = 17, s, k;
     double T = 0.2, order;
     char name[96];
-    mtrx ref = run_to(n, 2, T / 1024, T);
 
     printf("Unit: observed order of the time integration, %dx%d grid, t = %g\n", n, n, T);
     for (s = 1; s <= 2; s++)
     {
         double err[2];
+        mtrx ref = run_to(n, s, T / 4096, T);
         for (k = 0; k < 2; k++)
         {
             mtrx w = run_to(n, s, T / (64 << k), T);
-            for (int i = 0; i < n * n; i++) w.M[i] -= ref.M[i];
-            err[k] = max_abs(w.M, n * n);
+            err[k] = interior_diff(w, ref);
             freem(&w);
         }
+        freem(&ref);
         order = log2(err[0] / err[1]);
         if (s == 1)
         {
-            check("Euler: |observed order - 1|", fabs(order - 1.0), 0.15);
+            snprintf(name, sizeof(name), "Euler: observed order %.2f, |order - 1|", order);
+            check(name, isnan(order) ? INFINITY : fabs(order - 1.0), 0.15);
         }
         else
         {
             snprintf(name, sizeof(name), "RK4: observed order %.2f, at least first", order);
-            check(name, 1.0 - order, 0.1);
+            check(name, isnan(order) ? INFINITY : 1.0 - order, 0.1);
         }
     }
-    freem(&ref);
 }
 
 // Wall velocities go to the right nodes; at the corners the walls x = 0 and
@@ -1179,7 +1200,7 @@ static void test_gpu_fields(int n)
 }
 
 // Run a GPU test, or count it as skipped when there is no device to run it on
-#define GPU_TEST(call) do { if (have_gpu) call; else n_skipped++; } while (0)
+#define GPU_TEST(call) do { if (have_gpu) (call); else n_skipped++; } while (0)
 
 static void run_gpu_tests(void)
 {
