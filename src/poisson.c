@@ -178,13 +178,19 @@ typedef struct
     ptrdiff_t step; // offset between batches, in doubles
 } dst_pass;
 
-static dst_pass pass_rows, pass_cols;
-static double  *fft_buf;  // interior work buffer, (ny-2) rows of (nx-2), row-major
-static int      fft_nx;
-static int      fft_ny;
+struct fft_solver
+{
+    int      nx, ny;
+    double  *buf;                 // interior work buffer, (ny-2) rows of (nx-2), row-major
+    dst_pass pass_rows, pass_cols;
+};
+
+// fftw_cleanup() may only run once no plan is left, i.e. after the last
+// solver is freed
+static int live_solvers = 0;
 
 // count transforms of length len, elements stride apart, transforms dist apart
-static dst_pass make_pass(int len, int count, int stride, int dist)
+static dst_pass make_pass(double *buf, int len, int count, int stride, int dist)
 {
     dst_pass p;
     fftw_r2r_kind kind = FFTW_RODFT00;
@@ -194,11 +200,11 @@ static dst_pass make_pass(int len, int count, int stride, int dist)
     p.full  = NULL;
     p.rest  = NULL;
     if (count >= DST_BATCH)
-        p.full = fftw_plan_many_r2r(1, &len, DST_BATCH, fft_buf, NULL, stride, dist,
-                                    fft_buf, NULL, stride, dist, &kind, FFTW_ESTIMATE);
+        p.full = fftw_plan_many_r2r(1, &len, DST_BATCH, buf, NULL, stride, dist,
+                                    buf, NULL, stride, dist, &kind, FFTW_ESTIMATE);
     if (count % DST_BATCH)
-        p.rest = fftw_plan_many_r2r(1, &len, count % DST_BATCH, fft_buf, NULL, stride, dist,
-                                    fft_buf, NULL, stride, dist, &kind, FFTW_ESTIMATE);
+        p.rest = fftw_plan_many_r2r(1, &len, count % DST_BATCH, buf, NULL, stride, dist,
+                                    buf, NULL, stride, dist, &kind, FFTW_ESTIMATE);
     if ((count >= DST_BATCH && !p.full) || (count % DST_BATCH && !p.rest))
     {
         printf("** Error: FFTW could not plan the sine transform **\n");
@@ -213,7 +219,7 @@ static void free_pass(dst_pass *p)
     if (p->rest) fftw_destroy_plan(p->rest);
 }
 
-static void run_pass(const dst_pass *p, int parallel)
+static void run_pass(const dst_pass *p, double *buf, int parallel)
 {
     int b, batches = (p->count + DST_BATCH - 1) / DST_BATCH;
     (void)parallel;
@@ -223,44 +229,54 @@ static void run_pass(const dst_pass *p, int parallel)
     for (b = 0; b < batches; b++)
     {
         // Every batch but a short last one holds exactly DST_BATCH transforms
-        double *x = fft_buf + b * p->step;
+        double *x = buf + b * p->step;
         fftw_execute_r2r(p->count - b * DST_BATCH >= DST_BATCH ? p->full : p->rest, x, x);
     }
 }
 
 // 2D DST-I of the interior buffer, in place
-static void dst2d(void)
+static void dst2d(fft_solver *s)
 {
-    int parallel = fft_nx * fft_ny >= OMP_MIN_WORK;
-    run_pass(&pass_rows, parallel);
-    run_pass(&pass_cols, parallel);
+    int parallel = s->nx * s->ny >= OMP_MIN_WORK;
+    run_pass(&s->pass_rows, s->buf, parallel);
+    run_pass(&s->pass_cols, s->buf, parallel);
 }
 
-void fft_setup(int nx, int ny)
+fft_solver *fft_setup(int nx, int ny)
 {
     int rows = ny - 2, cols = nx - 2; // interior nodes; fields are ny rows of nx
+    fft_solver *s = (fft_solver *)malloc(sizeof(fft_solver));
 
-    fft_nx  = nx;
-    fft_ny  = ny;
-    fft_buf = (double *)fftw_malloc((size_t)rows * cols * sizeof(double));
-    if (!fft_buf) { printf("** Error: fftw_malloc failed **\n"); exit(1); }
+    if (!s) { printf("** Error: insufficient memory **\n"); exit(1); }
+    s->nx  = nx;
+    s->ny  = ny;
+    s->buf = (double *)fftw_malloc((size_t)rows * cols * sizeof(double));
+    if (!s->buf) { printf("** Error: fftw_malloc failed **\n"); exit(1); }
 
-    pass_rows = make_pass(cols, rows, 1, cols); // rows of cols contiguous values (x)
-    pass_cols = make_pass(rows, cols, cols, 1); // columns, values cols apart (y)
+    s->pass_rows = make_pass(s->buf, cols, rows, 1, cols); // rows of cols contiguous values (x)
+    s->pass_cols = make_pass(s->buf, rows, cols, cols, 1); // columns, values cols apart (y)
+    live_solvers++;
+    return s;
 }
 
-void fft_cleanup(void)
+void fft_cleanup(fft_solver *s)
 {
-    free_pass(&pass_rows);
-    free_pass(&pass_cols);
-    fftw_free(fft_buf);
-    fftw_cleanup(); // release FFTW's planner state, so leak checkers see nothing left
+    if (!s) return;
+    free_pass(&s->pass_rows);
+    free_pass(&s->pass_cols);
+    fftw_free(s->buf);
+    free(s);
+    // Release FFTW's planner state once nothing uses it, so leak checkers see
+    // nothing left
+    if (--live_solvers == 0)
+        fftw_cleanup();
 }
 
-void poisson_FFT(mtrx f, mtrx u, double dx, double dy)
+void poisson_FFT(fft_solver *s, mtrx f, mtrx u, double dx, double dy)
 {
     int i;
-    int nx = fft_nx, ny = fft_ny;
+    int nx = s->nx, ny = s->ny;
+    double *fft_buf = s->buf;
     int rows = ny - 2, cols = nx - 2; // interior: row index i is y, column j is x
 
     // Copy the interior right-hand side into the work buffer
@@ -275,7 +291,7 @@ void poisson_FFT(mtrx f, mtrx u, double dx, double dy)
     }
 
     // Forward DST-I
-    dst2d();
+    dst2d(s);
 
     // Divide by eigenvalues of the 2D Laplacian under DST-I:
     //   λ_ij = (2*cos(π*(i+1)/(rows+1)) - 2) / dy²
@@ -298,7 +314,7 @@ void poisson_FFT(mtrx f, mtrx u, double dx, double dy)
     }
 
     // Inverse DST-I (same transform; normalise by 1/(2(rows+1)) * 1/(2(cols+1)))
-    dst2d();
+    dst2d(s);
 
     // Write the normalised interior into u; u = 0 on the wall nodes
 #ifdef _OPENMP

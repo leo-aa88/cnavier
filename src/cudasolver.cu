@@ -423,10 +423,10 @@ static void dwdt(gpu_solver *g, const double *w, double *out)
 // Public interface
 // ---------------------------------------------------------------------------
 
-gpu_solver *gpu_init(const rk4_ctx *ctx, double dt, int time_scheme, const wall_bc *bc)
+gpu_solver *gpu_init(const solver_config *cfg)
 {
     int i, count = 0;
-    int nx = ctx->nx, ny = ctx->ny, n = nx * ny;
+    int nx = cfg->nx, ny = cfg->ny, n = nx * ny;
 
     // Probe for a device. cudaFree(0) forces the context to be created, so a
     // device that is present but cannot be used is also reported here.
@@ -435,7 +435,7 @@ gpu_solver *gpu_init(const rk4_ctx *ctx, double dt, int time_scheme, const wall_
     if (cudaSetDevice(0) != cudaSuccess || cudaFree(0) != cudaSuccess)
         return NULL;
 
-    if (ctx->poisson_type < 1 || ctx->poisson_type > 3)
+    if (cfg->poisson_type < 1 || cfg->poisson_type > 3)
     {
         printf("** Error: valid Poisson solver types are 1, 2 or 3 **\n");
         exit(1);
@@ -449,17 +449,17 @@ gpu_solver *gpu_init(const rk4_ctx *ctx, double dt, int time_scheme, const wall_
     }
 
     g->nx = nx; g->ny = ny; g->n = n;
-    g->dt = dt; g->Re = ctx->Re; g->dx = ctx->dx; g->dy = ctx->dy;
-    g->time_scheme = time_scheme;
-    g->poisson_type = ctx->poisson_type;
-    g->poisson_max_it = ctx->poisson_max_it; g->poisson_tol = ctx->poisson_tol;
-    g->beta = ctx->beta;
-    g->bc = *bc;
+    g->dt = cfg->dt; g->Re = cfg->Re; g->dx = cfg->dx; g->dy = cfg->dy;
+    g->time_scheme = cfg->time_scheme;
+    g->poisson_type = cfg->poisson_type;
+    g->poisson_max_it = cfg->poisson_max_it; g->poisson_tol = cfg->poisson_tol;
+    g->beta = cfg->beta;
+    g->bc = cfg->bc;
 
-    g->DX  = csr_upload(ctx->DX);
-    g->DY  = csr_upload(ctx->DY);
-    g->DX2 = csr_upload(ctx->DX2);
-    g->DY2 = csr_upload(ctx->DY2);
+    g->DX  = csr_upload(cfg->DX);
+    g->DY  = csr_upload(cfg->DY);
+    g->DX2 = csr_upload(cfg->DX2);
+    g->DY2 = csr_upload(cfg->DY2);
 
     g->u  = dev_alloc(n); g->v  = dev_alloc(n);
     g->w  = dev_alloc(n); g->psi = dev_alloc(n);
