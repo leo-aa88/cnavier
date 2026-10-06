@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
 #include "fluiddyn.h"
 #include "linearalg.h"
 
@@ -194,6 +195,43 @@ void rk4(mtrx w, mtrx u, mtrx v, double dt, rk4_ctx *ctx)
 
     // Final Poisson solve so u, v are consistent with w_{n+1}
     velocity_from_vorticity(w, u, v, ctx);
+}
+
+// ---------------------------------------------------------------------------
+// Time-step limit
+// ---------------------------------------------------------------------------
+
+// Sum of |coefficients| in row r of A
+static double row_abs_sum(const smtrx *A, int r)
+{
+    int k;
+    double s = 0.0;
+    for (k = A->row_ptr[r]; k < A->row_ptr[r + 1]; k++)
+        s += fabs(A->values[k]);
+    return s;
+}
+
+double max_stable_dt(const smtrx *DX2, const smtrx *DY2, int nx, int ny,
+                     double Re, double u_max, int time_scheme)
+{
+    // Largest |eigenvalue| of each second-derivative operator, taken from a
+    // row in the middle of the grid. The interior stencils are centered with
+    // coefficients of alternating sign, so the sum of their magnitudes is the
+    // value of the stencil's symbol at the highest grid frequency.
+    int centre = (ny / 2) * nx + nx / 2;
+    double lambda = (row_abs_sum(DX2, centre) + row_abs_sum(DY2, centre)) / Re;
+
+    if (time_scheme == 1)
+    {
+        // Forward Euler is stable for real eigenvalues in [-2, 0] ...
+        double dt = 2.0 / lambda;
+        // ... and, with centered advection, only while dt <= 2*nu/u^2
+        if (u_max > 0.0 && 2.0 / (Re * u_max * u_max) < dt)
+            dt = 2.0 / (Re * u_max * u_max);
+        return dt;
+    }
+    // Classical RK4 is stable on the negative real axis down to -2.785293...
+    return 2.785293563405282 / lambda;
 }
 
 // ---------------------------------------------------------------------------

@@ -358,6 +358,44 @@ static void test_cpu_step(int time_scheme, const char *label)
     problem_free(&p);
 }
 
+// The time-step limit must be sharp: just below it a run stays bounded, just
+// above it the run diverges.
+static void test_cpu_stability_limit(int time_scheme, const char *label)
+{
+    int t, n = 32;
+    double frac[2] = {0.95, 1.05};
+    char name[96];
+    int f;
+
+    printf("CPU: stability limit of %s, %dx%d grid\n", label, n, n);
+    for (f = 0; f < 2; f++)
+    {
+        problem p = problem_alloc(n, time_scheme, 3, 0.0, 1E-3);
+        problem_bind(&p);
+        double limit = max_stable_dt(&p.DX2, &p.DY2, n, n, p.ctx.Re, 1.0, time_scheme);
+        double wmax = 0.0;
+
+        p.dt = frac[f] * limit;
+        for (t = 0; t < 3000 && !(wmax > 1E6); t++)
+        {
+            step(p.w, p.u, p.v, p.dt, p.time_scheme, &p.bc, &p.ctx);
+            wmax = max_abs(p.w.M, n * n);
+        }
+        if (f == 0)
+        {
+            snprintf(name, sizeof(name), "%s at 0.95 x limit: max |w| after 3000 steps", label);
+            check(name, wmax, 1E3);
+        }
+        else
+        {
+            // A NaN counts as diverged
+            snprintf(name, sizeof(name), "%s at 1.05 x limit: diverges (-max |w|)", label);
+            check(name, isnan(wmax) ? -INFINITY : -wmax, -1E6);
+        }
+        problem_free(&p);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // GPU tests — every check compares the device result with the CPU one
 // ---------------------------------------------------------------------------
@@ -575,6 +613,8 @@ int main(void)
     test_cpu_poisson_iterative();
     test_cpu_step(2, "RK4");
     test_cpu_step(1, "Euler");
+    test_cpu_stability_limit(1, "Euler");
+    test_cpu_stability_limit(2, "RK4");
 #ifdef USE_CUDA
     run_gpu_tests();
 #endif

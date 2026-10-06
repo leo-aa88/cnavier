@@ -206,13 +206,32 @@ int main(int argc, char *argv[])
 
     int N = nx * ny;
 
-    // Courant check (u4 is the only non-zero BC velocity)
     int it_max = (int)((tf / dt) - 1);
-    double r1 = u4 * dt / dx;
-    double r2 = u4 * dt / dy;
+
+    // Stability checks, with the fastest wall as the velocity scale
+    double u_max = 0.;
+    for (i = 0; i < 4; i++)
+    {
+        if (fabs(bc.u[i]) > u_max) u_max = fabs(bc.u[i]);
+        if (fabs(bc.v[i]) > u_max) u_max = fabs(bc.v[i]);
+    }
+
+    // Courant number
+    double r1 = u_max * dt / dx;
+    double r2 = u_max * dt / dy;
     if ((r1 > max_co) || (r2 > max_co))
     {
-        printf("Unstable Solution! r1=%lf r2=%lf\n", r1, r2);
+        printf("** Error: Courant number too large (r1=%lf r2=%lf, limit %lf); use --dt %.3g or less **\n",
+               r1, r2, max_co, max_co * fmin(dx, dy) / u_max);
+        exit(1);
+    }
+
+    // Viscous limit of the explicit time scheme
+    double dt_max = max_stable_dt(&DX2, &DY2, nx, ny, Re, u_max, time_scheme);
+    if (dt > dt_max)
+    {
+        printf("** Error: dt = %g is above the stability limit of the %s scheme for this grid, Re and order; "
+               "use --dt %.3g or less **\n", dt, time_scheme == 1 ? "Euler" : "RK4", dt_max);
         exit(1);
     }
 

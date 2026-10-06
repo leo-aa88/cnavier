@@ -38,6 +38,12 @@ void dwdt(mtrx w, mtrx u, mtrx v, mtrx out, rk4_ctx *ctx);
 // RK4 time advancement — advances w, u, v by dt
 void rk4(mtrx w, mtrx u, mtrx v, double dt, rk4_ctx *ctx);
 
+// Largest stable time step of the explicit scheme (time_scheme 1=Euler,
+// 2=RK4) for the viscous term (1/Re) * (DX2 + DY2) on an nx*ny grid, and,
+// for Euler, for advection at speeds up to u_max.
+double max_stable_dt(const smtrx *DX2, const smtrx *DY2, int nx, int ny,
+                     double Re, double u_max, int time_scheme);
+
 // Dirichlet wall velocities, indexed by wall:
 // 0 -> j=0, 1 -> j=ny-1, 2 -> i=0, 3 -> i=nx-1
 typedef struct {
