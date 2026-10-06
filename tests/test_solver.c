@@ -890,7 +890,7 @@ static const char *self_path(void)
 // child fails.
 static int child_threads(const char *env)
 {
-    char cmd[4400];
+    char cmd[4400], out[32];
     int threads = -1;
     FILE *f;
 
@@ -898,7 +898,12 @@ static int child_threads(const char *env)
              "env -u OMP_NUM_THREADS -u OMP_PROC_BIND -u OMP_PLACES -u GOMP_CPU_AFFINITY %s '%s' --default-threads",
              env, self_path());
     if (!(f = popen(cmd, "r"))) return -1;
-    if (fscanf(f, "%d", &threads) != 1) threads = -1;
+    if (fgets(out, sizeof(out), f))
+    {
+        char *end;
+        long t = strtol(out, &end, 10);
+        if (end != out && t > 0 && t < 100000) threads = (int)t;
+    }
     pclose(f);
     return threads;
 }

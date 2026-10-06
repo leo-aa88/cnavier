@@ -49,7 +49,7 @@ int physical_cores(void)
         fclose(f);
         for (k = 0; k < count; k++)
             if (strcmp(seen[k], list) == 0) break;
-        if (k == count) strcpy(seen[count++], list);
+        if (k == count) snprintf(seen[count++], sizeof(seen[0]), "%s", list);
     }
     free(seen);
     return count;
