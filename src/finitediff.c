@@ -51,7 +51,7 @@ static smtrx op_to_csr(op_builder *D, int n)
 {
     int i, k, a, b, pos;
     int *count = (int *)calloc(n + 1, sizeof(int));
-    int *order = (int *)malloc((D->count > 0 ? D->count : 1) * sizeof(int));
+    int *order = (int *)calloc(D->count > 0 ? D->count : 1, sizeof(int));
     if (!count || !order)
     {
         printf("** Error: insufficient memory for finite-difference operator **\n");

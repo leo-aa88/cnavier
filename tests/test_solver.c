@@ -9,12 +9,14 @@
 #include <string.h>
 #include <math.h>
 #include <unistd.h>
+#include <sys/stat.h>
 #include "linearalg.h"
 #include "finitediff.h"
 #include "poisson.h"
 #include "fluiddyn.h"
 #include "threads.h"
 #include "backend.h"
+#include "utils.h"
 #ifdef USE_CUDA
 #include "cudasolver.h"
 #endif
@@ -154,6 +156,74 @@ static void continuity_range(problem *p, double *cmax, double *cmin)
 }
 
 // ---------------------------------------------------------------------------
+// Unit tests of the building blocks
+// ---------------------------------------------------------------------------
+
+static mtrx csr_to_dense(smtrx S)
+{
+    int i, k;
+    mtrx D = initm(S.m, S.n);
+    for (i = 0; i < S.m; i++)
+        for (k = S.row_ptr[i]; k < S.row_ptr[i + 1]; k++)
+            MAt(D, i, S.col_idx[k]) = S.values[k];
+    return D;
+}
+
+// Sparse operations against their dense counterparts
+static void test_linearalg(void)
+{
+    int i, n = 12;
+    double dx = 1.0 / (n - 1);
+    mtrx x = initm(n, 1), y_dense, d, k_dense, k_sparse, e_dense, e_sparse, a, b;
+    double y_sparse[12];
+    smtrx s, s2, s1, se;
+
+    printf("Unit: linear algebra\n");
+
+    // y = A x, dense and CSR
+    s = SDiff1(n, 6, dx);
+    d = csr_to_dense(s);
+    fill_pseudo_random(x.M, n, 3u);
+    y_dense = mtrxmul(d, x);
+    spmv(s, x.M, y_sparse);
+    check("spmv vs dense matrix product", rel_diff(y_sparse, y_dense.M, n), 1E-13);
+
+    // Kronecker products
+    s2 = SDiff2(5, 2, 0.25);
+    s1 = SDiff1(4, 2, 1.0 / 3.0);
+    a = csr_to_dense(s2);
+    b = csr_to_dense(s1);
+    k_dense = kronecker(a, b);
+    smtrx ks = skronecker(s2, s1);
+    k_sparse = csr_to_dense(ks);
+    check("skronecker vs kronecker", rel_diff(k_sparse.M, k_dense.M, 20 * 20), 0.0);
+
+    // Identity
+    se = seye(7);
+    e_sparse = csr_to_dense(se);
+    e_dense = eye(7);
+    check("seye vs eye", rel_diff(e_sparse.M, e_dense.M, 49), 0.0);
+
+    // Element-wise helpers
+    mtrx m = initm(3, 4), m2 = initm(3, 4);
+    double flat[12];
+    for (i = 0; i < 12; i++) m.M[i] = (i % 5) - 2.5 * (i == 7) + 3.0 * (i == 2);
+    flatten(m, flat, 3, 4);
+    unflatten(flat, m2, 3, 4);
+    check("flatten / unflatten round trip", rel_diff(m2.M, m.M, 12), 0.0);
+    check("maxel", fabs(maxel(m) - 5.0), 0.0);
+    check("minel", fabs(minel(m) - (-0.5)), 0.0);
+    negcpy(m2, m);
+    for (i = 0; i < 12; i++) m2.M[i] += m.M[i];
+    check("negcpy", max_abs(m2.M, 12), 0.0);
+
+    freem(&x); freem(&y_dense); freem(&d); freem(&a); freem(&b);
+    freem(&k_dense); freem(&k_sparse); freem(&e_dense); freem(&e_sparse);
+    freem(&m); freem(&m2);
+    freesm(s); freesm(s1); freesm(s2); freesm(ks); freesm(se);
+}
+
+// ---------------------------------------------------------------------------
 // Finite-difference operators
 // ---------------------------------------------------------------------------
 
@@ -260,6 +330,190 @@ static void test_finitediff_rows(void)
     check("second derivative, order 6: rows 0, 1, 5, 9", worst, 1E-12);
 
     freesm(d1); freesm(d2);
+}
+
+// Run the cavity from rest to time T and return w
+static mtrx run_to(int n, int scheme, double dt, double T)
+{
+    int t, steps = (int)floor(T / dt + 0.5);
+    problem p;
+    mtrx w = initm(n, n);
+    problem_init(&p, n, n, scheme, 3, dt, 1E-3, NULL);
+    for (t = 0; t < steps; t++)
+        step(p.w, p.u, p.v, &p.ctx);
+    mtrxcpy(w, p.w);
+    problem_free(&p);
+    return w;
+}
+
+// Observed order of the time integration: halve dt and compare the errors
+// against a run with a much smaller step. Euler is first order. RK4 is
+// fourth order in its stages, but the wall vorticity is updated once per
+// step, from the velocities at its start, so the coupled scheme is first
+// order too; the RK4 check guards against it getting worse than that.
+static void test_temporal_order(void)
+{
+    int n = 17, s, k;
+    double T = 0.2, order;
+    char name[96];
+    mtrx ref = run_to(n, 2, T / 1024, T);
+
+    printf("Unit: observed order of the time integration, %dx%d grid, t = %g\n", n, n, T);
+    for (s = 1; s <= 2; s++)
+    {
+        double err[2];
+        for (k = 0; k < 2; k++)
+        {
+            mtrx w = run_to(n, s, T / (64 << k), T);
+            for (int i = 0; i < n * n; i++) w.M[i] -= ref.M[i];
+            err[k] = max_abs(w.M, n * n);
+            freem(&w);
+        }
+        order = log2(err[0] / err[1]);
+        if (s == 1)
+        {
+            check("Euler: |observed order - 1|", fabs(order - 1.0), 0.15);
+        }
+        else
+        {
+            snprintf(name, sizeof(name), "RK4: observed order %.2f, at least first", order);
+            check(name, 1.0 - order, 0.1);
+        }
+    }
+    freem(&ref);
+}
+
+// Wall velocities go to the right nodes; at the corners the walls x = 0 and
+// x = Lx win, on the CPU as on the GPU
+static void test_wall_bc(void)
+{
+    int i, j, nx = 5, ny = 4;
+    wall_bc bc = {{1., 2., 3., 4.}, {5., 6., 7., 8.}};
+    mtrx u = initm(ny, nx), v = initm(ny, nx);
+    double bad = 0.0;
+
+    printf("Unit: wall velocities\n");
+    for (i = 0; i < nx * ny; i++) u.M[i] = v.M[i] = -1.0;
+    apply_wall_bc(u, v, &bc);
+    for (i = 0; i < ny; i++)
+        for (j = 0; j < nx; j++)
+        {
+            int wall = (j == 0) ? 0 : (j == nx - 1) ? 1 : (i == 0) ? 2 : (i == ny - 1) ? 3 : -1;
+            double eu = wall < 0 ? -1.0 : bc.u[wall], ev = wall < 0 ? -1.0 : bc.v[wall];
+            bad += fabs(MAt(u, i, j) - eu) + fabs(MAt(v, i, j) - ev);
+        }
+    check("every node has its wall's velocity, interior untouched", bad, 0.0);
+    freem(&u); freem(&v);
+}
+
+// Count the numbers in a file after the line starting with `after`
+static int count_values_after(const char *path, const char *after, int *found)
+{
+    char line[4096];
+    int count = 0, on = 0;
+    FILE *f = fopen(path, "r");
+    *found = 0;
+    if (!f) return -1;
+    while (fgets(line, sizeof(line), f))
+    {
+        if (on)
+        {
+            char *p = line, *end;
+            for (;;)
+            {
+                strtod(p, &end);
+                if (end == p) break;
+                count++;
+                p = end;
+            }
+        }
+        else if (strncmp(line, after, strlen(after)) == 0)
+            on = *found = 1;
+    }
+    fclose(f);
+    return count;
+}
+
+// The VTK and centerline writers, in a scratch directory
+static void test_output(void)
+{
+    int i, j, nx = 4, ny = 3, found;
+    char cwd[4096], tmpl[] = "/tmp/cnavier-test-XXXXXX", line[256];
+    mtrx a = initm(ny, nx), u = initm(ny, nx), v = initm(ny, nx);
+    FILE *f;
+    double worst = 0.0;
+
+    printf("Unit: output files\n");
+    if (!getcwd(cwd, sizeof(cwd)) || !mkdtemp(tmpl) || chdir(tmpl) != 0 || mkdir("output", 0700) != 0)
+    {
+        check("scratch directory for the output tests", 1.0, 0.0);
+        return;
+    }
+
+    // Files of an earlier run: one this run overwrites, one it would not reach
+    // (a later frame of a longer run), and one of another series
+    f = fopen("output/unittest-1-0.vtk", "w");
+    if (f) { fprintf(f, "stale\n1 2 3\n"); fclose(f); }
+    f = fopen("output/unittest-1-5.vtk", "w");
+    if (f) { fprintf(f, "stale\n"); fclose(f); }
+    f = fopen("output/other-1-5.vtk", "w");
+    if (f) { fprintf(f, "keep\n"); fclose(f); }
+    for (i = 0; i < nx * ny; i++) a.M[i] = 0.5 * i;
+    printvtk(a, "unittest", 1.0 / (nx - 1), 1.0 / (ny - 1));
+    f = fopen("output/unittest-1-0.vtk", "r");
+    int header = f && fgets(line, sizeof(line), f) && strncmp(line, "# vtk DataFile", 14) == 0;
+    int dims = 0, spacing = 0;
+    if (f)
+    {
+        while (fgets(line, sizeof(line), f))
+        {
+            if (strcmp(line, "DIMENSIONS 4 3 1\n") == 0) dims = 1;
+            if (strncmp(line, "SPACING 0.33333333333333331 0.5 1", 33) == 0) spacing = 1;
+        }
+        fclose(f);
+    }
+    check("VTK file starts with its header (stale file replaced)", !header, 0.0);
+    check("VTK DIMENSIONS lists x then y", !dims, 0.0);
+    check("VTK SPACING is dx dy", !spacing, 0.0);
+    check("earlier run's later frame removed, other series kept",
+          (access("output/unittest-1-5.vtk", F_OK) == 0) + (access("output/other-1-5.vtk", F_OK) != 0), 0.0);
+    check("VTK file has one value per node",
+          (double)abs(count_values_after("output/unittest-1-0.vtk", "LOOKUP_TABLE", &found) - nx * ny) + !found, 0.0);
+
+    // u = column index, v = row index: on the vertical centerline (halfway
+    // between columns 1 and 2) u is 1.5, on the horizontal one (row 1) v is 1
+    for (i = 0; i < ny; i++)
+        for (j = 0; j < nx; j++)
+        {
+            MAt(u, i, j) = j;
+            MAt(v, i, j) = i;
+        }
+    print_centerline(u, v, nx, ny, 1.0 / (nx - 1), 1.0 / (ny - 1));
+    for (int c = 0; c < 2; c++)
+    {
+        double coord, val;
+        int rows = 0;
+        f = fopen(c == 0 ? "output/centerline_u_sim.csv" : "output/centerline_v_sim.csv", "r");
+        if (!f || !fgets(line, sizeof(line), f)) { worst = INFINITY; break; }
+        while (fscanf(f, "%lf,%lf", &coord, &val) == 2)
+        {
+            double expect_coord = rows * (c == 0 ? 1.0 / (ny - 1) : 1.0 / (nx - 1));
+            worst = fmax(worst, fabs(val - (c == 0 ? 1.5 : 1.0)) + fabs(coord - expect_coord));
+            rows++;
+        }
+        fclose(f);
+        if (rows != (c == 0 ? ny : nx)) worst = INFINITY;
+    }
+    check("centerline CSVs: node coordinates, values on the centerline", worst, 1E-6);
+
+    // Clean up the scratch directory
+    const char *names[] = {"output/unittest-1-0.vtk", "output/other-1-5.vtk", "output/centerline_u_sim.csv",
+                           "output/centerline_v_sim.csv", "output/centerline_u_ghia.csv",
+                           "output/centerline_v_ghia.csv"};
+    for (i = 0; i < 6; i++) remove(names[i]);
+    rmdir("output");
+    if (chdir(cwd) == 0) rmdir(tmpl);
+    freem(&a); freem(&u); freem(&v);
 }
 
 // ---------------------------------------------------------------------------
@@ -996,6 +1250,10 @@ int main(int argc, char **argv)
 #endif
     test_finitediff_exactness();
     test_finitediff_rows();
+    test_linearalg();
+    test_wall_bc();
+    test_output();
+    test_temporal_order();
     test_cpu_operator_axes(13, 9);
     test_cpu_operator_axes(9, 13);
     test_cpu_poisson_fft(8, 8);

@@ -326,6 +326,7 @@ For the default cavity,
 No-slip and no-penetration are therefore represented through prescribed wall velocity.
 
 \subsection{Vorticity boundary treatment}
+\label{sec:wall-vorticity-order}
 
 A vorticity--streamfunction method requires a boundary value for $\omega$ that is consistent with the velocity boundary condition.  The current code computes the velocity derivatives with the same finite-difference operators used elsewhere,
 \begin{equation}
@@ -392,7 +393,7 @@ k_4 &= \mathcal{F}\left(\omega^n+\dt k_3\right),\\
 
 The velocity depends on the stage vorticity through \cref{eq:poisson}--\cref{eq:velocity-streamfunction}.  Accordingly, every call to the RK4 right-hand side performs a Poisson solve and recovers a stage-consistent $(u,v)$ field.  Four Poisson solves are therefore required for the four RK stages, followed by one final solve to make $(u^{n+1},v^{n+1})$ consistent with $\omega^{n+1}$.  In total, RK4 performs five Poisson solves per timestep.
 
-For a sufficiently smooth semi-discrete system, classical RK4 is fourth-order accurate in time.  In the complete CFD method, the observed convergence order may instead be limited by the spatial boundary treatment, the second-order Poisson discretization, or insufficient temporal/spatial resolution.
+For a sufficiently smooth semi-discrete system, classical RK4 is fourth-order accurate in time.  In the complete method it is not: the wall vorticity is set once per timestep, from the velocity at the start of the step (\cref{sec:wall-vorticity-order}), and is not updated between the stages, so the boundary data lag by up to one step.  Measured on the lid-driven cavity ($17\times17$, $\Rey=100$, run to $t=0.2$ and compared with a run at $\dt/16$), halving $\dt$ halves the error for RK4 as for Euler, both at the walls and in the interior: the observed order is about $1.0$--$1.2$ for RK4 and $1.0$ for Euler.  The test suite checks these observed orders.  Recovering fourth order would need the wall vorticity to be recomputed at every stage, e.g.\ from the stage streamfunction with a wall formula.
 
 % =============================================================================
 \section{Poisson Equation for the Streamfunction}
@@ -797,7 +798,7 @@ $257\times257$, nodal convention & 0.0050 & 0.0025 & 0.0091 & 0.0051 \\
 
 The solution has converged at these resolutions: at the Ghia points the $129\times129$ and $257\times257$ profiles differ by at most $4.5\times10^{-4}$ ($u$) and $3.5\times10^{-4}$ ($v$), an order of magnitude less than either differs from the reference.  The remaining discrepancy is therefore not grid error of this code; it is of the order of the accuracy of the reference data themselves, which were computed on a $129\times129$ grid with a second-order scheme.  The errors grow slightly from $64\times64$ to $129\times129$: the smaller error of the coarse grid comes partly from its discretisation error cancelling against the difference to the reference, so $64\times64$ should not be read as the most accurate grid.  The $257\times257$ run used $\dt=3\times10^{-4}$.
 
-At present, these error norms and grid-convergence rates are not automated in \code{make test}.  Therefore the repository has strong code-level verification, while quantitative benchmark validation remains a user-facing post-processing step.
+\code{make regression} automates this comparison for the default case: the steady centerline profiles must be within $0.004$ ($u$) and $0.010$ ($v$) of the reference values.  Grid-convergence rates are not automated.
 
 \subsection{Recommended extension: formal grid-convergence study}
 
@@ -852,6 +853,8 @@ make OPENMP=1 CUDA=1 test
 \end{lstlisting}
 
 The test program returns 0 when all executed checks pass, 1 when any check fails, and 77 when a CUDA test build cannot execute its GPU checks because no usable device is present.
+
+Further checks, each a \code{make} target run by continuous integration: \code{test-cli} (invalid command lines are refused without writing anything), \code{regression} (a short run against stored results and the steady default case against Ghia et al.), \code{test-asan} (AddressSanitizer and UndefinedBehaviorSanitizer), \code{valgrind} (no leaks, nothing still reachable), \code{format-check}, \code{cppcheck}, \code{tidy}, and \code{WERROR=1} builds.  Continuous integration has no GPU, so the CPU--GPU comparisons run only where \code{make CUDA=1 test} is run on a GPU host.
 
 \subsection{Runtime options}
 
