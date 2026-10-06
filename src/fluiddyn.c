@@ -33,7 +33,7 @@ rk4_ctx rk4_alloc(const solver_config *cfg)
     rk4_ctx ctx;
     int nx = cfg->nx, ny = cfg->ny;
 
-    ctx.cfg = cfg;
+    ctx.cfg = *cfg;
 
     ctx.dwdx    = initm(ny, nx); ctx.dwdy    = initm(ny, nx);
     ctx.d2wdx2  = initm(ny, nx); ctx.d2wdy2  = initm(ny, nx);
@@ -56,6 +56,7 @@ void rk4_free(rk4_ctx *ctx)
     freem(&ctx->k3);     freem(&ctx->k4);
     freem(&ctx->w_tmp);  freem(&ctx->rhs);
     fft_cleanup(ctx->fft);
+    ctx->fft = NULL;
 }
 
 // Solve nabla^2 psi = -w and recover u = dpsi/dy, v = -dpsi/dx.
@@ -63,14 +64,14 @@ static void velocity_from_vorticity(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx)
 {
     // Poisson solve: nabla^2 psi = -w
     negcpy(ctx->rhs, w);
-    if (ctx->cfg->poisson_type == 1)
-        poisson(ctx->rhs, ctx->psi, ctx->psi_scratch, ctx->cfg->dx, ctx->cfg->dy,
-                ctx->cfg->poisson_max_it, ctx->cfg->poisson_tol);
-    else if (ctx->cfg->poisson_type == 2)
-        poisson_SOR(ctx->rhs, ctx->psi, ctx->psi_scratch, ctx->cfg->dx, ctx->cfg->dy,
-                    ctx->cfg->poisson_max_it, ctx->cfg->poisson_tol, ctx->cfg->beta);
-    else if (ctx->cfg->poisson_type == 3)
-        poisson_FFT(ctx->fft, ctx->rhs, ctx->psi, ctx->cfg->dx, ctx->cfg->dy);
+    if (ctx->cfg.poisson_type == 1)
+        poisson(ctx->rhs, ctx->psi, ctx->psi_scratch, ctx->cfg.dx, ctx->cfg.dy,
+                ctx->cfg.poisson_max_it, ctx->cfg.poisson_tol);
+    else if (ctx->cfg.poisson_type == 2)
+        poisson_SOR(ctx->rhs, ctx->psi, ctx->psi_scratch, ctx->cfg.dx, ctx->cfg.dy,
+                    ctx->cfg.poisson_max_it, ctx->cfg.poisson_tol, ctx->cfg.beta);
+    else if (ctx->cfg.poisson_type == 3 && ctx->fft)
+        poisson_FFT(ctx->fft, ctx->rhs, ctx->psi, ctx->cfg.dx, ctx->cfg.dy);
     else
     {
         printf("** Error: valid Poisson solver types are 1, 2 or 3 **\n");
@@ -78,18 +79,18 @@ static void velocity_from_vorticity(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx)
     }
 
     // Recover u = dpsi/dy, v = -dpsi/dx
-    spmv(*ctx->cfg->DY, ctx->psi.M, u.M);
-    spmv(*ctx->cfg->DX, ctx->psi.M, v.M);
+    spmv(*ctx->cfg.DY, ctx->psi.M, u.M);
+    spmv(*ctx->cfg.DX, ctx->psi.M, v.M);
     negcpy(v, v);
 }
 
 // First and second derivatives of w into the workspace
 static void derivatives(mtrx w, rk4_ctx *ctx)
 {
-    spmv(*ctx->cfg->DX,  w.M, ctx->dwdx.M);
-    spmv(*ctx->cfg->DY,  w.M, ctx->dwdy.M);
-    spmv(*ctx->cfg->DX2, w.M, ctx->d2wdx2.M);
-    spmv(*ctx->cfg->DY2, w.M, ctx->d2wdy2.M);
+    spmv(*ctx->cfg.DX,  w.M, ctx->dwdx.M);
+    spmv(*ctx->cfg.DY,  w.M, ctx->dwdy.M);
+    spmv(*ctx->cfg.DX2, w.M, ctx->d2wdx2.M);
+    spmv(*ctx->cfg.DY2, w.M, ctx->d2wdy2.M);
 }
 
 // Evaluate dw/dt and update u, v consistent with w via Poisson solve.
@@ -97,7 +98,7 @@ static void derivatives(mtrx w, rk4_ctx *ctx)
 void dwdt(mtrx w, mtrx u, mtrx v, mtrx out, rk4_ctx *ctx)
 {
     int i;
-    int nx = ctx->cfg->nx, ny = ctx->cfg->ny;
+    int nx = ctx->cfg.nx, ny = ctx->cfg.ny;
 
     derivatives(w, ctx);
 
@@ -113,7 +114,7 @@ void dwdt(mtrx w, mtrx u, mtrx v, mtrx out, rk4_ctx *ctx)
         for (j = 0; j < nx; j++)
             MAt(out, i, j) = - MAt(u, i, j) * MAt(ctx->dwdx,   i, j)
                              - MAt(v, i, j) * MAt(ctx->dwdy,   i, j)
-                             + (1.0 / ctx->cfg->Re) * (MAt(ctx->d2wdx2, i, j)
+                             + (1.0 / ctx->cfg.Re) * (MAt(ctx->d2wdx2, i, j)
                                                 + MAt(ctx->d2wdy2, i, j));
     }
 }
@@ -122,9 +123,9 @@ void dwdt(mtrx w, mtrx u, mtrx v, mtrx out, rk4_ctx *ctx)
 // u and v are updated to be consistent with w_{n+1} on return.
 void rk4(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx)
 {
-    double dt = ctx->cfg->dt;
+    double dt = ctx->cfg.dt;
     int i;
-    int ny = ctx->cfg->ny, nx = ctx->cfg->nx;
+    int ny = ctx->cfg.ny, nx = ctx->cfg.nx;
 
     // k1 = f(w_n)
     dwdt(w, u, v, ctx->k1, ctx);
@@ -259,18 +260,18 @@ void apply_wall_bc(mtrx u, mtrx v, const wall_bc *bc)
 
 void step(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx)
 {
-    double dt = ctx->cfg->dt;
-    const wall_bc *bc = &ctx->cfg->bc;
+    double dt = ctx->cfg.dt;
+    const wall_bc *bc = &ctx->cfg.bc;
     int i, j;
-    int nx = ctx->cfg->nx, ny = ctx->cfg->ny;
+    int nx = ctx->cfg.nx, ny = ctx->cfg.ny;
     // dpsidx/dpsidy are not needed until velocity recovery — use them as scratch
     mtrx dvdx = ctx->dpsidx, dudy = ctx->dpsidy;
 
     apply_wall_bc(u, v, bc);
 
     // Vorticity BCs: w = dv/dx - du/dy evaluated at boundaries
-    spmv(*ctx->cfg->DY, u.M, dudy.M);
-    spmv(*ctx->cfg->DX, v.M, dvdx.M);
+    spmv(*ctx->cfg.DY, u.M, dudy.M);
+    spmv(*ctx->cfg.DX, v.M, dvdx.M);
 
     for (j = 0; j < nx; j++)
     {
@@ -283,12 +284,12 @@ void step(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx)
         MAt(w, i, nx-1) = MAt(dvdx, i, nx-1) - MAt(dudy, i, nx-1);
     }
 
-    if (ctx->cfg->time_scheme == 1)
+    if (ctx->cfg.time_scheme == 1)
     {
         // Euler: single RHS evaluation, then one Poisson solve
         derivatives(w, ctx);
 
-        euler(w, ctx->dwdx, ctx->dwdy, ctx->d2wdx2, ctx->d2wdy2, u, v, ctx->cfg->Re, dt);
+        euler(w, ctx->dwdx, ctx->dwdy, ctx->d2wdx2, ctx->d2wdy2, u, v, ctx->cfg.Re, dt);
         velocity_from_vorticity(w, u, v, ctx);
     }
     else

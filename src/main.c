@@ -155,15 +155,16 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    // Host memory estimate: 21 arrays of nx*ny doubles (fields, derivatives,
-    // RK4 stages, Poisson right-hand side, FFT buffer) and four CSR operators
-    // with at most 7 non-zeros per row, compared with the memory available
-    // now. A run that would not fit stops here with a message instead of being
-    // killed by the kernel once the pages are touched. Other processes can
-    // still take memory after this check, so it is a guard against the clear
-    // cases only.
-    double mem_needed = (double)nx * ny * (21.0 * sizeof(double)
-                      + 4.0 * (7.0 * (sizeof(double) + sizeof(int)) + sizeof(int)));
+    // Host memory estimate: four CSR operators with at most 7 non-zeros per
+    // row, plus the arrays of the backend asked for (the CPU workspace, or on
+    // the GPU only host copies of the fields), compared with the memory
+    // available now. A run that would not fit stops here with a message
+    // instead of being killed by the kernel once the pages are touched. Other
+    // processes can still take memory after this check, so it is a guard
+    // against the clear cases only; backend_create() checks again for the
+    // backend it actually uses.
+    double mem_needed = (double)nx * ny * 4.0 * (7.0 * (sizeof(double) + sizeof(int)) + sizeof(int))
+                      + backend_host_memory(nx, ny, use_gpu);
     double mem_avail  = available_memory();
     if (mem_avail >= 0. && mem_needed > mem_avail)
     {
@@ -253,22 +254,20 @@ int main(int argc, char *argv[])
 
     int it_max = (int)((tf / dt) - 1);
 
-    // Host copies of the fields, for the initial condition and the output
-    mtrx u   = initm(ny, nx);
-    mtrx v   = initm(ny, nx);
-    mtrx w   = initm(ny, nx);
+    // Backend selection: GPU when built with CUDA=1 and a device is usable
+    backend *solver = backend_create(&cfg, use_gpu);
 
-    // Initial condition. Fields are ny rows (y) of nx values (x).
+    // Initial condition, on the solver's host fields. Fields are ny rows (y)
+    // of nx values (x).
+    mtrx *u, *v, *w;
+    backend_fields(solver, &u, &v, &w);
     for (i = 1; i < ny - 1; i++)
         for (j = 1; j < nx - 1; j++)
         {
-            MAt(u, i, j) = ui;
-            MAt(v, i, j) = vi;
+            MAt(*u, i, j) = ui;
+            MAt(*v, i, j) = vi;
         }
-
-    // Backend selection: GPU when built with CUDA=1 and a device is usable
-    backend *solver = backend_create(&cfg, use_gpu);
-    backend_set_fields(solver, &u, &v, &w);
+    backend_set_fields(solver, u, v, w);
     printf("Backend: %s\n", backend_name(solver));
     if (backend_device(solver)) printf("CUDA device: %s\n", backend_device(solver));
 
@@ -292,8 +291,8 @@ int main(int argc, char *argv[])
 
         if (output_interval > 0 && t % output_interval == 0)
         {
-            backend_get_fields(solver, NULL, NULL, &w);
-            printvtk(w, "vorticity", dx, dy);
+            backend_fields(solver, NULL, NULL, &w);
+            printvtk(*w, "vorticity", dx, dy);
         }
     }
 
@@ -301,21 +300,18 @@ int main(int argc, char *argv[])
     double elapsed = (double)(t_end.tv_sec - t_start.tv_sec)
                    + 1E-9 * (double)(t_end.tv_nsec - t_start.tv_nsec);
 
-    backend_get_fields(solver, &u, &v, &w);
+    backend_fields(solver, &u, &v, &w);
 
     // Re-apply wall BCs before sampling centerline
-    apply_wall_bc(u, v, &bc);
+    apply_wall_bc(*u, *v, &bc);
 
     // Write centerline profiles and compare against Ghia et al. (1982)
-    print_centerline(u, v, nx, ny, dx, dy);
+    print_centerline(*u, *v, nx, ny, dx, dy);
 
     printf("Wall-clock time: %.3lf s total | %.4lf ms per step (%d steps, %s)\n",
            elapsed, 1E3 * elapsed / (it_max + 1), it_max + 1, backend_name(solver));
 
     backend_free(solver);
-    freem(&u);
-    freem(&v);
-    freem(&w);
     freesm(DX); freesm(DY); freesm(DX2); freesm(DY2);
 
     printf("Simulation complete!\n");

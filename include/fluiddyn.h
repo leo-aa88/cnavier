@@ -19,8 +19,10 @@ typedef struct {
     double v[4];
 } wall_bc;
 
-// Everything that defines a run, shared by the CPU and GPU backends. The
-// operators are owned by the caller and must outlive the solver.
+// Everything that defines a run, shared by the CPU and GPU backends. Every
+// solver takes a copy when it is created, so later changes to the caller's
+// struct have no effect on it. The operators are owned by the caller and must
+// outlive the solver.
 typedef struct {
     int    nx, ny;                         // grid points in x and y
     double dx, dy;                         // grid spacing
@@ -38,7 +40,7 @@ typedef struct {
 // inside the loop. Fields are stored as ny rows (y) of nx values (x): element
 // (i, j) is at y = i*dy, x = j*dx.
 typedef struct {
-    const solver_config *cfg;
+    solver_config cfg;           // copy taken by rk4_alloc(); do not change
     mtrx   dwdx, dwdy;           // first derivatives of w
     mtrx   d2wdx2, d2wdy2;       // second derivatives of w
     mtrx   dpsidx, dpsidy;       // scratch for the vorticity boundary values
@@ -49,8 +51,7 @@ typedef struct {
     struct fft_solver *fft;      // FFT Poisson solver (poisson_type 3), else NULL
 } rk4_ctx;
 
-// Allocate the CPU workspace for the run described by cfg, which must
-// outlive it
+// Allocate the CPU workspace for the run described by cfg (copied)
 rk4_ctx rk4_alloc(const solver_config *cfg);
 // Free the CPU workspace
 void rk4_free(rk4_ctx *ctx);

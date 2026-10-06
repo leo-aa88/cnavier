@@ -4,6 +4,7 @@
 #include "fluiddyn.h"
 #include "poisson.h"
 #include "backend.h"
+#include "utils.h"
 #ifdef USE_CUDA
 #include "cudasolver.h"
 #endif
@@ -16,9 +17,11 @@ struct backend
     gpu_solver *gpu; // NULL when running on the CPU
 #endif
 
-    // CPU solver: fields, workspace, and scratch for the continuity check
+    // Fields on the host: the CPU solver's own, or the GPU solver's host copies
+    mtrx u, v, w;
+
+    // CPU solver only: workspace, and scratch for the continuity check
     rk4_ctx ws;
-    mtrx    u, v, w;
     mtrx    dudx, dvdy;
 };
 
@@ -30,6 +33,31 @@ static int on_gpu(const backend *b)
     (void)b;
     return 0;
 #endif
+}
+
+// Arrays of nx*ny doubles: CPU workspace (14 and the FFT buffer) plus fields
+// (3) and continuity scratch (2); on the GPU, host copies of the fields (3)
+#define CPU_ARRAYS 20
+#define GPU_ARRAYS 3
+
+double backend_host_memory(int nx, int ny, int prefer_gpu)
+{
+#ifndef USE_CUDA
+    prefer_gpu = 0;
+#endif
+    return (double)nx * ny * sizeof(double) * (prefer_gpu ? GPU_ARRAYS : CPU_ARRAYS);
+}
+
+// Stop with a message if `bytes` more cannot be allocated now
+static void require_memory(double bytes, const char *what)
+{
+    double avail = available_memory();
+    if (avail > 0 && bytes > avail)
+    {
+        printf("** Error: the %s needs about %.1f GB more memory; about %.1f GB is available **\n",
+               what, bytes / 1E9, avail / 1E9);
+        exit(1);
+    }
 }
 
 backend *backend_create(const solver_config *cfg, int prefer_gpu)
@@ -47,13 +75,20 @@ backend *backend_create(const solver_config *cfg, int prefer_gpu)
     {
         b->gpu = gpu_init(&b->cfg);
         if (b->gpu)
+        {
+            require_memory(backend_host_memory(cfg->nx, cfg->ny, 1), "GPU backend");
+            b->u = initm(cfg->ny, cfg->nx);
+            b->v = initm(cfg->ny, cfg->nx);
+            b->w = initm(cfg->ny, cfg->nx);
             return b;
+        }
         printf("No usable CUDA device - falling back to the CPU\n");
     }
 #else
     (void)prefer_gpu;
 #endif
 
+    require_memory(backend_host_memory(cfg->nx, cfg->ny, 0), "CPU backend");
     b->ws   = rk4_alloc(&b->cfg);
     b->u    = initm(cfg->ny, cfg->nx);
     b->v    = initm(cfg->ny, cfg->nx);
@@ -70,6 +105,7 @@ void backend_free(backend *b)
     if (b->gpu)
     {
         gpu_free(b->gpu);
+        freem(&b->u); freem(&b->v); freem(&b->w);
         free(b);
         return;
     }
@@ -129,6 +165,17 @@ void backend_continuity(backend *b, double *cmax, double *cmin)
     }
 }
 
+void backend_fields(backend *b, mtrx **u, mtrx **v, mtrx **w)
+{
+#ifdef USE_CUDA
+    if (b->gpu)
+        gpu_get_fields(b->gpu, u ? &b->u : NULL, v ? &b->v : NULL, w ? &b->w : NULL);
+#endif
+    if (u) *u = &b->u;
+    if (v) *v = &b->v;
+    if (w) *w = &b->w;
+}
+
 void backend_set_fields(backend *b, const mtrx *u, const mtrx *v, const mtrx *w)
 {
 #ifdef USE_CUDA
@@ -138,9 +185,10 @@ void backend_set_fields(backend *b, const mtrx *u, const mtrx *v, const mtrx *w)
         return;
     }
 #endif
-    if (u) mtrxcpy(b->u, *u);
-    if (v) mtrxcpy(b->v, *v);
-    if (w) mtrxcpy(b->w, *w);
+    // Arrays from backend_fields() are already the solver's
+    if (u && u->M != b->u.M) mtrxcpy(b->u, *u);
+    if (v && v->M != b->v.M) mtrxcpy(b->v, *v);
+    if (w && w->M != b->w.M) mtrxcpy(b->w, *w);
 }
 
 void backend_get_fields(backend *b, mtrx *u, mtrx *v, mtrx *w)

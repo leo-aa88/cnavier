@@ -95,12 +95,14 @@ static problem problem_alloc(int n, int time_scheme, int poisson_type, double dt
     return problem_alloc_xy(n, n, time_scheme, poisson_type, dt, poisson_tol);
 }
 
-// The configuration and operators are referenced through pointers, so bind
-// them once the problem sits at its final address.
+// The operators are referenced through pointers, so bind them once the
+// problem sits at its final address, and give the workspace the finished
+// configuration. Change p->cfg before this call: like every solver, the
+// workspace keeps its own copy.
 static void problem_bind(problem *p)
 {
     p->cfg.DX = &p->DX; p->cfg.DY = &p->DY; p->cfg.DX2 = &p->DX2; p->cfg.DY2 = &p->DY2;
-    p->ctx.cfg = &p->cfg;
+    p->ctx.cfg = p->cfg;
 }
 
 static void problem_free(problem *p)
@@ -480,13 +482,13 @@ static void test_cpu_stability_limit(int time_scheme, const char *label)
     for (f = 0; f < 2; f++)
     {
         problem p = problem_alloc(n, time_scheme, 3, 0.0, 1E-3);
-        problem_bind(&p);
         smtrx d2 = SDiff2(n, 6, p.cfg.dx);
         double limit = max_stable_dt(&d2, &d2, p.cfg.Re, time_scheme);
         freesm(d2);
         double wmax = 0.0;
 
         p.cfg.dt = frac[f] * limit;
+        problem_bind(&p);
         for (t = 0; t < 3000 && !(wmax > 1E6); t++)
         {
             step(p.w, p.u, p.v, &p.ctx);
@@ -667,6 +669,64 @@ static void test_openmp_default_threads(void)
 }
 #endif
 
+// Every solver copies the configuration when it is created. Changing the
+// caller's struct afterwards (dt and the lid speed here) must have no effect,
+// on any of them: the CPU workspace, the CPU backend and the GPU solver.
+static void test_config_copied(void)
+{
+    int t, k, nx = 32, ny = 32, N = nx * ny;
+    problem p = problem_alloc_xy(nx, ny, 2, 3, 0.002, 1E-3);
+    problem_bind(&p);
+    solver_config caller = p.cfg;
+    backend *cpu = backend_create(&caller, 0);
+    mtrx *bw;
+    double diff = 0.0;
+#ifdef USE_CUDA
+    gpu_solver *gpu = gpu_init(&caller);
+    mtrx gw = initm(ny, nx);
+#endif
+
+    printf("Configuration is copied when a solver is created\n");
+    for (k = 0; k < 2; k++)
+    {
+        for (t = 0; t < 10; t++)
+        {
+            step(p.w, p.u, p.v, &p.ctx);
+            backend_step(cpu);
+#ifdef USE_CUDA
+            if (gpu) gpu_step(gpu);
+#endif
+        }
+        // After the first 10 steps, change everything the solvers read each step
+        caller.dt = 0.001;
+        caller.bc.u[3] = -1.0;
+        p.cfg = caller;
+    }
+    backend_fields(cpu, NULL, NULL, &bw);
+    diff = rel_diff(bw->M, p.w.M, N);
+    check("CPU backend and step() both ignore the change (w, bitwise)", diff, 0.0);
+#ifdef USE_CUDA
+    if (gpu)
+    {
+        gpu_get_fields(gpu, NULL, NULL, &gw);
+        check("GPU solver ignores it too (w vs CPU)", rel_diff(gw.M, p.w.M, N), 1E-11);
+        gpu_free(gpu);
+    }
+    else
+        n_skipped++;
+    freem(&gw);
+#endif
+    // Twenty steps at the original dt and lid speed, not ten and ten
+    problem q = problem_alloc_xy(nx, ny, 2, 3, 0.002, 1E-3);
+    problem_bind(&q);
+    for (t = 0; t < 20; t++)
+        step(q.w, q.u, q.v, &q.ctx);
+    check("same result as twenty unchanged steps", rel_diff(p.w.M, q.w.M, N), 0.0);
+    problem_free(&q);
+    backend_free(cpu);
+    problem_free(&p);
+}
+
 // Driving the solver through the backend interface must give exactly what
 // calling step() directly gives. In CUDA builds the GPU backend must also
 // agree with the CPU one.
@@ -808,8 +868,8 @@ static void test_gpu_step(int nx, int ny, int steps, double dt, int time_scheme,
     int t, N = nx * ny;
     char name[96];
     problem p = problem_alloc_xy(nx, ny, time_scheme, poisson_type, dt, poisson_tol);
-    problem_bind(&p);
     if (bc) p.cfg.bc = *bc;
+    problem_bind(&p);
     gpu_solver *g = gpu_for(&p);
     mtrx u = initm(ny, nx), v = initm(ny, nx), w = initm(ny, nx);
 
@@ -979,6 +1039,7 @@ int main(int argc, char **argv)
     test_openmp_default_threads();
 #endif
     test_backend();
+    test_config_copied();
 #ifdef USE_CUDA
     run_gpu_tests();
 #endif
