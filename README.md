@@ -91,9 +91,9 @@ make OPENMP=1
 
 The default `make` build is unchanged (no OpenMP). Results are bit-identical to the serial build with any number of threads (with Gauss-Seidel/SOR, identical to other OpenMP runs: the parallel sweep order differs from the serial one).
 
-**Threads.** Without `OMP_NUM_THREADS`, the solver uses one thread per physical core (read from Linux sysfs; elsewhere the OpenMP default applies) and prints the count at start-up. One thread per *logical* CPU, the OpenMP default, was several times slower on a CPU with two hardware threads per core. Set `OMP_NUM_THREADS` to override.
+**Threads.** Without `OMP_NUM_THREADS`, the solver uses one thread per physical core it may run on (the distinct cores among the CPUs in its affinity mask, read from Linux sysfs; elsewhere the OpenMP default applies) and prints the count at start-up. Set `OMP_NUM_THREADS` to override.
 
-Time per step on an i7-12650H (8 physical cores, 16 logical CPUs) under WSL2, RK4 + FFT:
+Time per step on an i7-12650H under WSL2 (which presents it as 8 cores with 2 hardware threads each), RK4 + FFT, best of 2–3 runs:
 
 | Threads | 129×129 | 1025×1025 |
 |---|---|---|
@@ -101,10 +101,14 @@ Time per step on an i7-12650H (8 physical cores, 16 logical CPUs) under WSL2, RK
 | 1 | 3.55 ms | 330 ms |
 | 2 | 2.06 ms | 213 ms |
 | 4 | 1.57 ms | 179 ms |
-| 8 (default here) | 1.46 ms | 176 ms |
-| 16 | 1.81 ms | 577 ms |
+| 8 (default here) | 1.55 ms | 157 ms |
+| 16 | 2.16 ms | 191 ms |
 
-The speed-up levels off at about 2× from 4 threads on: the sparse derivatives and the transforms are limited by memory bandwidth rather than by arithmetic. Loops over fewer than 2048 grid points (`OMP_MIN_WORK` in `linearalg.h`) stay serial, since below that waking the threads costs more than it saves.
+The 8- and 16-thread rows come from one interleaved comparison. The speed-up levels off at about 2× from 4 threads on: the sparse derivatives and the transforms are limited by memory bandwidth rather than by arithmetic, so a second hardware thread per core does not help, and 16 threads were 25–40% slower than 8.
+
+**On a busy machine, use fewer threads.** A step has about 70 parallel loops, each ending at a barrier where all threads wait for the slowest. When other programs occupy the cores, a thread that is descheduled holds everyone up: with other jobs running, 16 threads took 577 ms per step at 1025×1025 and the 8-thread default slowed down severalfold too. On a shared machine set `OMP_NUM_THREADS` below the number of free cores, or `OMP_WAIT_POLICY=passive` so that waiting threads sleep instead of spinning.
+
+Loops over grids of fewer than 2048 points (`OMP_MIN_WORK` in `linearalg.h`) stay serial, since below that waking the threads costs more than it saves.
 
 Optional **CUDA** (GPU) build — see [CUDA](#cuda-gpu) for details:
 

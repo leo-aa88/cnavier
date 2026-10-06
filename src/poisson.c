@@ -162,8 +162,8 @@ void poisson_SOR(mtrx f, mtrx u, mtrx u0, double dx, double dy, int itmax, doubl
 
 typedef struct
 {
-    fftw_plan full; // DST_BATCH transforms
-    fftw_plan rest; // the remaining count % DST_BATCH transforms, or NULL
+    fftw_plan full; // exactly DST_BATCH transforms, or NULL if count < DST_BATCH
+    fftw_plan rest; // the last count % DST_BATCH transforms, or NULL if none
     int       count;
     ptrdiff_t step; // offset between batches, in doubles
 } dst_pass;
@@ -178,17 +178,18 @@ static dst_pass make_pass(int len, int count, int stride, int dist)
 {
     dst_pass p;
     fftw_r2r_kind kind = FFTW_RODFT00;
-    int batch = count < DST_BATCH ? count : DST_BATCH;
 
     p.count = count;
     p.step  = (ptrdiff_t)DST_BATCH * dist;
-    p.full  = fftw_plan_many_r2r(1, &len, batch, fft_buf, NULL, stride, dist,
-                                 fft_buf, NULL, stride, dist, &kind, FFTW_ESTIMATE);
+    p.full  = NULL;
     p.rest  = NULL;
-    if (count > DST_BATCH && count % DST_BATCH)
+    if (count >= DST_BATCH)
+        p.full = fftw_plan_many_r2r(1, &len, DST_BATCH, fft_buf, NULL, stride, dist,
+                                    fft_buf, NULL, stride, dist, &kind, FFTW_ESTIMATE);
+    if (count % DST_BATCH)
         p.rest = fftw_plan_many_r2r(1, &len, count % DST_BATCH, fft_buf, NULL, stride, dist,
                                     fft_buf, NULL, stride, dist, &kind, FFTW_ESTIMATE);
-    if (!p.full || (count > DST_BATCH && count % DST_BATCH && !p.rest))
+    if ((count >= DST_BATCH && !p.full) || (count % DST_BATCH && !p.rest))
     {
         printf("** Error: FFTW could not plan the sine transform **\n");
         exit(1);
@@ -198,7 +199,7 @@ static dst_pass make_pass(int len, int count, int stride, int dist)
 
 static void free_pass(dst_pass *p)
 {
-    fftw_destroy_plan(p->full);
+    if (p->full) fftw_destroy_plan(p->full);
     if (p->rest) fftw_destroy_plan(p->rest);
 }
 
@@ -211,8 +212,9 @@ static void run_pass(const dst_pass *p, int parallel)
 #endif
     for (b = 0; b < batches; b++)
     {
+        // Every batch but a short last one holds exactly DST_BATCH transforms
         double *x = fft_buf + b * p->step;
-        fftw_execute_r2r((b + 1) * DST_BATCH <= p->count ? p->full : p->rest, x, x);
+        fftw_execute_r2r(p->count - b * DST_BATCH >= DST_BATCH ? p->full : p->rest, x, x);
     }
 }
 

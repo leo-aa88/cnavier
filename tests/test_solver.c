@@ -271,15 +271,18 @@ static void test_finitediff_rows(void)
 
 // A sine mode that vanishes on the wall nodes is an eigenvector of the discrete
 // Laplacian, so the FFT solver must return it divided by its eigenvalue.
-static void test_cpu_poisson_fft(void)
+// n = 8, 9, 10 and 17 cover a transform pass with fewer than one batch of 8
+// rows, exactly one batch, and a full batch plus a short one.
+static void test_cpu_poisson_fft(int n)
 {
-    int i, j, n = 32, p = 3, q = 5;
+    int i, j, p = 3 < n - 2 ? 3 : 1, q = 5 < n - 2 ? 5 : 2;
+    char name[96];
     double dx = 1.0 / (n - 1);
     mtrx f = initm(n, n), psi = initm(n, n), expected = initm(n, n);
     double lambda = (2.0 * cos(PI * p / (double)(n - 1)) - 2.0) / (dx * dx)
                   + (2.0 * cos(PI * q / (double)(n - 1)) - 2.0) / (dx * dx);
 
-    printf("CPU: FFT Poisson solver against an exact eigenmode\n");
+    printf("CPU: FFT Poisson solver against an exact eigenmode, %dx%d grid\n", n, n);
     for (i = 1; i < n - 1; i++)
         for (j = 1; j < n - 1; j++)
         {
@@ -291,7 +294,8 @@ static void test_cpu_poisson_fft(void)
     fft_setup(n, n);
     poisson_FFT(f, psi, dx, dx);
     fft_cleanup();
-    check("psi vs eigenmode / eigenvalue", rel_diff(psi.M, expected.M, n * n), 1E-10);
+    snprintf(name, sizeof(name), "psi vs eigenmode / eigenvalue, n = %d", n);
+    check(name, rel_diff(psi.M, expected.M, n * n), 1E-10);
 
     freem(&f); freem(&psi); freem(&expected);
 }
@@ -491,6 +495,53 @@ static void test_cpu_time_step_limits(void)
     check(name, worst, 0.0);
     freesm(d2);
 }
+
+// ---------------------------------------------------------------------------
+// OpenMP
+// ---------------------------------------------------------------------------
+
+#ifdef _OPENMP
+#include <omp.h>
+
+// Run `steps` steps with `threads` threads and return w, u, v in out[0..2]
+static void run_threads(int n, int scheme, int poisson_type, int steps, int threads, mtrx out[3])
+{
+    int t, saved = omp_get_max_threads();
+    problem p = problem_alloc(n, scheme, poisson_type, 0.002, 1E-3);
+    problem_bind(&p);
+    omp_set_num_threads(threads);
+    for (t = 0; t < steps; t++)
+        step(p.w, p.u, p.v, p.dt, p.time_scheme, &p.bc, &p.ctx);
+    omp_set_num_threads(saved);
+    out[0] = initm(n, n); out[1] = initm(n, n); out[2] = initm(n, n);
+    mtrxcpy(out[0], p.w); mtrxcpy(out[1], p.u); mtrxcpy(out[2], p.v);
+    problem_free(&p);
+}
+
+// Above OMP_MIN_WORK every parallel loop and the batched transforms run on
+// several threads. The results must not depend on how many: with the FFT
+// solver they are bitwise those of one thread, and so are the red-black
+// Gauss-Seidel/SOR sweeps.
+static void test_openmp_thread_count(int poisson_type, const char *label)
+{
+    int k, n = 65, threads = omp_get_num_procs() > 4 ? 4 : (omp_get_num_procs() > 1 ? omp_get_num_procs() : 2);
+    mtrx one[3], many[3];
+    char name[96];
+
+    printf("OpenMP: 1 vs %d threads, RK4 + %s, %dx%d grid (above OMP_MIN_WORK = %d points)\n",
+           threads, label, n, n, OMP_MIN_WORK);
+    run_threads(n, 2, poisson_type, 10, 1, one);
+    run_threads(n, 2, poisson_type, 10, threads, many);
+    double diff = 0.0;
+    for (k = 0; k < 3; k++)
+    {
+        diff += memcmp(one[k].M, many[k].M, (size_t)n * n * sizeof(double)) != 0;
+        freem(&one[k]); freem(&many[k]);
+    }
+    snprintf(name, sizeof(name), "%s: w, u, v bitwise identical", label);
+    check(name, diff, 0.0);
+}
+#endif
 
 // ---------------------------------------------------------------------------
 // GPU tests — every check compares the device result with the CPU one
@@ -705,7 +756,11 @@ int main(void)
 {
     test_finitediff_exactness();
     test_finitediff_rows();
-    test_cpu_poisson_fft();
+    test_cpu_poisson_fft(8);
+    test_cpu_poisson_fft(9);
+    test_cpu_poisson_fft(10);
+    test_cpu_poisson_fft(17);
+    test_cpu_poisson_fft(32);
     test_cpu_poisson_agree();
     test_cpu_poisson_iterative();
     test_cpu_step(2, "RK4");
@@ -713,6 +768,10 @@ int main(void)
     test_cpu_stability_limit(1, "Euler");
     test_cpu_stability_limit(2, "RK4");
     test_cpu_time_step_limits();
+#ifdef _OPENMP
+    test_openmp_thread_count(3, "FFT");
+    test_openmp_thread_count(2, "SOR");
+#endif
 #ifdef USE_CUDA
     run_gpu_tests();
 #endif

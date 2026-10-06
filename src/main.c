@@ -1,3 +1,4 @@
+#define _GNU_SOURCE // sched_getaffinity
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -6,6 +7,7 @@
 #include <errno.h>
 #include <limits.h>
 #include <getopt.h>
+#include <sched.h>
 #include "linearalg.h"
 #include "finitediff.h"
 #include "utils.h"
@@ -51,38 +53,51 @@ static int parse_double(const char *s, double *out)
 }
 
 #ifdef _OPENMP
-// Number of hardware threads sharing a core with CPU 0, read from Linux sysfs
-// (a list such as "0-1" or "0,8"). Returns 1 if it cannot be determined.
-static int threads_per_core(void)
+// Number of distinct physical cores among the CPUs this process may run on:
+// the (package, core) pairs of the CPUs in its affinity mask, read from Linux
+// sysfs. This handles hybrid CPUs, whose cores have different numbers of
+// hardware threads, and affinity masks that cover part of the machine.
+// Returns 0 if it cannot be determined.
+static int physical_cores(void)
 {
-    char buf[256];
-    int count = 0, a, b, len;
-    const char *p = buf;
-    FILE *f = fopen("/sys/devices/system/cpu/cpu0/topology/thread_siblings_list", "r");
+    cpu_set_t set;
+    int cpu, count = 0, n = 0;
+    long seen[CPU_SETSIZE];
 
-    if (!f) return 1;
-    if (!fgets(buf, sizeof(buf), f)) { fclose(f); return 1; }
-    fclose(f);
-    while (*p)
+    if (sched_getaffinity(0, sizeof(set), &set) != 0) return 0;
+    for (cpu = 0; cpu < CPU_SETSIZE; cpu++)
     {
-        if (sscanf(p, "%d-%d%n", &a, &b, &len) == 2 && b >= a) count += b - a + 1;
-        else if (sscanf(p, "%d%n", &a, &len) == 1)          count += 1;
-        else break;
-        p += len;
-        if (*p == ',') p++;
-        else break;
+        char path[128];
+        long core = -1, package = -1, key;
+        int k, found = 0;
+        FILE *f;
+
+        if (!CPU_ISSET(cpu, &set)) continue;
+        snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%d/topology/core_id", cpu);
+        if ((f = fopen(path, "r"))) { if (fscanf(f, "%ld", &core) != 1) core = -1; fclose(f); }
+        snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%d/topology/physical_package_id", cpu);
+        if ((f = fopen(path, "r"))) { if (fscanf(f, "%ld", &package) != 1) package = -1; fclose(f); }
+        if (core < 0 || package < 0) return 0;
+
+        key = package * 1000000 + core;
+        for (k = 0; k < n; k++)
+            if (seen[k] == key) { found = 1; break; }
+        if (!found) { seen[n++] = key; count++; }
     }
-    return count > 0 ? count : 1;
+    return count;
 }
 
-// Unless OMP_NUM_THREADS says otherwise, use one thread per physical core.
-// The OpenMP default is one per logical CPU; with two hardware threads per
-// core that made large grids several times slower than one per core.
+// Unless OMP_NUM_THREADS says otherwise, use one thread per physical core the
+// process may run on, instead of the OpenMP default of one per logical CPU.
+// The sparse products and transforms are limited by memory bandwidth, so a
+// second hardware thread per core adds little, and every extra thread is one
+// more to wait for at each of the ~70 barriers per step; on a busy machine
+// that makes surplus threads very costly.
 static void default_threads(void)
 {
-    int tpc = threads_per_core();
-    if (!getenv("OMP_NUM_THREADS") && tpc > 1)
-        omp_set_num_threads(omp_get_num_procs() / tpc > 0 ? omp_get_num_procs() / tpc : 1);
+    int cores = physical_cores();
+    if (!getenv("OMP_NUM_THREADS") && cores > 0 && cores < omp_get_max_threads())
+        omp_set_num_threads(cores);
 }
 #endif
 
