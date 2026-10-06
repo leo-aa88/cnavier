@@ -18,7 +18,7 @@ typedef struct {
     mtrx   psi, psi_scratch;     // Poisson solution and scratch
     mtrx   k1, k2, k3, k4;      // RK4 stage increments
     mtrx   w_tmp;                // temporary w for intermediate stages
-    double *flat_w, *flat_psi, *flat_tmp; // flat work buffers
+    mtrx   rhs;                  // Poisson right-hand side, -w
     int    nx, ny;
     int    poisson_type;
     int    poisson_max_it;

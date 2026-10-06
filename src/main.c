@@ -14,6 +14,9 @@
 #ifdef USE_CUDA
 #include "cudasolver.h"
 #endif
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 // Largest supported grid: keeps nx*ny, the CSR non-zero count (up to 7 per
 // row) and the FFT extension 4*(nx-1)*(ny-1) within int range
@@ -46,6 +49,42 @@ static int parse_double(const char *s, double *out)
     *out = val;
     return 1;
 }
+
+#ifdef _OPENMP
+// Number of hardware threads sharing a core with CPU 0, read from Linux sysfs
+// (a list such as "0-1" or "0,8"). Returns 1 if it cannot be determined.
+static int threads_per_core(void)
+{
+    char buf[256];
+    int count = 0, a, b, len;
+    const char *p = buf;
+    FILE *f = fopen("/sys/devices/system/cpu/cpu0/topology/thread_siblings_list", "r");
+
+    if (!f) return 1;
+    if (!fgets(buf, sizeof(buf), f)) { fclose(f); return 1; }
+    fclose(f);
+    while (*p)
+    {
+        if (sscanf(p, "%d-%d%n", &a, &b, &len) == 2 && b >= a) count += b - a + 1;
+        else if (sscanf(p, "%d%n", &a, &len) == 1)          count += 1;
+        else break;
+        p += len;
+        if (*p == ',') p++;
+        else break;
+    }
+    return count > 0 ? count : 1;
+}
+
+// Unless OMP_NUM_THREADS says otherwise, use one thread per physical core.
+// The OpenMP default is one per logical CPU; with two hardware threads per
+// core that made large grids several times slower than one per core.
+static void default_threads(void)
+{
+    int tpc = threads_per_core();
+    if (!getenv("OMP_NUM_THREADS") && tpc > 1)
+        omp_set_num_threads(omp_get_num_procs() / tpc > 0 ? omp_get_num_procs() / tpc : 1);
+}
+#endif
 
 static void usage(const char *prog)
 {
@@ -146,13 +185,14 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    // Host memory estimate: 26 arrays of nx*ny doubles (fields, derivatives,
-    // RK4 stages, flat buffers, FFT buffer) and four CSR operators with at most
-    // 7 non-zeros per row, compared with the memory available now. A run that
-    // would not fit stops here with a message instead of being killed by the
-    // kernel once the pages are touched. Other processes can still take memory
-    // after this check, so it is a guard against the clear cases only.
-    double mem_needed = (double)nx * ny * (26.0 * sizeof(double)
+    // Host memory estimate: 21 arrays of nx*ny doubles (fields, derivatives,
+    // RK4 stages, Poisson right-hand side, FFT buffer) and four CSR operators
+    // with at most 7 non-zeros per row, compared with the memory available
+    // now. A run that would not fit stops here with a message instead of being
+    // killed by the kernel once the pages are touched. Other processes can
+    // still take memory after this check, so it is a guard against the clear
+    // cases only.
+    double mem_needed = (double)nx * ny * (21.0 * sizeof(double)
                       + 4.0 * (7.0 * (sizeof(double) + sizeof(int)) + sizeof(int)));
     double mem_avail  = available_memory();
     if (mem_avail >= 0. && mem_needed > mem_avail)
@@ -167,6 +207,10 @@ int main(int argc, char *argv[])
     double beta  = 2.0 / (1.0 + sqrt(1.0 - rho * rho));  // optimal SOR parameter
 
     printf("Grid: %d x %d | dt: %lf | tf: %lf\n", nx, ny, dt, tf);
+#ifdef _OPENMP
+    default_threads();
+    printf("OpenMP threads: %d\n", omp_get_max_threads());
+#endif
     printf("Poisson SOR parameter: %lf\n", beta);
 
 
@@ -237,8 +281,6 @@ int main(int argc, char *argv[])
     ctx.poisson_max_it = poisson_max_it; ctx.poisson_tol = poisson_tol;
     ctx.beta = beta;
 
-    int N = nx * ny;
-
     int it_max = (int)((tf / dt) - 1);
 
     // Dense field matrices
@@ -250,16 +292,6 @@ int main(int argc, char *argv[])
     mtrx dudx   = initm(nx, ny);
     mtrx dvdy   = initm(nx, ny);
     mtrx check_continuity = initm(nx, ny);
-
-    // Flat work buffers — pre-allocated once, no malloc/free in the time loop
-    double *flat_u   = (double *)malloc(N * sizeof(double));
-    double *flat_v   = (double *)malloc(N * sizeof(double));
-    double *flat_tmp = (double *)malloc(N * sizeof(double));
-    if (!flat_u || !flat_v || !flat_tmp)
-    {
-        printf("** Error: insufficient memory **\n");
-        exit(1);
-    }
 
     // Initial condition
     for (i = 1; i < nx - 1; i++)
@@ -313,10 +345,8 @@ int main(int argc, char *argv[])
             step(w, u, v, dt, time_scheme, &bc, &ctx);
 
             // Continuity check: du/dx + dv/dy ~ 0
-            flatten(u, flat_u, nx, ny);
-            flatten(v, flat_v, nx, ny);
-            spmv(DX, flat_u, flat_tmp);  unflatten(flat_tmp, dudx, nx, ny);
-            spmv(DY, flat_v, flat_tmp);  unflatten(flat_tmp, dvdy, nx, ny);
+            spmv(DX, u.M, dudx.M);
+            spmv(DY, v.M, dvdy.M);
 
             // reuse check_continuity storage
             for (i = 0; i < nx; i++)
@@ -363,8 +393,6 @@ int main(int argc, char *argv[])
     freem(&dudx);   freem(&dvdy);
     freem(&check_continuity);
 
-    // Free flat buffers
-    free(flat_u); free(flat_v); free(flat_tmp);
 
     // Free sparse operators
     freesm(DX); freesm(DY); freesm(DX2); freesm(DY2);

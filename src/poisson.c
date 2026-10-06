@@ -32,7 +32,7 @@ void poisson(mtrx f, mtrx u, mtrx u0, double dx, double dy, int itmax, double to
         mtrxcpy(u0, u);
 #ifdef _OPENMP
         /* Red–black ordering: two parallel phases (sequential GS is not safe to omp parallel for). */
-#pragma omp parallel for schedule(static)
+#pragma omp parallel for schedule(static) if (nx * ny >= OMP_MIN_WORK)
         for (i = 1; i < nx - 1; i++)
         {
             int j0 = (i & 1) ? 1 : 2;
@@ -42,7 +42,7 @@ void poisson(mtrx f, mtrx u, mtrx u0, double dx, double dy, int itmax, double to
                             + dx2 * (MAt(u, i, j+1) + MAt(u, i, j-1))
                             - dx2 * dy2 * MAt(f, i, j)) / denom;
         }
-#pragma omp parallel for schedule(static)
+#pragma omp parallel for schedule(static) if (nx * ny >= OMP_MIN_WORK)
         for (i = 1; i < nx - 1; i++)
         {
             int j0 = (i & 1) ? 2 : 1;
@@ -86,7 +86,7 @@ void poisson_SOR(mtrx f, mtrx u, mtrx u0, double dx, double dy, int itmax, doubl
     {
         mtrxcpy(u0, u);
 #ifdef _OPENMP
-#pragma omp parallel for schedule(static)
+#pragma omp parallel for schedule(static) if (nx * ny >= OMP_MIN_WORK)
         for (i = 1; i < nx - 1; i++)
         {
             int j0 = (i & 1) ? 1 : 2;
@@ -97,7 +97,7 @@ void poisson_SOR(mtrx f, mtrx u, mtrx u0, double dx, double dy, int itmax, doubl
                                     - dx2 * dy2 * MAt(f, i, j)) / denom
                            + (1.0 - beta) * MAt(u0, i, j);
         }
-#pragma omp parallel for schedule(static)
+#pragma omp parallel for schedule(static) if (nx * ny >= OMP_MIN_WORK)
         for (i = 1; i < nx - 1; i++)
         {
             int j0 = (i & 1) ? 2 : 1;
@@ -147,11 +147,82 @@ void poisson_SOR(mtrx f, mtrx u, mtrx u0, double dx, double dy, int itmax, doubl
 
 #include <fftw3.h>
 
-static fftw_plan plan_fwd;
-static fftw_plan plan_inv;
-static double   *fft_buf;  // shared work buffer for the interior, (nx-2)*(ny-2)
-static int       fft_nx;
-static int       fft_ny;
+// The 2D DST-I is done as two passes of 1D DST-I: along the rows, then along
+// the columns. Each pass works in batches of DST_BATCH rows (or columns), one
+// FFTW plan per batch size, and OpenMP builds spread the batches over the
+// threads. Every row is therefore transformed by the same plan however many
+// threads there are, so serial and OpenMP builds give bit-identical results.
+// FFTW_ESTIMATE makes the plans themselves deterministic; FFTW_MEASURE times
+// candidate plans and can pick a different one, with different round-off, on
+// every run.
+//
+// DST_BATCH is a multiple of 8, so every batch starts 64 bytes after the
+// previous one and has the alignment the plans were made for.
+#define DST_BATCH 8
+
+typedef struct
+{
+    fftw_plan full; // DST_BATCH transforms
+    fftw_plan rest; // the remaining count % DST_BATCH transforms, or NULL
+    int       count;
+    ptrdiff_t step; // offset between batches, in doubles
+} dst_pass;
+
+static dst_pass pass_rows, pass_cols;
+static double  *fft_buf;  // interior work buffer, (nx-2) x (ny-2), row-major
+static int      fft_nx;
+static int      fft_ny;
+
+// count transforms of length len, elements stride apart, transforms dist apart
+static dst_pass make_pass(int len, int count, int stride, int dist)
+{
+    dst_pass p;
+    fftw_r2r_kind kind = FFTW_RODFT00;
+    int batch = count < DST_BATCH ? count : DST_BATCH;
+
+    p.count = count;
+    p.step  = (ptrdiff_t)DST_BATCH * dist;
+    p.full  = fftw_plan_many_r2r(1, &len, batch, fft_buf, NULL, stride, dist,
+                                 fft_buf, NULL, stride, dist, &kind, FFTW_ESTIMATE);
+    p.rest  = NULL;
+    if (count > DST_BATCH && count % DST_BATCH)
+        p.rest = fftw_plan_many_r2r(1, &len, count % DST_BATCH, fft_buf, NULL, stride, dist,
+                                    fft_buf, NULL, stride, dist, &kind, FFTW_ESTIMATE);
+    if (!p.full || (count > DST_BATCH && count % DST_BATCH && !p.rest))
+    {
+        printf("** Error: FFTW could not plan the sine transform **\n");
+        exit(1);
+    }
+    return p;
+}
+
+static void free_pass(dst_pass *p)
+{
+    fftw_destroy_plan(p->full);
+    if (p->rest) fftw_destroy_plan(p->rest);
+}
+
+static void run_pass(const dst_pass *p, int parallel)
+{
+    int b, batches = (p->count + DST_BATCH - 1) / DST_BATCH;
+    (void)parallel;
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static) if (parallel)
+#endif
+    for (b = 0; b < batches; b++)
+    {
+        double *x = fft_buf + b * p->step;
+        fftw_execute_r2r((b + 1) * DST_BATCH <= p->count ? p->full : p->rest, x, x);
+    }
+}
+
+// 2D DST-I of the interior buffer, in place
+static void dst2d(void)
+{
+    int parallel = fft_nx * fft_ny >= OMP_MIN_WORK;
+    run_pass(&pass_rows, parallel);
+    run_pass(&pass_cols, parallel);
+}
 
 void fft_setup(int nx, int ny)
 {
@@ -162,21 +233,14 @@ void fft_setup(int nx, int ny)
     fft_buf = (double *)fftw_malloc((size_t)mx * my * sizeof(double));
     if (!fft_buf) { printf("** Error: fftw_malloc failed **\n"); exit(1); }
 
-    // FFTW_RODFT00 = DST-I in both dimensions, on the interior stored row-major
-    plan_fwd = fftw_plan_r2r_2d(mx, my,
-                                 fft_buf, fft_buf,
-                                 FFTW_RODFT00, FFTW_RODFT00,
-                                 FFTW_MEASURE);
-    plan_inv = fftw_plan_r2r_2d(mx, my,
-                                 fft_buf, fft_buf,
-                                 FFTW_RODFT00, FFTW_RODFT00,
-                                 FFTW_MEASURE);
+    pass_rows = make_pass(my, mx, 1, my); // mx rows of my contiguous values
+    pass_cols = make_pass(mx, my, my, 1); // my columns, values my apart
 }
 
 void fft_cleanup(void)
 {
-    fftw_destroy_plan(plan_fwd);
-    fftw_destroy_plan(plan_inv);
+    free_pass(&pass_rows);
+    free_pass(&pass_cols);
     fftw_free(fft_buf);
     fftw_cleanup(); // release FFTW's planner state, so leak checkers see nothing left
 }
@@ -189,7 +253,7 @@ void poisson_FFT(mtrx f, mtrx u, double dx, double dy)
 
     // Copy the interior right-hand side into the work buffer
 #ifdef _OPENMP
-#pragma omp parallel for schedule(static)
+#pragma omp parallel for schedule(static) if (nx * ny >= OMP_MIN_WORK)
 #endif
     for (i = 0; i < mx; i++)
     {
@@ -199,14 +263,14 @@ void poisson_FFT(mtrx f, mtrx u, double dx, double dy)
     }
 
     // Forward DST-I
-    fftw_execute(plan_fwd);
+    dst2d();
 
     // Divide by eigenvalues of the 2D Laplacian under DST-I:
     //   λ_ij = (2*cos(π*(i+1)/(mx+1)) - 2) / dx²
     //         + (2*cos(π*(j+1)/(my+1)) - 2) / dy²
     double inv_norm = 1.0 / (4.0 * (double)(mx + 1) * (double)(my + 1));
 #ifdef _OPENMP
-#pragma omp parallel for schedule(static)
+#pragma omp parallel for schedule(static) if (nx * ny >= OMP_MIN_WORK)
 #endif
     for (i = 0; i < mx; i++)
     {
@@ -222,11 +286,11 @@ void poisson_FFT(mtrx f, mtrx u, double dx, double dy)
     }
 
     // Inverse DST-I (same transform; normalise by 1/(2(mx+1)) * 1/(2(my+1)))
-    fftw_execute(plan_inv);
+    dst2d();
 
     // Write the normalised interior into u; u = 0 on the wall nodes
 #ifdef _OPENMP
-#pragma omp parallel for schedule(static)
+#pragma omp parallel for schedule(static) if (nx * ny >= OMP_MIN_WORK)
 #endif
     for (i = 0; i < nx; i++)
     {

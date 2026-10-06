@@ -37,6 +37,14 @@ void invsig(mtrx A);                           // Negate all matrix elements
 double maxel(mtrx A);                          // Return max element
 double minel(mtrx A);                          // Return min element
 void mtrxcpy(mtrx A, mtrx B);                  // Copy B into A
+void negcpy(mtrx A, mtrx B);                   // A = -B (A may be B)
+
+// OpenMP builds run a loop serially when it has fewer than this many
+// iterations (about a 45x45 grid): below it, waking the threads costs more
+// than the loop saves.
+#ifndef OMP_MIN_WORK
+#define OMP_MIN_WORK 2048
+#endif
 
 // Sparse matrix in Compressed Sparse Row (CSR) format
 typedef struct sparse_matrix
