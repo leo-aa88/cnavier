@@ -350,7 +350,10 @@ static double symbol(const smtrx *A, int k, int n, int step)
     int e;
     double s = 0.0;
     for (e = A->row_ptr[0]; e < A->row_ptr[1]; e++)
-        s += A->values[e] * cos(2.0 * PI * (double)k * (double)(A->col_idx[e] / step) / (double)n);
+    {
+        int offset = A->col_idx[e] / step; // whole grid points along the axis
+        s += A->values[e] * cos(2.0 * PI * (double)k * (double)offset / (double)n);
+    }
     return s;
 }
 
