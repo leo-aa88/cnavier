@@ -100,6 +100,8 @@ static void problem_init(problem *p, int nx, int ny, int time_scheme, int poisso
     p->cfg.DY = &p->DY;
     p->cfg.DX2 = &p->DX2;
     p->cfg.DY2 = &p->DY2;
+    p->cfg.forcing = NULL;
+    p->cfg.forcing_data = NULL;
     p->ctx = rk4_alloc(&p->cfg);
 
     p->u = initm(ny, nx);

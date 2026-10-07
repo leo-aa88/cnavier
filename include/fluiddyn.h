@@ -5,7 +5,10 @@
 
 #include "linearalg.h"
 
-void euler(mtrx w, mtrx dwdx, mtrx dwdy, mtrx d2wdx2, mtrx d2wdy2, mtrx u, mtrx v, double Re, double dt); // Euler time-advancement
+// Forward Euler update of w with the given derivatives and velocity; f is the
+// body force at the start of the step, or NULL for none
+void euler(mtrx w, mtrx dwdx, mtrx dwdy, mtrx d2wdx2, mtrx d2wdy2, mtrx u, mtrx v, const double *f,
+           double Re, double dt);
 
 // Dirichlet wall velocities, indexed by wall:
 // 0 -> left   (x = 0,  column j = 0)
@@ -35,6 +38,15 @@ typedef struct
     double poisson_tol, beta;         // their tolerance and SOR parameter
     wall_bc bc;                       // wall velocities
     const smtrx *DX, *DY, *DX2, *DY2; // sparse derivative operators
+
+    // Optional body force f in dw/dt = -u.grad(w) + (1/Re) lap(w) + f, used to
+    // verify the solver against a manufactured solution. forcing(t, f, data)
+    // fills the ny x nx field f with f(x, y, t); set it to NULL for none. The
+    // solver calls it once per right-hand-side evaluation; the GPU solver
+    // calls it on the host and copies the field to the device, so a forced
+    // run is slow there.
+    void (*forcing)(double t, mtrx f, void *data);
+    void *forcing_data;
 } solver_config;
 
 // CPU workspace: everything needed to advance a timestep without allocating
@@ -50,6 +62,8 @@ typedef struct
     mtrx w_tmp;             // temporary w for intermediate stages
     mtrx rhs;               // Poisson right-hand side, -w
     struct fft_solver *fft; // FFT Poisson solver (poisson_type 3), else NULL
+    mtrx force;             // body force of the current stage (cfg.forcing only)
+    long steps;             // steps taken; the time is steps * cfg.dt
 } rk4_ctx;
 
 // Allocate the CPU workspace for the run described by cfg (copied)
@@ -57,12 +71,12 @@ rk4_ctx rk4_alloc(const solver_config *cfg);
 // Free the CPU workspace
 void rk4_free(rk4_ctx *ctx);
 
-// Evaluate the vorticity RHS dw/dt = -u*dw/dx - v*dw/dy + (1/Re)*(d2w/dx2 + d2w/dy2)
-// into out, for the interior of w. On the way it changes all three inputs:
+// Evaluate the vorticity RHS dw/dt = -u*dw/dx - v*dw/dy + (1/Re)*(d2w/dx2 + d2w/dy2) + f
+// into out, for the interior of w at time t (f only with cfg.forcing). On the way it changes all three inputs:
 // u and v become the velocity of w's interior (Poisson solve) with the wall
 // velocities imposed, and the boundary entries of w become the wall
 // vorticity of that velocity.
-void dwdt(mtrx w, mtrx u, mtrx v, mtrx out, rk4_ctx *ctx);
+void dwdt(mtrx w, mtrx u, mtrx v, mtrx out, double t, rk4_ctx *ctx);
 
 // RK4 time advancement: advances the interior of w by cfg->dt and leaves u, v
 // as the velocity of the new interior (without the wall velocities; step()

@@ -76,6 +76,9 @@ struct gpu_solver
     double *w_tmp;             // temporary w for intermediate stages
     double *scratch;           // continuity field / Poisson work array
     double *partial;           // per-block results of a reduction
+    double *force;             // body force of the current stage (cfg.forcing only)
+    mtrx force_host;           // ... and the host field cfg.forcing fills
+    long steps;                // steps taken; the time is steps * cfg.dt
 
     // Convergence state of the iterative Poisson solvers, kept on the device
     // so that a batch of sweeps runs without waiting for the host
@@ -490,8 +493,18 @@ static void velocity_from_vorticity(gpu_solver *g, const double *w)
     LAUNCH(velocity_kernel, g->n, g->DX, g->DY, g->psi, g->u, g->v, g->n);
 }
 
-// Evaluate dw/dt into out and update u, v consistent with w
-static void dwdt(gpu_solver *g, double *w, double *out)
+// out += f(t), the body force, when cfg.forcing is set. The forcing is a host
+// function, so the field is filled on the host and copied over.
+static void add_body_force(gpu_solver *g, double t, double *out)
+{
+    if (!g->cfg.forcing) return;
+    g->cfg.forcing(t, g->force_host, g->cfg.forcing_data);
+    CUDA_CHECK(cudaMemcpy(g->force, g->force_host.M, g->n * sizeof(double), cudaMemcpyHostToDevice));
+    LAUNCH(axpy_kernel, g->n, out, 1.0, g->force, out, g->n);
+}
+
+// Evaluate dw/dt at time t into out and update u, v consistent with w
+static void dwdt(gpu_solver *g, double *w, double *out, double t)
 {
     // Velocity of this stage, then the wall vorticity that goes with it, as
     // in dwdt() in fluiddyn.c
@@ -499,6 +512,7 @@ static void dwdt(gpu_solver *g, double *w, double *out)
     LAUNCH(wall_bc_kernel, g->n, g->u, g->v, g->cfg.bc, g->nx, g->ny);
     LAUNCH(vorticity_bc_kernel, g->n, g->DX, g->DY, g->u, g->v, w, g->nx, g->ny);
     LAUNCH(rhs_kernel, g->n, g->DX, g->DY, g->DX2, g->DY2, w, g->u, g->v, g->cfg.Re, out, g->n);
+    add_body_force(g, t, out);
 }
 
 // ---------------------------------------------------------------------------
@@ -549,6 +563,11 @@ gpu_solver *gpu_init(const solver_config *cfg)
     g->k3 = dev_alloc(n);
     g->k4 = dev_alloc(n);
     g->w_tmp = dev_alloc(n);
+    if (cfg->forcing)
+    {
+        g->force = dev_alloc(n);
+        g->force_host = initm(ny, nx);
+    }
     g->scratch = dev_alloc(n);
     g->partial = dev_alloc(RED_BLOCKS);
     CUDA_CHECK(cudaMalloc((void **)&g->rb, sizeof(struct rb_state)));
@@ -609,6 +628,11 @@ void gpu_free(gpu_solver *g)
     cudaFree(g->scratch);
     cudaFree(g->partial);
     cudaFree(g->rb);
+    if (g->force)
+    {
+        cudaFree(g->force);
+        freem(&g->force_host);
+    }
     if (g->cfg.poisson_type == 3)
     {
         cufftDestroy(g->plan_rows);
@@ -633,7 +657,7 @@ const char *gpu_device_name(void)
 void gpu_step(gpu_solver *g)
 {
     int n = g->n;
-    double dt = g->cfg.dt;
+    double dt = g->cfg.dt, t = (double)g->steps * dt;
 
     // Boundary conditions
     LAUNCH(wall_bc_kernel, n, g->u, g->v, g->cfg.bc, g->nx, g->ny);
@@ -643,19 +667,20 @@ void gpu_step(gpu_solver *g)
     {
         // Euler: single RHS evaluation, then one Poisson solve
         LAUNCH(rhs_kernel, n, g->DX, g->DY, g->DX2, g->DY2, g->w, g->u, g->v, g->cfg.Re, g->k1, n);
+        add_body_force(g, t, g->k1);
         LAUNCH(axpy_kernel, n, g->w, dt, g->k1, g->w, n);
         velocity_from_vorticity(g, g->w);
     }
     else
     {
         // Classical RK4: w_{n+1} = w_n + (dt/6)*(k1 + 2*k2 + 2*k3 + k4)
-        dwdt(g, g->w, g->k1);
+        dwdt(g, g->w, g->k1, t);
         LAUNCH(axpy_kernel, n, g->w, 0.5 * dt, g->k1, g->w_tmp, n);
-        dwdt(g, g->w_tmp, g->k2);
+        dwdt(g, g->w_tmp, g->k2, t + 0.5 * dt);
         LAUNCH(axpy_kernel, n, g->w, 0.5 * dt, g->k2, g->w_tmp, n);
-        dwdt(g, g->w_tmp, g->k3);
+        dwdt(g, g->w_tmp, g->k3, t + 0.5 * dt);
         LAUNCH(axpy_kernel, n, g->w, dt, g->k3, g->w_tmp, n);
-        dwdt(g, g->w_tmp, g->k4);
+        dwdt(g, g->w_tmp, g->k4, t + dt);
         LAUNCH(rk4_combine_kernel, n, g->w, dt / 6.0, g->k1, g->k2, g->k3, g->k4, n);
 
         // Final Poisson solve so u, v are consistent with w_{n+1}
@@ -669,6 +694,7 @@ void gpu_step(gpu_solver *g)
     CUDA_CHECK(cudaMemcpy(g->k2, g->v, n * sizeof(double), cudaMemcpyDeviceToDevice));
     LAUNCH(wall_bc_kernel, n, g->k1, g->k2, g->cfg.bc, g->nx, g->ny);
     LAUNCH(vorticity_bc_kernel, n, g->DX, g->DY, g->k1, g->k2, g->w, g->nx, g->ny);
+    g->steps++;
 }
 
 void gpu_continuity(gpu_solver *g, double *cmax, double *cmin)
