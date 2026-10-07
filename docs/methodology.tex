@@ -751,25 +751,25 @@ The reference data are the classical lid-driven-cavity values of Ghia, Ghia, and
 \subsection{Flow diagnostics}
 \label{sec:diagnostics}
 
-After every step the program appends to \code{output/integrals.csv} the domain means of the kinetic energy, the enstrophy and the palinstrophy,
+After every step the program writes the domain means of the kinetic energy, the enstrophy and the palinstrophy,
 \begin{equation}
 E=\tfrac12\langle u^2+v^2\rangle,\qquad
 Z=\tfrac12\langle\omega^2\rangle,\qquad
 P=\tfrac12\langle|\nabla\omega|^2\rangle,
 \end{equation}
-with $\nabla\omega$ from $D_x$, $D_y$.  On a periodic grid $\langle\cdot\rangle$ is the mean over the nodes; with walls it is the trapezoidal mean over the domain, with the wall velocities on the wall nodes.  The GPU computes them by reductions on the device, so no field is copied to the host for them.  In an unforced periodic flow the continuum budgets are $\mathrm{d}E/\mathrm{d}t=-2\nu Z$ and $\mathrm{d}Z/\mathrm{d}t=-2\nu P$.
+to \code{output/integrals.csv}, with $\nabla\omega$ from $D_x$, $D_y$.  The option \code{--integrals-interval} writes them less often.  On a periodic grid $\langle\cdot\rangle$ is the mean over the nodes; with walls it is the trapezoidal mean over the domain, with the wall velocities on the wall nodes.  The GPU computes them by reductions on the device, so no field is copied to the host for them.  In an unforced periodic flow the continuum budgets are $\mathrm{d}E/\mathrm{d}t=-2\nu Z$ and $\mathrm{d}Z/\mathrm{d}t=-2\nu P$.
 
-On a periodic grid, each VTK frame is accompanied by \code{output/spectrum-1-<n>.csv} with the shell-averaged spectra and spectral fluxes.  Mode $\mathbf{k}=(2\pi m/L_x,2\pi n/L_y)$ falls in shell $b$ when $|b\,\Delta k-|\mathbf{k}||\le\Delta k/2$, $\Delta k=2\pi/\max(L_x,L_y)$, and
+On a periodic grid, each VTK frame is accompanied by \code{output/spectrum-1-<n>.csv} with spectra summed over shells of $|\mathbf{k}|$ (binned, not averaged over the modes of a shell) and the spectral fluxes.  Mode $\mathbf{k}=(2\pi m/L_x,2\pi n/L_y)$ falls in shell $b$ when $|b\,\Delta k-|\mathbf{k}||\le\Delta k/2$, $\Delta k=2\pi/\max(L_x,L_y)$, and
 \begin{equation}
 E(k_b)=\tfrac12\sum_{\mathbf{k}\in b}\left(|\hat u_\mathbf{k}|^2+|\hat v_\mathbf{k}|^2\right),\qquad
 Z(k_b)=\tfrac12\sum_{\mathbf{k}\in b}|\hat\omega_\mathbf{k}|^2,
 \end{equation}
-with the transforms normalised so that $\sum_bE(k_b)=E$ and $\sum_bZ(k_b)=Z$.  The fluxes through $k_b$ are
+with the transforms normalised so that $\sum_bE(k_b)=E$ and $\sum_bZ(k_b)=Z$; a spectral density is $E(k_b)/\Delta k$, which has the same slopes.  Let $A(\mathbf{k})=|\tilde D_x|^2+|\tilde D_y|^2$ from the symbols of the first-derivative operators that give $u$ and $v$, and $Q(\mathbf{k})=-(\tilde D_{xx}+\tilde D_{yy})$ from the Laplacian, so that $\hat\omega=Q\hat\psi$ and the energy of a mode is $\tfrac12A|\hat\psi|^2$.  The two differ from $|\mathbf{k}|^2$ by different amounts ($D_{xx}\ne D_x^2$), most near the Nyquist wavenumber.  The fluxes through $k_b$ are
 \begin{equation}
-\Pi_E(k_b)=-\sum_{b'\le b}\sum_{\mathbf{k}\in b'}\mathrm{Re}\left(\hat\psi^*_\mathbf{k}\hat N_\mathbf{k}\right),\qquad
+\Pi_E(k_b)=-\sum_{b'\le b}\sum_{\mathbf{k}\in b'}\frac{A}{Q}\,\mathrm{Re}\left(\hat\psi^*_\mathbf{k}\hat N_\mathbf{k}\right),\qquad
 \Pi_Z(k_b)=-\sum_{b'\le b}\sum_{\mathbf{k}\in b'}\mathrm{Re}\left(\hat\omega^*_\mathbf{k}\hat N_\mathbf{k}\right),
 \end{equation}
-where $N=-(uD_x\omega+vD_y\omega)$ is the solver's own nonlinear term and $\hat\psi$ solves $(D_{xx}+D_{yy})\psi=-\omega$ with the solver's eigenvalues (\cref{sec:periodic}), so the fluxes are those of the discrete equations.  A positive flux carries energy or enstrophy towards larger $k$.  In the continuum the nonlinear term conserves both, so $\Pi_E$ and $\Pi_Z$ vanish beyond the largest shell; in the discrete equations they do so up to the order of the derivatives (\cref{sec:diagnostics-verification}).
+where $N=-(uD_x\omega+vD_y\omega)$ is the solver's own nonlinear term and $\hat\psi$ solves $(D_{xx}+D_{yy})\psi=-\omega$ with the solver's eigenvalues (\cref{sec:periodic}).  The factor $A/Q$ makes $\Pi_E$ the transfer of the same energy that $E(k)$ measures: summed over all shells, the transfers equal the rates at which $N$ changes $\tfrac12\langle u^2+v^2\rangle$ and $\tfrac12\langle\omega^2\rangle$ in the discrete equations, to round-off.  Without it ($\mathrm{Re}(\hat\psi^*\hat N)$, the continuum expression) the energy transfer is off by $0.5$--$5\,\%$ on a random field on $16^2$--$24^2$ grids.  A positive flux carries energy or enstrophy towards larger $k$.  In the continuum the nonlinear term conserves both, so $\Pi_E$ and $\Pi_Z$ vanish beyond the largest shell; in the discrete equations they do so up to the order of the derivatives (\cref{sec:diagnostics-verification}).
 
 % =============================================================================
 \section{Verification and Validation}
@@ -965,13 +965,13 @@ For the Taylor--Green vortex the integrals are $E=\tfrac14e^{-4\nu k^2t}$, $Z=2k
 \toprule
 Order, grids & energy transfer & enstrophy transfer & $|\dot E+2\nu Z|/2\nu Z$ \\
 \midrule
-2, $64^2$ / $128^2$ & $1.2\times10^{-2}$ / $2.9\times10^{-3}$ & $1.3\times10^{-2}$ / $3.3\times10^{-3}$ & $1.1\times10^{-2}$ / $2.8\times10^{-3}$ \\
-4, $64^2$ / $128^2$ & $9.2\times10^{-4}$ / $5.9\times10^{-5}$ & $6.3\times10^{-4}$ / $4.0\times10^{-5}$ & $1.7\times10^{-4}$ / $1.1\times10^{-5}$ \\
-6, $64^2$ / $128^2$ & $4.2\times10^{-5}$ / $6.8\times10^{-7}$ & $2.5\times10^{-5}$ / $4.0\times10^{-7}$ & $3.0\times10^{-6}$ / $7.2\times10^{-8}$ \\
+2, $64^2$ / $128^2$ & $9.8\times10^{-3}$ / $2.5\times10^{-3}$ & $1.3\times10^{-2}$ / $3.3\times10^{-3}$ & $1.1\times10^{-2}$ / $2.8\times10^{-3}$ \\
+4, $64^2$ / $128^2$ & $6.8\times10^{-4}$ / $4.3\times10^{-5}$ & $6.3\times10^{-4}$ / $4.0\times10^{-5}$ & $1.7\times10^{-4}$ / $1.1\times10^{-5}$ \\
+6, $64^2$ / $128^2$ & $2.8\times10^{-5}$ / $4.5\times10^{-7}$ & $2.5\times10^{-5}$ / $4.0\times10^{-7}$ & $3.0\times10^{-6}$ / $7.2\times10^{-8}$ \\
 \bottomrule
 \end{tabular}
 \end{center}
-(net nonlinear transfers, relative to the largest flux).  The spectra sum to the integrals to round-off.  The nonlinear term conserves energy and enstrophy, and the energy budget closes, up to errors that fall at the order of the derivatives.  \code{make test} checks these, and the GPU integrals against the CPU; \code{make regression} checks the Taylor--Green energy written to \code{integrals.csv}.
+(net nonlinear transfers, relative to the largest flux).  The spectra sum to the integrals to round-off.  The nonlinear term conserves energy and enstrophy, and the energy budget closes, up to errors that fall at the order of the derivatives.  On a pseudo-random field the summed spectral transfers equal the physical-space nonlinear rates of $E$ and $Z$ to $3\times10^{-15}$ (orders 2 and 6, $16^2$ and $24\times20$).  \code{make test} checks these, and the GPU integrals against the CPU; \code{make regression} checks the Taylor--Green energy written to \code{integrals.csv}.
 
 \subsection{Physical validation against Ghia et al.}
 \label{sec:ghia}
@@ -1073,6 +1073,7 @@ The current binary accepts:
 --poisson-order N & 2 (five-point, default) or 4 (compact, \cref{sec:compact-poisson}); FFT solver with walls. \\
 --wall-closure NAME & \texttt{velocity} (default) or \texttt{briley} (\cref{eq:briley}). \\
 --velocity-order N & 2 (default) or 4: fourth-order rows next to the walls for $u$, $v$ (\cref{sec:wall-order}). \\
+--integrals-interval N & Write $E$, $Z$, $P$ to \texttt{output/integrals.csv} every $N$ steps (default 1; 0 never; \cref{sec:diagnostics}). \\
 --case NAME & \texttt{cavity} (default), or on a doubly periodic unit square \texttt{taylor-green} or \texttt{shear-layer} (\cref{sec:periodic}). \\
 --cpu & In a CUDA build, force the CPU backend. \\
 --help & Print command-line help. \\
