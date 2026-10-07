@@ -58,3 +58,4 @@ output/centerline_*_sim.csv
 cnavier
 test_cnavier
 obj/
+convergence_study

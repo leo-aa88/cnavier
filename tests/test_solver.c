@@ -15,6 +15,7 @@
 #include "poisson.h"
 #include "fluiddyn.h"
 #include "threads.h"
+#include "mms.h"
 #include "backend.h"
 #include "utils.h"
 #ifdef USE_CUDA
@@ -55,11 +56,13 @@ typedef struct
 // main.c. The configuration is complete, operators included, before the
 // workspace takes its copy, and the configuration points into *p, so p must
 // stay where it is until problem_free().
-static void problem_init(problem *p, int nx, int ny, int time_scheme, int poisson_type, double dt,
-                         double poisson_tol, const wall_bc *bc)
+// problem_init_ext() also sets the derivative order, Re, the domain size and
+// an optional body force.
+static void problem_init_ext(problem *p, int nx, int ny, double Lx, double Ly, int order, double Re,
+                             int time_scheme, int poisson_type, double dt, double poisson_tol,
+                             const wall_bc *bc, void (*forcing)(double, mtrx, void *), void *forcing_data)
 {
-    int order = 6;
-    double dx = 1.0 / (nx - 1), dy = 1.0 / (ny - 1);
+    double dx = Lx / (nx - 1), dy = Ly / (ny - 1);
     wall_bc lid = {{0., 0., 0., 1.}, {0., 0., 0., 0.}};
 
     p->nx = nx;
@@ -88,7 +91,7 @@ static void problem_init(problem *p, int nx, int ny, int time_scheme, int poisso
     p->cfg.ny = ny;
     p->cfg.dx = dx;
     p->cfg.dy = dy;
-    p->cfg.Re = 100.;
+    p->cfg.Re = Re;
     p->cfg.dt = dt;
     p->cfg.time_scheme = time_scheme;
     p->cfg.poisson_type = poisson_type;
@@ -100,13 +103,19 @@ static void problem_init(problem *p, int nx, int ny, int time_scheme, int poisso
     p->cfg.DY = &p->DY;
     p->cfg.DX2 = &p->DX2;
     p->cfg.DY2 = &p->DY2;
-    p->cfg.forcing = NULL;
-    p->cfg.forcing_data = NULL;
+    p->cfg.forcing = forcing;
+    p->cfg.forcing_data = forcing_data;
     p->ctx = rk4_alloc(&p->cfg);
 
     p->u = initm(ny, nx);
     p->v = initm(ny, nx);
     p->w = initm(ny, nx);
+}
+
+static void problem_init(problem *p, int nx, int ny, int time_scheme, int poisson_type, double dt,
+                         double poisson_tol, const wall_bc *bc)
+{
+    problem_init_ext(p, nx, ny, 1.0, 1.0, 6, 100., time_scheme, poisson_type, dt, poisson_tol, bc, NULL, NULL);
 }
 
 static void problem_free(problem *p)
@@ -448,6 +457,82 @@ static void test_temporal_order(void)
     }
     snprintf(name, sizeof(name), "RK4 / Euler error at dt = T/64 (%.1e / %.1e)", err_at[2], err_at[1]);
     check(name, isnan(err_at[2] / err_at[1]) ? INFINITY : err_at[2] / err_at[1], 1E-3);
+}
+
+// The manufactured solution of mms.h on an n x n unit square, run with its
+// body force from the exact state at t = 0 to T; returns w
+static mtrx run_forced(int n, int scheme, double dt, double T, mms_case *c)
+{
+    int t, steps = (int)floor(T / dt + 0.5);
+    wall_bc walls = {{0., 0., 0., 0.}, {0., 0., 0., 0.}};
+    mtrx w = initm(n, n);
+    problem p;
+
+    problem_init_ext(&p, n, n, 1.0, 1.0, 6, c->Re, scheme, 3, dt, 1E-3, &walls, mms_forcing, c);
+    mms_exact(c, 0.0, &p.w, &p.u, &p.v, NULL);
+    for (t = 0; t < steps; t++)
+        step(p.w, p.u, p.v, &p.ctx);
+    mtrxcpy(w, p.w);
+    problem_free(&p);
+    return w;
+}
+
+// With a time-dependent body force the schemes must keep their order, which
+// they do only if each RK4 stage evaluates the force at its own time
+static void test_forced_temporal_order(void)
+{
+    int n = 17, s, k;
+    double T = 0.25;
+    mms_case c = {1.0, 1.0, 100.0, 1.0 / (n - 1), 1.0 / (n - 1)};
+    char name[96];
+
+    printf("Unit: observed order in time with a body force, %dx%d grid, t = %g\n", n, n, T);
+    for (s = 1; s <= 2; s++)
+    {
+        int coarse = s == 1 ? 64 : 16;
+        double err[2], order;
+        mtrx ref = run_forced(n, s, T / (64 * coarse), T, &c);
+        for (k = 0; k < 2; k++)
+        {
+            mtrx w = run_forced(n, s, T / (coarse << k), T, &c);
+            err[k] = field_diff(w, ref);
+            freem(&w);
+        }
+        freem(&ref);
+        order = log2(err[0] / err[1]);
+        snprintf(name, sizeof(name), "%s with forcing: observed order %.2f, |order - %d|",
+                 s == 1 ? "Euler" : "RK4", order, s == 1 ? 1 : 4);
+        check(name, isnan(order) ? INFINITY : fabs(order - (s == 1 ? 1.0 : 4.0)), s == 1 ? 0.15 : 0.3);
+    }
+}
+
+// Spatial convergence against the manufactured solution (make convergence
+// runs the full study). psi, u and v converge at second order, set by the
+// five-point Poisson operator; w converges at least as fast on these grids.
+// The bounds on the errors themselves catch a wrong scale that would leave
+// the orders intact.
+static void test_mms_spatial_order(void)
+{
+    int k, ns[3] = {17, 33, 65};
+    mms_errors e[3];
+    char name[96];
+
+    printf("Unit: spatial order against a manufactured solution, RK4 + FFT, order 6\n");
+    for (k = 0; k < 3; k++)
+        e[k] = mms_run(ns[k], ns[k], 1.0, 1.0, 100.0, 6, 2, 3, 2.5E-3, 0.25);
+
+#define ORDER(field) log2(e[1].field.max / e[2].field.max)
+    snprintf(name, sizeof(name), "psi: observed order %.2f (33 -> 65), |order - 2|", ORDER(psi));
+    check(name, isnan(ORDER(psi)) ? INFINITY : fabs(ORDER(psi) - 2.0), 0.15);
+    snprintf(name, sizeof(name), "u: observed order %.2f, |order - 2|", ORDER(u));
+    check(name, isnan(ORDER(u)) ? INFINITY : fabs(ORDER(u) - 2.0), 0.15);
+    snprintf(name, sizeof(name), "v: observed order %.2f, |order - 2|", ORDER(v));
+    check(name, isnan(ORDER(v)) ? INFINITY : fabs(ORDER(v) - 2.0), 0.15);
+    snprintf(name, sizeof(name), "w, walls included: observed order %.2f, 2 - order", ORDER(w));
+    check(name, isnan(ORDER(w)) ? INFINITY : 2.0 - ORDER(w), 0.1);
+#undef ORDER
+    check("psi max error at 65x65", e[2].psi.max, 3E-4);
+    check("w max error at 65x65", e[2].w.max, 5E-3);
 }
 
 // Wall velocities go to the right nodes; at the corners the walls x = 0 and
@@ -1282,6 +1367,41 @@ static void test_gpu_step(int nx, int ny, int steps, double dt, int time_scheme,
     problem_free(&p);
 }
 
+// A run with a body force (the manufactured solution of mms.h) must match the
+// CPU: the GPU fills the force on the host at each stage's time and adds it
+static void test_gpu_forced(int nx, int ny, int steps, int time_scheme, const char *label)
+{
+    int t, N = nx * ny;
+    char name[96];
+    mms_case c = {1.0, 1.0, 100.0, 1.0 / (nx - 1), 1.0 / (ny - 1)};
+    wall_bc walls = {{0., 0., 0., 0.}, {0., 0., 0., 0.}};
+    problem p;
+    problem_init_ext(&p, nx, ny, 1.0, 1.0, 6, c.Re, time_scheme, 3, 0.002, 1E-10, &walls, mms_forcing, &c);
+    gpu_solver *g = gpu_for(&p);
+    mtrx u = initm(ny, nx), v = initm(ny, nx), w = initm(ny, nx);
+
+    printf("GPU: %d steps with a body force, %s, %dx%d grid\n", steps, label, nx, ny);
+    mms_exact(&c, 0.0, &p.w, &p.u, &p.v, NULL);
+    gpu_set_fields(g, &p.u, &p.v, &p.w);
+    for (t = 0; t < steps; t++)
+    {
+        step(p.w, p.u, p.v, &p.ctx);
+        gpu_step(g);
+    }
+    gpu_get_fields(g, &u, &v, &w);
+
+    snprintf(name, sizeof(name), "%s with forcing: w vs CPU", label);
+    check(name, rel_diff(w.M, p.w.M, N), 1E-11);
+    snprintf(name, sizeof(name), "%s with forcing: u, v vs CPU", label);
+    check(name, rel_diff(u.M, p.u.M, N) + rel_diff(v.M, p.v.M, N), 1E-11);
+
+    freem(&u);
+    freem(&v);
+    freem(&w);
+    gpu_free(g);
+    problem_free(&p);
+}
+
 // Fields written to the device must come back unchanged, and the continuity
 // diagnostic (a max and a min reduction) must match the CPU on a field that
 // is far from divergence-free.
@@ -1368,6 +1488,8 @@ static void run_gpu_tests(void)
     GPU_TEST(test_gpu_step(128, 128, 10, 0.0005, 2, 3, 1E-10, NULL, "RK4 + FFT", 1E-11));
     GPU_TEST(test_gpu_step(40, 24, 50, 0.002, 2, 3, 1E-10, NULL, "RK4 + FFT", 1E-11));
     GPU_TEST(test_gpu_step(24, 40, 50, 0.002, 1, 3, 1E-10, NULL, "Euler + FFT", 1E-11));
+    GPU_TEST(test_gpu_forced(33, 33, 50, 2, "RK4 + FFT"));
+    GPU_TEST(test_gpu_forced(40, 24, 50, 1, "Euler + FFT"));
     GPU_TEST(test_gpu_step(40, 24, 20, 0.002, 2, 3, 1E-10, &four_walls,
                            "RK4 + FFT, four moving walls", 1E-11));
     GPU_TEST(test_gpu_step(26, 15, 3, 0.002, 2, 2, 1E-10, NULL, "RK4 + SOR", 1E-7));
@@ -1412,6 +1534,8 @@ int main(int argc, char **argv)
     test_wall_bc();
     test_output();
     test_temporal_order();
+    test_forced_temporal_order();
+    test_mms_spatial_order();
     test_cpu_operator_axes(13, 9);
     test_cpu_operator_axes(9, 13);
     test_cpu_poisson_fft(8, 8);
