@@ -508,7 +508,8 @@ One CPU Euler timestep performs the following operations:
   \item compute $D_x\omega$, $D_y\omega$, $D_{xx}\omega$, and $D_{yy}\omega$;
   \item update $\omega$ by forward Euler;
   \item solve $\nabla^2\psi=-\omega$;
-  \item recover $u=D_y\psi$ and $v=-D_x\psi$.
+  \item recover $u=D_y\psi$ and $v=-D_x\psi$;
+  \item impose the wall velocities on copies of $u$ and $v$ and overwrite the boundary vorticity with $D_xv-D_yu$ of those copies, since the update advanced the boundary entries with the transport equation, which does not hold there.  $u$ and $v$ themselves keep the values from $\psi$, whose divergence the continuity check measures.
 \end{enumerate}
 
 \subsection{RK4 sequence}
@@ -521,7 +522,7 @@ One RK4 timestep begins with the same wall-velocity and wall-vorticity update.  
   \item differentiates the stage vorticity;
   \item evaluates the nonlinear convective and viscous terms.
 \end{enumerate}
-After combining $k_1$ through $k_4$, a fifth Poisson solve recovers velocity for the completed step.
+After combining $k_1$ through $k_4$, a fifth Poisson solve recovers velocity for the completed step, and the step ends like the Euler step: the wall velocities are imposed on copies of $u$ and $v$, and the boundary vorticity is overwritten with $D_xv-D_yu$ of those copies.
 
 \subsection{Pseudocode}
 
@@ -531,7 +532,7 @@ allocate reusable solver workspace
 initialize u, v, omega
 
 for each timestep:
-    impose wall velocities
+    impose wall velocities on u, v
     omega_wall = DX*v - DY*u on array edges
 
     if Euler:
@@ -544,14 +545,19 @@ for each timestep:
 
     if RK4:
         for each RK stage:
-            solve Laplacian(psi_stage) = -omega_stage
+            solve Laplacian(psi_stage) = -omega_stage   (interior)
             u_stage = DY*psi_stage
             v_stage = -DX*psi_stage
+            impose wall velocities on u_stage, v_stage
+            omega_stage_wall = DX*v_stage - DY*u_stage on array edges
             k_stage = RHS(omega_stage, u_stage, v_stage)
         omega = RK4 combination
         solve Laplacian(psi) = -omega
         u = DY*psi
         v = -DX*psi
+
+    (u_w, v_w) = (u, v) with wall velocities imposed
+    omega_wall = DX*v_w - DY*u_w on array edges
 
     evaluate discrete divergence DX*u + DY*v
     optionally write VTK

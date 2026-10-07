@@ -24,9 +24,10 @@ u = ∂ψ/∂y,  v = −∂ψ/∂x                          (velocity recovery)
 At each timestep:
 1. Compute vorticity boundary conditions from current velocity field
 2. Evaluate spatial derivatives of ω using finite differences
-3. Advance ω in time (Euler or RK4)
+3. Advance ω in time (Euler or RK4; each RK4 stage solves for its own velocity and recomputes the wall vorticity from it)
 4. Solve the Poisson equation for ψ
 5. Recover u and v from ψ
+6. Recompute the wall vorticity from the new velocity, so the ω that is returned and written out matches u and v at the walls
 
 ## Features
 
