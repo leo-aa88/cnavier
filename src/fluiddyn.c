@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
 #include "fluiddyn.h"
 #include "linearalg.h"
 
@@ -194,6 +195,59 @@ void rk4(mtrx w, mtrx u, mtrx v, double dt, rk4_ctx *ctx)
 
     // Final Poisson solve so u, v are consistent with w_{n+1}
     velocity_from_vorticity(w, u, v, ctx);
+}
+
+// ---------------------------------------------------------------------------
+// Time-step limit
+// ---------------------------------------------------------------------------
+
+// Sum of |coefficients| in row r of A
+static double row_abs_sum(const smtrx *A, int r)
+{
+    int k;
+    double s = 0.0;
+    for (k = A->row_ptr[r]; k < A->row_ptr[r + 1]; k++)
+        s += fabs(A->values[k]);
+    return s;
+}
+
+double max_stable_dt(const smtrx *dxx, const smtrx *dyy, double Re, int time_scheme)
+{
+    // Largest |eigenvalue| of each second-derivative operator, taken from the
+    // middle row. The interior stencils are centered with coefficients of
+    // alternating sign, so the sum of their magnitudes is the value of the
+    // stencil's symbol at the highest grid frequency.
+    double lambda = (row_abs_sum(dxx, dxx->m / 2) + row_abs_sum(dyy, dyy->m / 2)) / Re;
+
+    // Forward Euler is stable for real eigenvalues in [-2, 0], classical RK4
+    // down to -2.785293...
+    return (time_scheme == 1 ? 2.0 : 2.785293563405282) / lambda;
+}
+
+double euler_advection_dt(double Re, double u_max)
+{
+    return u_max > 0.0 ? 2.0 / (Re * u_max * u_max) : HUGE_VAL;
+}
+
+dt_limits time_step_limits(const smtrx *dxx, const smtrx *dyy, double h, double Re, double u_max,
+                           double max_co, int time_scheme)
+{
+    dt_limits l;
+    l.courant   = u_max > 0. ? max_co * h / u_max : HUGE_VAL;
+    l.viscous   = max_stable_dt(dxx, dyy, Re, time_scheme);
+    l.advection = time_scheme == 1 ? euler_advection_dt(Re, u_max) : HUGE_VAL;
+    l.accept    = fmin(l.courant, l.viscous);
+    l.suggest   = fmin(l.accept, l.advection);
+    return l;
+}
+
+double round_down_3(double x)
+{
+    if (!(x > 0.0) || !isfinite(x)) return x;
+    double scale = pow(10.0, 2.0 - floor(log10(x)));
+    double r = floor(x * scale) / scale;
+    // floor(log10) can be off by one next to a power of ten
+    return r > x ? (floor(x * scale) - 1.0) / scale : r;
 }
 
 // ---------------------------------------------------------------------------

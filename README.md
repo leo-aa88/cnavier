@@ -204,7 +204,14 @@ A few numerical parameters can be overridden without recompiling; anything not g
 | `--cpu` | CUDA builds only: run on the CPU instead of the GPU |
 | `--help` | Show the option list |
 
-The time step has to shrink with the grid spacing: the run stops at start-up if `dt/dx > 1`, and the explicit schemes also need `dt` to scale with `dx²` (the benchmarks above use `dt = 10/n²` at Re=100).
+Both time schemes are explicit, so `dt` has to shrink with the grid spacing. Before anything is computed, `dt` is checked against two limits, and the run stops if it is above either. The message gives both limits and a `dt` that passes (the smaller limit, rounded down):
+
+- the Courant number `u dt/dx` must not exceed 1 (`u` is the fastest wall);
+- the viscous stability limit of the chosen scheme. It is computed from the actual second-derivative operator, so it follows the grid, `Re` and the finite-difference order; it scales with `dx²`.
+
+For Euler there is a third limit, `dt ≤ 2/(Re·u²)` (that is `2ν/u²`), the stability limit of forward Euler for centered advection. It assumes the wall speed everywhere and is conservative for the cavity (at Re=1000 runs stayed stable up to about 3× it), so exceeding it only prints a warning. When an Euler run is refused, the suggested `dt` respects this limit as well, so following the suggestion does not lead to the warning.
+
+At the defaults (64×64, Re=100, 6th order) the limits are `dt ≤ 0.0056` for RK4 and `dt ≤ 0.0040` for Euler. The benchmarks above use `dt = 10/n²`.
 
 ```bash
 ./cnavier --n 127 --dt 6.2e-4 --tf 20

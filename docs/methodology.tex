@@ -567,7 +567,21 @@ C_x=U_{\mathrm{lid}}\frac{\dt}{\dx},
 \qquad
 C_y=U_{\mathrm{lid}}\frac{\dt}{\dy},
 \end{equation}
-and aborts if either exceeds \code{max\_co = 1}.  This is a useful sanity check but should not be interpreted as a complete stability proof.  The actual interior velocity can differ from the lid velocity, and diffusion imposes a separate explicit restriction.
+and aborts if either exceeds \code{max\_co = 1}, where $U_{\mathrm{lid}}$ is the largest wall speed.  This is a useful sanity check but should not be interpreted as a complete stability proof.  The actual interior velocity can differ from the lid velocity, and diffusion imposes a separate explicit restriction, which is checked as described next.
+
+\subsection{Implemented viscous limit}
+
+\code{max\_stable\_dt()} in \code{fluiddyn.c} bounds the timestep for the viscous term $\Rey^{-1}(D_{xx}+D_{yy})$.  The interior second-derivative stencils are centered with coefficients of alternating sign, so the sum of their magnitudes is the value of the stencil symbol at the highest grid frequency, i.e.\ the largest eigenvalue magnitude:
+\begin{equation}
+\lambda_{\max}=\frac{1}{\Rey}\Big(\sum_k |a^{x}_k| + \sum_k |a^{y}_k|\Big),
+\end{equation}
+taken from the middle row of the one-dimensional operators (which is also the middle row of the two-dimensional ones), so the check runs before the two-dimensional operators are assembled.  The run aborts unless
+\begin{equation}
+\dt\le\frac{\rho}{\lambda_{\max}},
+\qquad
+\rho=\begin{cases}2 & \text{forward Euler},\\ 2.785293\ldots & \text{classical RK4},\end{cases}
+\end{equation}
+$\rho$ being the extent of each method's stability region along the negative real axis, and unless the Courant condition holds; the message names both limits and suggests the smaller one, rounded down so that the suggestion itself passes.  For forward Euler the classical centered advection--diffusion condition $\dt\le 2\nu/U^2 = 2/(\Rey\,U^2)$ is checked as well, but only as a warning, since it is conservative here (below); when an Euler run is refused, the suggested $\dt$ is the smallest of all three limits, so that following it does not trigger the warning.  Measured on the lid-driven cavity, the viscous bound is sharp: for orders 2, 4 and 6, both schemes and $n=64$ and $128$, runs at $0.95$ times the bound stay bounded for 3000 steps and runs at $1.05$ times diverge.  The advection condition is conservative: at $\Rey=1000$, $n=64$, Euler stayed bounded up to about three times it.  At the defaults ($n=64$, $\Rey=100$, sixth order) the bounds are $\dt\le 0.0056$ for RK4 and $\dt\le 0.0040$ for Euler.
 
 \subsection{Diffusive scaling}
 
@@ -907,7 +921,7 @@ Wall vorticity is reconstructed from differentiated wall velocities rather than 
 
 \subsection{Explicit stability}
 
-Only a simple lid-speed Courant check is enforced at startup.  No automatic spectral stability bound is computed for the selected finite-difference order, Reynolds number, and time integrator.  Users remain responsible for timestep-convergence studies.
+At startup a lid-speed Courant check and the viscous bound of the selected time integrator (computed from the assembled second-derivative operator, so it follows the grid, Reynolds number and finite-difference order) are enforced.  These are stability bounds only; they say nothing about temporal accuracy, and users remain responsible for timestep-convergence studies.
 
 \subsection{Steady-state convergence}
 
