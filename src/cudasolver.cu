@@ -90,6 +90,10 @@ struct gpu_solver
     double *ext;                 // odd extensions, (ny-2) x 2(nx-1) or (nx-2) x 2(ny-1)
     cufftDoubleComplex *spec;    // their spectra, (ny-2) x nx or (nx-2) x ny
     double *lambda_i, *lambda_j; // eigenvalues of the 1D second differences
+
+    // Periodic Poisson solver (cfg.periodic): 2D real FFT of the whole field
+    cufftHandle plan_r2c, plan_c2r;
+    double *plam_x, *plam_y; // eigenvalues of DX2 (nx/2+1 of them) and DY2 (ny)
 };
 
 // ---------------------------------------------------------------------------
@@ -478,9 +482,44 @@ static void poisson_fft(gpu_solver *g, const double *w)
 }
 
 // Solve nabla^2 psi = -w
+// out = -x
+__global__ void negate_kernel(const double *x, double *out, int n)
+{
+    int k = blockIdx.x * blockDim.x + threadIdx.x;
+    if (k < n)
+        out[k] = -x[k];
+}
+
+// Divide the spectrum by the eigenvalues of DX2 + DY2 and by nx*ny (cuFFT
+// does not normalise); the mean (mode 0) is set to zero
+__global__ void periodic_divide_kernel(cufftDoubleComplex *spec, const double *lx, const double *ly,
+                                       int kx, int ny, double inv_n)
+{
+    int k = blockIdx.x * blockDim.x + threadIdx.x;
+    if (k < kx * ny)
+    {
+        int i = k / kx, j = k % kx;
+        double scale = k == 0 ? 0.0 : inv_n / (lx[j] + ly[i]);
+        spec[k].x *= scale;
+        spec[k].y *= scale;
+    }
+}
+
+// (DX2 + DY2) psi = -w on the periodic grid, as poisson_periodic() does
+static void poisson_periodic_gpu(gpu_solver *g, const double *w)
+{
+    int kx = g->nx / 2 + 1;
+    LAUNCH(negate_kernel, g->n, w, g->scratch, g->n);
+    CUFFT_CHECK(cufftExecD2Z(g->plan_r2c, g->scratch, g->spec));
+    LAUNCH(periodic_divide_kernel, kx * g->ny, g->spec, g->plam_x, g->plam_y, kx, g->ny, 1.0 / g->n);
+    CUFFT_CHECK(cufftExecZ2D(g->plan_c2r, g->spec, g->psi));
+}
+
 static void solve_poisson(gpu_solver *g, const double *w)
 {
-    if (g->cfg.poisson_type == 3)
+    if (g->cfg.periodic)
+        poisson_periodic_gpu(g, w);
+    else if (g->cfg.poisson_type == 3)
         poisson_fft(g, w);
     else
         poisson_redblack(g, w);
@@ -509,8 +548,11 @@ static void dwdt(gpu_solver *g, double *w, double *out, double t)
     // Velocity of this stage, then the wall vorticity that goes with it, as
     // in dwdt() in fluiddyn.c
     velocity_from_vorticity(g, w);
-    LAUNCH(wall_bc_kernel, g->n, g->u, g->v, g->cfg.bc, g->nx, g->ny);
-    LAUNCH(vorticity_bc_kernel, g->n, g->DX, g->DY, g->u, g->v, w, g->nx, g->ny);
+    if (!g->cfg.periodic)
+    {
+        LAUNCH(wall_bc_kernel, g->n, g->u, g->v, g->cfg.bc, g->nx, g->ny);
+        LAUNCH(vorticity_bc_kernel, g->n, g->DX, g->DY, g->u, g->v, w, g->nx, g->ny);
+    }
     LAUNCH(rhs_kernel, g->n, g->DX, g->DY, g->DX2, g->DY2, w, g->u, g->v, g->cfg.Re, out, g->n);
     add_vorticity_source(g, t, out);
 }
@@ -572,7 +614,32 @@ gpu_solver *gpu_init(const solver_config *cfg)
     g->partial = dev_alloc(RED_BLOCKS);
     CUDA_CHECK(cudaMalloc((void **)&g->rb, sizeof(struct rb_state)));
 
-    if (g->cfg.poisson_type == 3)
+    if (cfg->periodic)
+    {
+        int kx = nx / 2 + 1;
+        double *lx = (double *)malloc((size_t)kx * sizeof(double)), *ly = (double *)malloc((size_t)ny * sizeof(double));
+        if (cfg->poisson_type != 3)
+        {
+            printf("** Error: periodic boundaries need the FFT Poisson solver (poisson_type 3) **\n");
+            exit(1);
+        }
+        if (!lx || !ly)
+        {
+            printf("** Error: insufficient memory **\n");
+            exit(1);
+        }
+        CUFFT_CHECK(cufftPlan2d(&g->plan_r2c, ny, nx, CUFFT_D2Z));
+        CUFFT_CHECK(cufftPlan2d(&g->plan_c2r, ny, nx, CUFFT_Z2D));
+        CUDA_CHECK(cudaMalloc((void **)&g->spec, (size_t)kx * ny * sizeof(cufftDoubleComplex)));
+        periodic_eigenvalues(nx, ny, cfg->DX2, cfg->DY2, lx, ly);
+        g->plam_x = dev_alloc(kx);
+        g->plam_y = dev_alloc(ny);
+        CUDA_CHECK(cudaMemcpy(g->plam_x, lx, kx * sizeof(double), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(g->plam_y, ly, ny * sizeof(double), cudaMemcpyHostToDevice));
+        free(lx);
+        free(ly);
+    }
+    else if (g->cfg.poisson_type == 3)
     {
         int len_x = 2 * (nx - 1), len_y = 2 * (ny - 1); // lengths of the odd extensions
         size_t ext_rows = (size_t)(ny - 2) * len_x, ext_cols = (size_t)(nx - 2) * len_y;
@@ -633,7 +700,15 @@ void gpu_free(gpu_solver *g)
         cudaFree(g->source);
         freem(&g->source_host);
     }
-    if (g->cfg.poisson_type == 3)
+    if (g->cfg.periodic)
+    {
+        cufftDestroy(g->plan_r2c);
+        cufftDestroy(g->plan_c2r);
+        cudaFree(g->spec);
+        cudaFree(g->plam_x);
+        cudaFree(g->plam_y);
+    }
+    else if (g->cfg.poisson_type == 3)
     {
         cufftDestroy(g->plan_rows);
         cufftDestroy(g->plan_cols);
@@ -659,9 +734,12 @@ void gpu_step(gpu_solver *g)
     int n = g->n;
     double dt = g->cfg.dt, t = g->cfg.t0 + (double)g->steps * dt;
 
-    // Boundary conditions
-    LAUNCH(wall_bc_kernel, n, g->u, g->v, g->cfg.bc, g->nx, g->ny);
-    LAUNCH(vorticity_bc_kernel, n, g->DX, g->DY, g->u, g->v, g->w, g->nx, g->ny);
+    // Boundary conditions (walls only)
+    if (!g->cfg.periodic)
+    {
+        LAUNCH(wall_bc_kernel, n, g->u, g->v, g->cfg.bc, g->nx, g->ny);
+        LAUNCH(vorticity_bc_kernel, n, g->DX, g->DY, g->u, g->v, g->w, g->nx, g->ny);
+    }
 
     if (g->cfg.time_scheme == 1)
     {
@@ -690,10 +768,13 @@ void gpu_step(gpu_solver *g)
     // The wall vorticity of the new velocity in place of the wall entries the
     // update advanced, with the wall velocities imposed on copies of u and v,
     // as at the end of step()
-    CUDA_CHECK(cudaMemcpy(g->k1, g->u, n * sizeof(double), cudaMemcpyDeviceToDevice));
-    CUDA_CHECK(cudaMemcpy(g->k2, g->v, n * sizeof(double), cudaMemcpyDeviceToDevice));
-    LAUNCH(wall_bc_kernel, n, g->k1, g->k2, g->cfg.bc, g->nx, g->ny);
-    LAUNCH(vorticity_bc_kernel, n, g->DX, g->DY, g->k1, g->k2, g->w, g->nx, g->ny);
+    if (!g->cfg.periodic)
+    {
+        CUDA_CHECK(cudaMemcpy(g->k1, g->u, n * sizeof(double), cudaMemcpyDeviceToDevice));
+        CUDA_CHECK(cudaMemcpy(g->k2, g->v, n * sizeof(double), cudaMemcpyDeviceToDevice));
+        LAUNCH(wall_bc_kernel, n, g->k1, g->k2, g->cfg.bc, g->nx, g->ny);
+        LAUNCH(vorticity_bc_kernel, n, g->DX, g->DY, g->k1, g->k2, g->w, g->nx, g->ny);
+    }
     g->steps++;
 }
 

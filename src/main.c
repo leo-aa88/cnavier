@@ -49,6 +49,40 @@ static int parse_double(const char *s, double *out)
     return 1;
 }
 
+// Flow cases: the lid-driven cavity has four walls, the others are doubly
+// periodic on the unit square
+enum flow_case
+{
+    CASE_CAVITY,
+    CASE_TAYLOR_GREEN,
+    CASE_SHEAR_LAYER
+};
+
+#define CASE_PI 3.14159265358979323846
+
+// Taylor-Green vortex: psi = sin(kx) sin(ky) e^(-2 k^2 t / Re) / k, k = 2 pi,
+// an exact solution (the nonlinear term vanishes), with |u| <= 1
+static void taylor_green(double x, double y, double t, double Re, double *w, double *u, double *v)
+{
+    double k = 2.0 * CASE_PI, decay = exp(-2.0 * k * k * t / Re);
+    *w = 2.0 * k * sin(k * x) * sin(k * y) * decay;
+    *u = sin(k * x) * cos(k * y) * decay;
+    *v = -cos(k * x) * sin(k * y) * decay;
+}
+
+// Double shear layer (Bell, Colella and Glaz 1989): two tanh layers of
+// thickness 1/30 at y = 1/4 and y = 3/4 with a small sinusoidal v that makes
+// them roll up into vortices
+static void shear_layer(double x, double y, double *w, double *u, double *v)
+{
+    const double delta = 1.0 / 30.0, eps = 0.05;
+    double s = y <= 0.5 ? (y - 0.25) / delta : (0.75 - y) / delta, sech = 1.0 / cosh(s);
+    *u = tanh(s);
+    *v = eps * sin(2.0 * CASE_PI * x);
+    // w = dv/dx - du/dy
+    *w = 2.0 * CASE_PI * eps * cos(2.0 * CASE_PI * x) - (y <= 0.5 ? 1.0 : -1.0) * sech * sech / delta;
+}
+
 static void usage(const char *prog)
 {
     printf("Usage: %s [options]\n", prog);
@@ -58,6 +92,11 @@ static void usage(const char *prog)
     printf("  --dt DT              time step\n");
     printf("  --tf TF              final time\n");
     printf("  --output-interval N  write VTK every N iterations (0 = never)\n");
+    printf("  --re RE              Reynolds number\n");
+    printf("  --case NAME          cavity (default; lid-driven, four walls), or on a\n"
+           "                       doubly periodic unit square: taylor-green (decaying\n"
+           "                       vortex, compared with the exact solution at the end)\n"
+           "                       or shear-layer (double shear layer that rolls up)\n");
 #ifdef USE_CUDA
     printf("  --cpu                run on the CPU instead of the GPU\n");
 #endif
@@ -87,6 +126,7 @@ int main(int argc, char *argv[])
     int poisson_type = 3; // 1=Gauss-Seidel  2=SOR  3=FFT (direct, exact)
     int time_scheme = 2;  // 1=Euler  2=RK4
     int use_gpu = 1;      // only meaningful when built with CUDA=1
+    enum flow_case flow = CASE_CAVITY;
 
     // Command-line overrides
     static struct option long_opts[] = {
@@ -96,6 +136,8 @@ int main(int argc, char *argv[])
         {"dt", required_argument, 0, 'd'},
         {"tf", required_argument, 0, 'f'},
         {"output-interval", required_argument, 0, 'o'},
+        {"re", required_argument, 0, 'r'},
+        {"case", required_argument, 0, 'k'},
         {"cpu", no_argument, 0, 'c'},
         {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}};
@@ -123,6 +165,19 @@ int main(int argc, char *argv[])
             break;
         case 'o':
             ok = parse_int(optarg, &output_interval);
+            break;
+        case 'r':
+            ok = parse_double(optarg, &Re) && Re > 0.;
+            break;
+        case 'k':
+            if (strcmp(optarg, "cavity") == 0)
+                flow = CASE_CAVITY;
+            else if (strcmp(optarg, "taylor-green") == 0)
+                flow = CASE_TAYLOR_GREEN;
+            else if (strcmp(optarg, "shear-layer") == 0)
+                flow = CASE_SHEAR_LAYER;
+            else
+                ok = 0;
             break;
         case 'c':
             use_gpu = 0;
@@ -189,19 +244,30 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    // Grid spacing: nodes 0 and nx-1 lie on the walls, so nx nodes span Lx
-    // with nx-1 intervals
-    double dx = (double)Lx / (nx - 1);
-    double dy = (double)Ly / (ny - 1);
+    int periodic = flow != CASE_CAVITY;
+    if (periodic && poisson_type != 3)
+    {
+        printf("** Error: the periodic cases need the FFT Poisson solver (poisson_type = 3) **\n");
+        return 1;
+    }
+
+    // Grid spacing. With walls, nodes 0 and nx-1 lie on the walls, so nx
+    // nodes span Lx with nx-1 intervals. On a periodic grid node nx would be
+    // node 0 again, so nx nodes span Lx with nx intervals.
+    double dx = (double)Lx / (periodic ? nx : nx - 1);
+    double dy = (double)Ly / (periodic ? ny : ny - 1);
 
     double beta = sor_beta(nx, ny, dx, dy); // optimal SOR parameter
 
+    printf("Case: %s | Re: %g\n", flow == CASE_CAVITY ? "lid-driven cavity" : flow == CASE_TAYLOR_GREEN ? "Taylor-Green vortex (periodic)"
+                                                                                                        : "double shear layer (periodic)",
+           Re);
     printf("Grid: %d x %d | dt: %lf | tf: %lf\n", nx, ny, dt, tf);
 #ifdef _OPENMP
     default_threads();
     printf("OpenMP threads: %d\n", omp_get_max_threads());
 #endif
-    printf("Poisson SOR parameter: %lf\n", beta);
+    if (!periodic) printf("Poisson SOR parameter: %lf\n", beta);
 
     // Boundary conditions (Dirichlet): wall velocities on the left (1), right
     // (2), bottom (3) and top (4) walls; the top wall is the moving lid
@@ -211,17 +277,18 @@ int main(int argc, char *argv[])
     wall_bc bc = {{u1, u2, u3, u4}, {v1, v2, v3, v4}};
 
     // Build sparse 1D operators then free them after Kronecker
-    smtrx sd_x = SDiff1(nx, order, dx);
-    smtrx sd_y = SDiff1(ny, order, dy);
-    smtrx sd_x2 = SDiff2(nx, order, dx);
-    smtrx sd_y2 = SDiff2(ny, order, dy);
+    smtrx sd_x = periodic ? SDiff1_periodic(nx, order, dx) : SDiff1(nx, order, dx);
+    smtrx sd_y = periodic ? SDiff1_periodic(ny, order, dy) : SDiff1(ny, order, dy);
+    smtrx sd_x2 = periodic ? SDiff2_periodic(nx, order, dx) : SDiff2(nx, order, dx);
+    smtrx sd_y2 = periodic ? SDiff2_periodic(ny, order, dy) : SDiff2(ny, order, dy);
     smtrx sIx = seye(nx);
     smtrx sIy = seye(ny);
 
     // Stability checks, before the 2D operators are built so that a run that
-    // cannot work fails at once. The fastest wall is the velocity scale.
-    double u_max = 0.;
-    for (i = 0; i < 4; i++)
+    // cannot work fails at once. The velocity scale is the fastest wall, or
+    // for the periodic cases the largest initial speed, which is 1 for both.
+    double u_max = periodic ? 1.0 : 0.;
+    for (i = 0; i < 4 && !periodic; i++)
     {
         if (fabs(bc.u[i]) > u_max) u_max = fabs(bc.u[i]);
         if (fabs(bc.v[i]) > u_max) u_max = fabs(bc.v[i]);
@@ -275,6 +342,7 @@ int main(int argc, char *argv[])
     cfg.poisson_max_it = poisson_max_it;
     cfg.poisson_tol = poisson_tol;
     cfg.beta = beta;
+    cfg.periodic = periodic;
     cfg.bc = bc;
     cfg.DX = &DX;
     cfg.DY = &DY;
@@ -293,12 +361,22 @@ int main(int argc, char *argv[])
     // of nx values (x).
     mtrx *u, *v, *w;
     backend_fields(solver, &u, &v, &w);
-    for (i = 1; i < ny - 1; i++)
-        for (j = 1; j < nx - 1; j++)
-        {
-            MAt(*u, i, j) = ui;
-            MAt(*v, i, j) = vi;
-        }
+    if (flow == CASE_CAVITY)
+        for (i = 1; i < ny - 1; i++)
+            for (j = 1; j < nx - 1; j++)
+            {
+                MAt(*u, i, j) = ui;
+                MAt(*v, i, j) = vi;
+            }
+    else
+        for (i = 0; i < ny; i++)
+            for (j = 0; j < nx; j++)
+            {
+                if (flow == CASE_TAYLOR_GREEN)
+                    taylor_green(j * dx, i * dy, 0.0, Re, &MAt(*w, i, j), &MAt(*u, i, j), &MAt(*v, i, j));
+                else
+                    shear_layer(j * dx, i * dy, &MAt(*w, i, j), &MAt(*u, i, j), &MAt(*v, i, j));
+            }
     backend_set_fields(solver, u, v, w);
     printf("Backend: %s\n", backend_name(solver));
     if (backend_device(solver)) printf("CUDA device: %s\n", backend_device(solver));
@@ -333,13 +411,30 @@ int main(int argc, char *argv[])
 
     backend_fields(solver, &u, &v, &w);
 
-    // Re-apply wall BCs before sampling centerline. This writes to the read
-    // view without backend_set_fields(), which is fine only because the
-    // solver is not stepped again.
-    apply_wall_bc(*u, *v, &bc);
+    if (flow == CASE_CAVITY)
+    {
+        // Re-apply wall BCs before sampling centerline. This writes to the
+        // read view without backend_set_fields(), which is fine only because
+        // the solver is not stepped again.
+        apply_wall_bc(*u, *v, &bc);
 
-    // Write centerline profiles and compare against Ghia et al. (1982)
-    print_centerline(*u, *v, nx, ny, dx, dy);
+        // Write centerline profiles and compare against Ghia et al. (1982)
+        print_centerline(*u, *v, nx, ny, dx, dy);
+    }
+    else if (flow == CASE_TAYLOR_GREEN)
+    {
+        double t_end = (double)(it_max + 1) * dt, err = 0.0, peak = 0.0;
+        for (i = 0; i < ny; i++)
+            for (j = 0; j < nx; j++)
+            {
+                double we, ue, ve;
+                taylor_green(j * dx, i * dy, t_end, Re, &we, &ue, &ve);
+                err = fmax(err, fabs(MAt(*w, i, j) - we));
+                peak = fmax(peak, fabs(we));
+            }
+        printf("Taylor-Green vortex at t = %g: max |w - exact| = %E, relative to max |w| %E\n",
+               t_end, err, err / peak);
+    }
 
     printf("Wall-clock time: %.3lf s total | %.4lf ms per step (%d steps, %s)\n",
            elapsed, 1E3 * elapsed / (it_max + 1), it_max + 1, backend_name(solver));

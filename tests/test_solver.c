@@ -56,23 +56,24 @@ typedef struct
 // main.c. The configuration is complete, operators included, before the
 // workspace takes its copy, and the configuration points into *p, so p must
 // stay where it is until problem_free().
-// problem_init_ext() also sets the derivative order, Re, the domain size, the
-// start time and an optional vorticity source.
-static void problem_init_ext(problem *p, int nx, int ny, double Lx, double Ly, int order, double Re,
-                             int time_scheme, int poisson_type, double dt, double poisson_tol,
+// problem_init_ext() also sets the derivative order, Re, the domain size,
+// periodic boundaries (then dx = Lx/nx, and bc is unused), the start time and
+// an optional vorticity source.
+static void problem_init_ext(problem *p, int nx, int ny, double Lx, double Ly, int periodic, int order,
+                             double Re, int time_scheme, int poisson_type, double dt, double poisson_tol,
                              const wall_bc *bc, double t0, void (*vorticity_source)(double, mtrx, void *),
                              void *source_data)
 {
-    double dx = Lx / (nx - 1), dy = Ly / (ny - 1);
+    double dx = Lx / (periodic ? nx : nx - 1), dy = Ly / (periodic ? ny : ny - 1);
     wall_bc lid = {{0., 0., 0., 1.}, {0., 0., 0., 0.}};
 
     p->nx = nx;
     p->ny = ny;
 
-    smtrx sd_x = SDiff1(nx, order, dx);
-    smtrx sd_y = SDiff1(ny, order, dy);
-    smtrx sd_x2 = SDiff2(nx, order, dx);
-    smtrx sd_y2 = SDiff2(ny, order, dy);
+    smtrx sd_x = periodic ? SDiff1_periodic(nx, order, dx) : SDiff1(nx, order, dx);
+    smtrx sd_y = periodic ? SDiff1_periodic(ny, order, dy) : SDiff1(ny, order, dy);
+    smtrx sd_x2 = periodic ? SDiff2_periodic(nx, order, dx) : SDiff2(nx, order, dx);
+    smtrx sd_y2 = periodic ? SDiff2_periodic(ny, order, dy) : SDiff2(ny, order, dy);
     smtrx sIx = seye(nx);
     smtrx sIy = seye(ny);
 
@@ -99,6 +100,7 @@ static void problem_init_ext(problem *p, int nx, int ny, double Lx, double Ly, i
     p->cfg.poisson_max_it = 200000;
     p->cfg.poisson_tol = poisson_tol;
     p->cfg.beta = sor_beta(nx, ny, dx, dy);
+    p->cfg.periodic = periodic;
     p->cfg.bc = bc ? *bc : lid;
     p->cfg.DX = &p->DX;
     p->cfg.DY = &p->DY;
@@ -117,7 +119,7 @@ static void problem_init_ext(problem *p, int nx, int ny, double Lx, double Ly, i
 static void problem_init(problem *p, int nx, int ny, int time_scheme, int poisson_type, double dt,
                          double poisson_tol, const wall_bc *bc)
 {
-    problem_init_ext(p, nx, ny, 1.0, 1.0, 6, 100., time_scheme, poisson_type, dt, poisson_tol, bc, 0.0, NULL, NULL);
+    problem_init_ext(p, nx, ny, 1.0, 1.0, 0, 6, 100., time_scheme, poisson_type, dt, poisson_tol, bc, 0.0, NULL, NULL);
 }
 
 static void problem_free(problem *p)
@@ -470,7 +472,7 @@ static mtrx run_with_source(int n, int scheme, double dt, double T, mms_case *c)
     mtrx w = initm(n, n);
     problem p;
 
-    problem_init_ext(&p, n, n, 1.0, 1.0, 6, c->Re, scheme, 3, dt, 1E-3, &walls, 0.0, mms_source, c);
+    problem_init_ext(&p, n, n, 1.0, 1.0, 0, 6, c->Re, scheme, 3, dt, 1E-3, &walls, 0.0, mms_source, c);
     mms_exact(c, 0.0, &p.w, &p.u, &p.v, NULL);
     for (t = 0; t < steps; t++)
         step(p.w, p.u, p.v, &p.ctx);
@@ -485,7 +487,7 @@ static void test_source_temporal_order(void)
 {
     int n = 17, s, k;
     double T = 0.25;
-    mms_case c = {1.0, 1.0, 100.0, 1.0 / (n - 1), 1.0 / (n - 1)};
+    mms_case c = {1.0, 1.0, 100.0, 1.0 / (n - 1), 1.0 / (n - 1), 0};
     char name[96];
 
     printf("Unit: observed order in time with a vorticity source, %dx%d grid, t = %g\n", n, n, T);
@@ -579,6 +581,130 @@ static void test_order_ablation(void)
         snprintf(name, sizeof(name), "%s: w order %.2f, |order - %.0f|", cases[k].name, order, cases[k].target);
         check(name, isnan(order) ? INFINITY : fabs(order - cases[k].target), cases[k].tol);
     }
+}
+
+// Periodic operators: the wrapped centered stencils differentiate sin(2 pi x)
+// at their nominal order, and annihilate constants
+static void test_periodic_operators(void)
+{
+    int o, n, i;
+    char name[96];
+
+    printf("Unit: periodic derivative operators\n");
+    for (o = 2; o <= 6; o += 2)
+    {
+        double err[2][2];
+        for (n = 32; n <= 64; n *= 2)
+        {
+            double dx = 1.0 / n, e1 = 0.0, e2 = 0.0, ones = 0.0;
+            smtrx d1 = SDiff1_periodic(n, o, dx), d2 = SDiff2_periodic(n, o, dx);
+            double *f = (double *)malloc(n * sizeof(double)), *d = (double *)malloc(n * sizeof(double));
+            for (i = 0; i < n; i++)
+                f[i] = sin(2.0 * PI * i * dx);
+            spmv(d1, f, d);
+            for (i = 0; i < n; i++)
+                e1 = fmax(e1, fabs(d[i] - 2.0 * PI * cos(2.0 * PI * i * dx)));
+            spmv(d2, f, d);
+            for (i = 0; i < n; i++)
+                e2 = fmax(e2, fabs(d[i] + 4.0 * PI * PI * f[i]));
+            for (i = 0; i < n; i++)
+                f[i] = 1.0;
+            spmv(d1, f, d);
+            for (i = 0; i < n; i++)
+                ones = fmax(ones, fabs(d[i]));
+            spmv(d2, f, d);
+            for (i = 0; i < n; i++)
+                ones = fmax(ones, fabs(d[i]) * dx);
+            err[n == 64][0] = e1;
+            err[n == 64][1] = e2;
+            if (n == 64)
+            {
+                snprintf(name, sizeof(name), "order %d: constants differentiate to zero", o);
+                check(name, ones, 1E-10);
+            }
+            free(f);
+            free(d);
+            freesm(d1);
+            freesm(d2);
+        }
+        double p1 = log2(err[0][0] / err[1][0]), p2 = log2(err[0][1] / err[1][1]);
+        snprintf(name, sizeof(name), "order %d: first derivative order %.2f", o, p1);
+        check(name, fabs(p1 - o), 0.1);
+        snprintf(name, sizeof(name), "order %d: second derivative order %.2f", o, p2);
+        check(name, fabs(p2 - o), 0.1);
+    }
+}
+
+// The periodic Poisson solver solves (DX2 + DY2) psi = f exactly, for the
+// operators of every order, on grids with odd and even sizes, and returns
+// psi with zero mean
+static void test_periodic_poisson(int nx, int ny, int order)
+{
+    int k, N = nx * ny;
+    double dx = 1.0 / nx, dy = 2.0 / ny, mean = 0.0, res = 0.0, scale = 0.0;
+    smtrx d2x = SDiff2_periodic(nx, order, dx), d2y = SDiff2_periodic(ny, order, dy);
+    smtrx Ix = seye(nx), Iy = seye(ny);
+    smtrx DX2 = skronecker(Iy, d2x), DY2 = skronecker(d2y, Ix);
+    mtrx f = initm(ny, nx), psi = initm(ny, nx);
+    double *a = (double *)malloc(N * sizeof(double)), *b = (double *)malloc(N * sizeof(double));
+    periodic_solver *s = periodic_setup(nx, ny, &DX2, &DY2);
+
+    fill_pseudo_random(f.M, N, 11);
+    for (k = 0; k < N; k++)
+        mean += f.M[k] / N;
+    for (k = 0; k < N; k++)
+        f.M[k] -= mean; // a periodic Poisson problem needs a zero-mean right-hand side
+    poisson_periodic(s, f, psi);
+    spmv(DX2, psi.M, a);
+    spmv(DY2, psi.M, b);
+    mean = 0.0;
+    for (k = 0; k < N; k++)
+    {
+        res = fmax(res, fabs(a[k] + b[k] - f.M[k]));
+        scale = fmax(scale, fabs(f.M[k]));
+        mean += psi.M[k] / N;
+    }
+    printf("Unit: periodic Poisson solver, %dx%d grid, order %d\n", nx, ny, order);
+    check("residual of (DX2 + DY2) psi = f, relative", res / scale, 1E-10);
+    check("psi has zero mean", fabs(mean), 1E-12);
+
+    periodic_cleanup(s);
+    free(a);
+    free(b);
+    freem(&f);
+    freem(&psi);
+    freesm(d2x);
+    freesm(d2y);
+    freesm(Ix);
+    freesm(Iy);
+    freesm(DX2);
+    freesm(DY2);
+}
+
+// Without walls the method reaches the nominal order of its stencils: the
+// periodic manufactured solution converges at 2, 4 and 6
+static void test_periodic_mms_order(void)
+{
+    int o;
+    char name[96];
+
+    printf("Unit: spatial order on a periodic grid (manufactured solution), RK4\n");
+    for (o = 2; o <= 6; o += 2)
+    {
+        mms_errors a = mms_run_periodic(32, 32, 1.0, 1.0, 100.0, o, 2, 2.5E-3, 0.0, 0.25);
+        mms_errors b = mms_run_periodic(64, 64, 1.0, 1.0, 100.0, o, 2, 2.5E-3, 0.0, 0.25);
+        double pw = log2(a.w.max / b.w.max), pp = log2(a.psi.max / b.psi.max);
+        snprintf(name, sizeof(name), "order %d: w order %.2f (32 -> 64)", o, pw);
+        check(name, isnan(pw) ? INFINITY : fabs(pw - o), 0.15);
+        snprintf(name, sizeof(name), "order %d: psi order %.2f", o, pp);
+        check(name, isnan(pp) ? INFINITY : fabs(pp - o), 0.15);
+    }
+    // A 2 x 1 domain with dx != dy
+    mms_errors a = mms_run_periodic(48, 32, 2.0, 1.0, 100.0, 6, 2, 2.5E-3, 0.0, 0.25);
+    mms_errors b = mms_run_periodic(96, 64, 2.0, 1.0, 100.0, 6, 2, 2.5E-3, 0.0, 0.25);
+    double pw = log2(a.w.max / b.w.max);
+    snprintf(name, sizeof(name), "2x1 domain, 48x32 -> 96x64, order 6: w order %.2f", pw);
+    check(name, isnan(pw) ? INFINITY : fabs(pw - 6.0), 0.3);
 }
 
 // Wall velocities go to the right nodes; at the corners the walls x = 0 and
@@ -1420,10 +1546,10 @@ static void test_gpu_source(int nx, int ny, int steps, int time_scheme, const ch
 {
     int t, N = nx * ny;
     char name[96];
-    mms_case c = {1.0, 1.0, 100.0, 1.0 / (nx - 1), 1.0 / (ny - 1)};
+    mms_case c = {1.0, 1.0, 100.0, 1.0 / (nx - 1), 1.0 / (ny - 1), 0};
     wall_bc walls = {{0., 0., 0., 0.}, {0., 0., 0., 0.}};
     problem p;
-    problem_init_ext(&p, nx, ny, 1.0, 1.0, 6, c.Re, time_scheme, 3, 0.002, 1E-10, &walls, 0.3, mms_source, &c);
+    problem_init_ext(&p, nx, ny, 1.0, 1.0, 0, 6, c.Re, time_scheme, 3, 0.002, 1E-10, &walls, 0.3, mms_source, &c);
     gpu_solver *g = gpu_for(&p);
     mtrx u = initm(ny, nx), v = initm(ny, nx), w = initm(ny, nx);
 
@@ -1440,6 +1566,40 @@ static void test_gpu_source(int nx, int ny, int steps, int time_scheme, const ch
     snprintf(name, sizeof(name), "%s with a source: w vs CPU", label);
     check(name, rel_diff(w.M, p.w.M, N), 1E-11);
     snprintf(name, sizeof(name), "%s with a source: u, v vs CPU", label);
+    check(name, rel_diff(u.M, p.u.M, N) + rel_diff(v.M, p.v.M, N), 1E-11);
+
+    freem(&u);
+    freem(&v);
+    freem(&w);
+    gpu_free(g);
+    problem_free(&p);
+}
+
+// A periodic run (the periodic manufactured solution, with its source) must
+// match the CPU: periodic Poisson solver by cuFFT, no wall updates
+static void test_gpu_periodic(int nx, int ny, int steps, int time_scheme, const char *label)
+{
+    int t, N = nx * ny;
+    char name[96];
+    mms_case c = {2.0, 1.0, 100.0, 2.0 / nx, 1.0 / ny, 1};
+    problem p;
+    problem_init_ext(&p, nx, ny, 2.0, 1.0, 1, 6, c.Re, time_scheme, 3, 0.002, 1E-10, NULL, 0.0, mms_source, &c);
+    gpu_solver *g = gpu_for(&p);
+    mtrx u = initm(ny, nx), v = initm(ny, nx), w = initm(ny, nx);
+
+    printf("GPU: %d steps on a periodic grid, %s, %dx%d grid\n", steps, label, nx, ny);
+    mms_exact(&c, 0.0, &p.w, &p.u, &p.v, NULL);
+    gpu_set_fields(g, &p.u, &p.v, &p.w);
+    for (t = 0; t < steps; t++)
+    {
+        step(p.w, p.u, p.v, &p.ctx);
+        gpu_step(g);
+    }
+    gpu_get_fields(g, &u, &v, &w);
+
+    snprintf(name, sizeof(name), "%s, periodic: w vs CPU", label);
+    check(name, rel_diff(w.M, p.w.M, N), 1E-11);
+    snprintf(name, sizeof(name), "%s, periodic: u, v vs CPU", label);
     check(name, rel_diff(u.M, p.u.M, N) + rel_diff(v.M, p.v.M, N), 1E-11);
 
     freem(&u);
@@ -1536,6 +1696,8 @@ static void run_gpu_tests(void)
     GPU_TEST(test_gpu_step(40, 24, 50, 0.002, 2, 3, 1E-10, NULL, "RK4 + FFT", 1E-11));
     GPU_TEST(test_gpu_step(24, 40, 50, 0.002, 1, 3, 1E-10, NULL, "Euler + FFT", 1E-11));
     GPU_TEST(test_gpu_source(33, 33, 50, 2, "RK4 + FFT"));
+    GPU_TEST(test_gpu_periodic(48, 33, 50, 2, "RK4"));
+    GPU_TEST(test_gpu_periodic(32, 32, 50, 1, "Euler"));
     GPU_TEST(test_gpu_source(40, 24, 50, 1, "Euler + FFT"));
     GPU_TEST(test_gpu_step(40, 24, 20, 0.002, 2, 3, 1E-10, &four_walls,
                            "RK4 + FFT, four moving walls", 1E-11));
@@ -1584,6 +1746,11 @@ int main(int argc, char **argv)
     test_source_temporal_order();
     test_mms_spatial_order();
     test_order_ablation();
+    test_periodic_operators();
+    test_periodic_poisson(32, 24, 6);
+    test_periodic_poisson(15, 21, 4);
+    test_periodic_poisson(16, 16, 2);
+    test_periodic_mms_order();
     test_cpu_operator_axes(13, 9);
     test_cpu_operator_axes(9, 13);
     test_cpu_poisson_fft(8, 8);

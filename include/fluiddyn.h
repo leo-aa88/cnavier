@@ -37,7 +37,8 @@ typedef struct
     int poisson_type;                 // 1=Gauss-Seidel, 2=SOR, 3=FFT
     int poisson_max_it;               // iteration limit of Gauss-Seidel/SOR
     double poisson_tol, beta;         // their tolerance and SOR parameter
-    wall_bc bc;                       // wall velocities
+    int periodic;                     // 0: four walls with velocities bc; 1: doubly periodic
+    wall_bc bc;                       // wall velocities (walls only)
     const smtrx *DX, *DY, *DX2, *DY2; // sparse derivative operators
 
     // Optional source term f in the vorticity equation,
@@ -57,16 +58,17 @@ typedef struct
 // (i, j) is at y = i*dy, x = j*dx.
 typedef struct
 {
-    solver_config cfg;      // copy taken by rk4_alloc(); do not change
-    mtrx dwdx, dwdy;        // first derivatives of w
-    mtrx d2wdx2, d2wdy2;    // second derivatives of w
-    mtrx psi, psi_scratch;  // Poisson solution and scratch
-    mtrx k1, k2, k3, k4;    // RK4 stage increments
-    mtrx w_tmp;             // temporary w for intermediate stages
-    mtrx rhs;               // Poisson right-hand side, -w
-    struct fft_solver *fft; // FFT Poisson solver (poisson_type 3), else NULL
-    mtrx source;            // vorticity source of the current stage (cfg.vorticity_source only)
-    long steps;             // steps taken; the time is cfg.t0 + steps * cfg.dt
+    solver_config cfg;                // copy taken by rk4_alloc(); do not change
+    mtrx dwdx, dwdy;                  // first derivatives of w
+    mtrx d2wdx2, d2wdy2;              // second derivatives of w
+    mtrx psi, psi_scratch;            // Poisson solution and scratch
+    mtrx k1, k2, k3, k4;              // RK4 stage increments
+    mtrx w_tmp;                       // temporary w for intermediate stages
+    mtrx rhs;                         // Poisson right-hand side, -w
+    struct fft_solver *fft;           // FFT Poisson solver (poisson_type 3, walls), else NULL
+    struct periodic_solver *periodic; // periodic Poisson solver (cfg.periodic), else NULL
+    mtrx source;                      // vorticity source of the current stage (cfg.vorticity_source only)
+    long steps;                       // steps taken; the time is cfg.t0 + steps * cfg.dt
 } rk4_ctx;
 
 // Allocate the CPU workspace for the run described by cfg (copied)

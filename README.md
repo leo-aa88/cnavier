@@ -34,6 +34,7 @@ At each timestep:
 - **Spatial discretisation**: finite differences of selectable order (2nd, 4th, or 6th)
 - **Time integration**: explicit Euler (1st order) or classical RK4 (4th order in time; the wall vorticity is updated at every stage and at the end of each step)
 - **Poisson solver**: three options — Gauss-Seidel, SOR, or FFTW3-based direct DST-I solver (default)
+- **Boundaries**: the lid-driven cavity (four walls), or a doubly periodic domain with a periodic FFT Poisson solver (Taylor-Green vortex and double shear layer cases)
 - **Sparse operators**: 2D derivative operators built as CSR sparse matrices via Kronecker products, replacing dense O(n³) matrix-vector multiplies with O(7n) SpMV
 - **GPU acceleration**: optional CUDA backend that runs the whole time loop on an NVIDIA GPU (see [CUDA](#cuda-gpu))
 - **Output**: VTK files for visualisation in ParaView
@@ -222,12 +223,14 @@ A few numerical parameters can be overridden without recompiling; anything not g
 | `--dt DT` | Time step |
 | `--tf TF` | Final time |
 | `--output-interval N` | Write VTK every N iterations (`0` disables VTK output) |
+| `--re RE` | Reynolds number |
+| `--case NAME` | `cavity` (default): the lid-driven cavity. On a doubly periodic unit square: `taylor-green`, a decaying vortex compared with the exact solution at the end, or `shear-layer`, a double shear layer that rolls up (see [Periodic boundaries](#periodic-boundaries)) |
 | `--cpu` | CUDA builds only: run on the CPU instead of the GPU |
 | `--help` | Show the option list |
 
 Both time schemes are explicit, so `dt` has to shrink with the grid spacing. Before anything is computed, `dt` is checked against two limits, and the run stops if it is above either. The message gives both limits and a `dt` that passes (the smaller limit, rounded down):
 
-- the Courant number `u dt/dx` must not exceed 1 (`u` is the fastest wall);
+- the Courant number `u dt/dx` must not exceed 1 (`u` is the fastest wall, or 1 for the periodic cases, their largest initial speed);
 - the viscous stability limit of the chosen scheme. It is computed from the actual second-derivative operator, so it follows the grid, `Re` and the finite-difference order; it scales with `dx²`.
 
 For Euler there is a third limit, `dt ≤ 2/(Re·u²)` (that is `2ν/u²`), the stability limit of forward Euler for centered advection. It assumes the wall speed everywhere and is conservative for the cavity (at Re=1000 runs stayed stable up to about 3× it), so exceeding it only prints a warning. When an Euler run is refused, the suggested `dt` respects this limit as well, so following the suggestion does not lead to the warning.
@@ -241,6 +244,23 @@ At the defaults (64×64, Re=100, 6th order) the limits are `dt ≤ 0.00580` for 
 Values that cannot be used (not a number, a grid outside 8–16384, `tf/dt` below one step or beyond the integer range) are rejected with an error before anything is computed or written.
 
 The wall-clock time of the time loop is printed at the end of every run.
+
+### Periodic boundaries
+
+`--case taylor-green` and `--case shear-layer` run on a doubly periodic unit square instead of the cavity (`solver_config.periodic`). There are no walls, so there is no wall velocity or wall vorticity, and:
+
+- the derivative operators use the centered stencil of the chosen order on every row, wrapping around the edges (`SDiff1_periodic`, `SDiff2_periodic`);
+- the Poisson equation is solved with a 2D real FFT (FFTW on the CPU, cuFFT on the GPU), for the Laplacian `DX2 + DY2` built from the same operators, so the Poisson solve has the order of the derivatives. ψ has zero mean;
+- the grid has `nx` points spaced `Lx/nx` (the point at `x = Lx` is the one at `x = 0`).
+
+The periodic cases need the FFT solver (`poisson_type = 3`). The Taylor-Green vortex is an exact solution, and the program prints the error at the end:
+
+```bash
+./cnavier --case taylor-green --n 64 --dt 0.001 --tf 0.5 --output-interval 0
+# Taylor-Green vortex at t = 0.5: max |w - exact| = 5.3E-09, relative to max |w| 6.3E-10
+```
+
+The error falls by 64 per doubling of the grid (sixth order), and `make regression` checks that. The double shear layer of Bell, Colella and Glaz (1989) rolls up into vortices at high Reynolds numbers; for example `--case shear-layer --n 128 --re 10000 --dt 0.0005 --tf 1.2 --output-interval 800`.
 
 ### Grid
 The grid is nodal: node `j` sits at `x = j·Lx/(nx−1)` and node `i` at `y = i·Ly/(ny−1)`, so the first and last row and column of nodes lie on the walls. `nx` and `ny` are independent. Fields are stored as `ny` rows of `nx` values (`x` varies fastest), which is also the layout of the VTK files. Wall velocities are imposed on those nodes, ψ = 0 there for every Poisson solver, and the centerline CSVs are written at the node coordinates (interpolated onto `x = Lx/2` or `y = Ly/2` when no node lies on the centerline, i.e. for an even number of nodes).
@@ -265,7 +285,8 @@ builds and runs `test_cnavier`:
 - **Building blocks**: sparse operations against dense ones; every row of the finite-difference operators (boundary rows included) exact on the polynomials its stencil is built for, for orders 2, 4 and 6, and rows written out; the derivative operators acting along the right axis on non-square grids; wall velocities, including the corners; the VTK and centerline writers.
 - **Poisson solvers**: the FFT solver against an exact eigenmode, at sizes that exercise every batching case of the transform; FFT, SOR and Gauss-Seidel giving the same answer once converged; residuals of the iterative solvers; SOR iteration counts on anisotropic grids.
 - **Time stepping**: short cavity runs with both schemes on square and non-square grids (finite, divergence-free); the stability limit (0.95× runs, 1.05× diverges) and the suggested `dt`; the observed order in `dt` on all nodes, walls included: Euler first order, RK4 fourth order, with RK4's error at the same step about a million times smaller than Euler's. Both orders also hold with a time-dependent vorticity source, which checks that each RK4 stage evaluates the source at its own time; a run started at t0 > 0 checks that the source is evaluated at that run's times.
-- **Spatial accuracy**: a manufactured solution (see [Spatial convergence](#spatial-convergence)) on 17², 33² and 65² grids: ψ, `u` and `v` converge at second order and ω at least at second order, and the errors themselves are within fixed bounds.
+- **Spatial accuracy**: a manufactured solution (see [Spatial convergence](#spatial-convergence)) on 17², 33² and 65² grids: ψ, `u` and `v` converge at second order and ω at least at second order, and the errors themselves are within fixed bounds. On a periodic grid, a second manufactured solution converges at the nominal order 2, 4 and 6 (also on a 2×1 domain).
+- **Periodic boundaries**: the periodic operators differentiate at their nominal order and annihilate constants; the periodic Poisson solver solves `(DX2 + DY2) ψ = f` to round-off on odd and even grid sizes, with zero-mean ψ.
 - **Backends**: driving the solver through `backend.c` gives exactly what calling it directly gives, and every solver ignores changes to the caller's configuration after it is created.
 - **OpenMP** (with `OPENMP=1`): results on 1 and on 4 threads are bitwise identical above the size where loops go parallel.
 
@@ -273,7 +294,7 @@ builds and runs `test_cnavier`:
 make CUDA=1 test
 ```
 
-additionally checks the GPU backend against the CPU: SpMV for all four operators, each Poisson solver, the continuity diagnostic, and full timesteps for the Euler/RK4 and FFT/SOR/Gauss-Seidel combinations on square and non-square grids, with and without a body force. These comparisons are what keeps the GPU code in step with the CPU code, so run them on a machine with a GPU after changing either.
+additionally checks the GPU backend against the CPU: SpMV for all four operators, each Poisson solver, the continuity diagnostic, and full timesteps for the Euler/RK4 and FFT/SOR/Gauss-Seidel combinations on square and non-square grids, with and without a vorticity source, and on periodic grids. These comparisons are what keeps the GPU code in step with the CPU code, so run them on a machine with a GPU after changing either.
 
 ```bash
 make OPENMP=1 CUDA=1 test
@@ -296,7 +317,7 @@ A CUDA build tested on a machine without a GPU therefore does **not** count as a
 | Command | What it checks |
 |---|---|
 | `make test-cli` | Invalid command lines (NaN, garbage after numbers, grids out of range, unstable `dt`, ...) are refused with exit status 1 and an error message, and write nothing. A crash counts as a failure |
-| `make regression` | 100 steps of the default case against `tests/reference/`, and the steady default case within 0.004 (`u`) and 0.010 (`v`) of the Ghia et al. (1982) data stored in `tests/reference/`. Non-finite values fail; a self-test checks that |
+| `make regression` | 100 steps of the default case against `tests/reference/`, and the steady default case within 0.004 (`u`) and 0.010 (`v`) of the Ghia et al. (1982) data stored in `tests/reference/`. Non-finite values fail; a self-test checks that. The periodic Taylor-Green vortex against its exact solution on 32² and 64², at sixth order |
 | `make test-asan` | The test suite and a short run under AddressSanitizer and UndefinedBehaviorSanitizer |
 | `make valgrind` | The test suite and a short run under valgrind; any leak, including memory still reachable at exit, fails |
 | `make format-check` | Formatting against `.clang-format` (`make format` applies it) |
@@ -350,7 +371,18 @@ finds what holds the order to two. A copy of the RK4 step (bitwise identical to 
 
 - **The Poisson operator and the wall-vorticity closure each limit the order to two on their own.** Improving only one of them would not raise the global order.
 - **Their errors partly cancel:** replacing only ψ by the exact solution makes the error ten times larger. This fits the known observation that a locally low-order wall formula can sit in a globally second-order method.
-- **With both replaced, the order is four, not six,** for derivative orders 4 and 6. The rest is in the derivative operators' rows next to the walls, which are of second and fourth order; sixth order needs better near-wall rows too, or periodic boundaries.
+- **With both replaced, the order is four, not six,** for derivative orders 4 and 6. That is consistent with the derivative operators' rows next to the walls, which are of second and fourth order.
+
+**Without walls the stencils reach their nominal order.** `make convergence` also runs a periodic manufactured solution (three Fourier modes of different wavenumbers) on a doubly periodic grid, where every row of the operators is the centered stencil and the Poisson operator `DX2 + DY2` has the same order. Maximum error of ω, observed order in parentheses:
+
+| Grid | order 2 | order 4 | order 6 |
+|---|---|---|---|
+| 32² | 3.34e-1 | 1.87e-2 | 1.23e-3 |
+| 64² | 8.44e-2 (1.99) | 1.22e-3 (3.94) | 2.05e-5 (5.91) |
+| 128² | 2.11e-2 (2.00) | 7.68e-5 (3.98) | 3.25e-7 (5.98) |
+| 256² | 5.27e-3 (2.00) | 4.81e-6 (4.00) | 5.09e-9 (6.00) |
+
+ψ, `u` and `v` show the same orders. This closes the question the wall-bounded study opened: the order-6 option is sixth order when nothing at a wall holds it back.
 
 ### Continuous integration
 

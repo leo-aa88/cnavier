@@ -1,4 +1,5 @@
-// Spatial convergence study against the manufactured solution in mms.h.
+// Spatial convergence study against the manufactured solutions in mms.h, with
+// walls and on a doubly periodic grid.
 //
 //   make convergence                 grids 17 ... 257
 //   ./convergence_study --max-n 513  up to 513 (several minutes)
@@ -59,6 +60,34 @@ static void study(const char *title, int order, double Lx, double Ly, int sx, in
     }
 }
 
+// The periodic solution on n x n grids, n = 16, 32, ..., up to max_n
+static void study_periodic(int order, int max_n)
+{
+    int n;
+    mms_errors prev;
+
+    printf("\nDoubly periodic unit square, derivative order %d\n", order);
+    printf("%-9s | %-15s | %-15s | %-15s | %-15s | %-15s\n", "grid", "psi max   order", "u max     order",
+           "v max     order", "w max     order", "w rms     order");
+    memset(&prev, 0, sizeof(prev));
+    for (n = 16; n <= max_n; n *= 2)
+    {
+        mms_errors e = mms_run_periodic(n, n, 1.0, 1.0, RE, order, 2, DT, 0.0, T_FINAL);
+        char grid[32];
+
+        snprintf(grid, sizeof(grid), "%dx%d", n, n);
+        printf("%-9s", grid);
+        cell(e.psi.max, prev.psi.max);
+        cell(e.u.max, prev.u.max);
+        cell(e.v.max, prev.v.max);
+        cell(e.w.max, prev.w.max);
+        cell(e.w.rms, prev.w.rms);
+        printf("\n");
+        fflush(stdout);
+        prev = e;
+    }
+}
+
 int main(int argc, char **argv)
 {
     int max_n = 257, order;
@@ -93,5 +122,11 @@ int main(int argc, char **argv)
     }
     study("2 x 1 domain, nx - 1 = 2 (ny - 1), derivative order 6", 6, 2.0, 1.0, 2, 1, max_n);
     study("Unit square, nx - 1 = 2 (ny - 1) (dx = dy / 2), derivative order 6", 6, 1.0, 1.0, 2, 1, max_n);
+
+    printf("\nWithout walls: the periodic solution, a sum of three Fourier modes, on a\n"
+           "doubly periodic grid; the Poisson operator is DX2 + DY2, of the same order\n"
+           "as the derivatives.\n");
+    for (order = 2; order <= 6; order += 2)
+        study_periodic(order, max_n);
     return 0;
 }

@@ -298,3 +298,49 @@ smtrx SDiff2(int n, int o, double dx)
     build_diff2(&D, n, o, dx);
     return op_to_csr(&D, n);
 }
+
+// Centered stencils, coefficients of f[i-h] ... f[i+h] (before dividing by
+// dx or dx^2). They are the interior rows of SDiff1/SDiff2.
+static const double d1_coef[3][7] = {
+    {-1. / 2., 0., 1. / 2.},
+    {1. / 12., -2. / 3., 0., 2. / 3., -1. / 12.},
+    {-1. / 60., 3. / 20., -3. / 4., 0., 3. / 4., -3. / 20., 1. / 60.},
+};
+static const double d2_coef[3][7] = {
+    {1., -2., 1.},
+    {-1. / 12., 4. / 3., -5. / 2., 4. / 3., -1. / 12.},
+    {1. / 90., -3. / 20., 3. / 2., -49. / 18., 3. / 2., -3. / 20., 1. / 90.},
+};
+
+// The centered stencil of order o on every row, wrapping around the ends
+static smtrx periodic_op(int n, int o, double scale, const double coef[3][7])
+{
+    op_builder D = {0};
+    int i, m, h = o / 2;
+
+    if (o != 2 && o != 4 && o != 6)
+    {
+        printf("** Error: valid orders are 2, 4 or 6 **\n");
+        exit(1);
+    }
+    if (n < 2 * h + 1)
+    {
+        printf("** Error: a periodic order-%d stencil needs at least %d points **\n", o, 2 * h + 1);
+        exit(1);
+    }
+    for (i = 0; i < n; i++)
+        for (m = -h; m <= h; m++)
+            if (coef[h - 1][m + h] != 0.0)
+                op_set(&D, i, ((i + m) % n + n) % n, coef[h - 1][m + h] / scale);
+    return op_to_csr(&D, n);
+}
+
+smtrx SDiff1_periodic(int n, int o, double dx)
+{
+    return periodic_op(n, o, dx, d1_coef);
+}
+
+smtrx SDiff2_periodic(int n, int o, double dx)
+{
+    return periodic_op(n, o, dx * dx, d2_coef);
+}

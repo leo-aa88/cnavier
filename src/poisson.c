@@ -320,3 +320,125 @@ void poisson_FFT(fft_solver *s, mtrx f, mtrx u, double dx, double dy)
                                : fft_buf[(i - 1) * cols + (j - 1)] * inv_norm;
     }
 }
+
+// ---------------------------------------------------------------------------
+// Periodic Poisson solver
+// ---------------------------------------------------------------------------
+// Solves (DX2 + DY2) u = f on a doubly periodic grid, with DX2, DY2 the
+// solver's own second-derivative operators, so the Poisson operator has the
+// same order as the transport derivatives. Both are circulant, so a 2D real
+// FFT diagonalises them: mode (ky, kx) has eigenvalue lx[kx] + ly[ky], the
+// symbol of each operator's stencil. The mean (mode 0, eigenvalue 0) is not
+// determined by the equation; u is returned with zero mean, and the mean of f
+// is ignored.
+// ---------------------------------------------------------------------------
+
+struct periodic_solver
+{
+    int nx, ny, kx;     // kx = nx/2 + 1 complex values per row of the spectrum
+    double *in;         // ny x nx real field
+    fftw_complex *spec; // ny x kx spectrum
+    double *lx, *ly;    // eigenvalues of DX2 by kx and of DY2 by ky
+    fftw_plan forward, backward;
+};
+
+// Symbol of a circulant operator at wavenumber k: sum over the entries of its
+// first row of value * cos(2 pi k offset / n), offset counted in units of
+// `step` columns. The stencils are symmetric, so the sine part vanishes.
+static double symbol(const smtrx *A, int k, int n, int step)
+{
+    int e;
+    double s = 0.0;
+    for (e = A->row_ptr[0]; e < A->row_ptr[1]; e++)
+    {
+        int offset = A->col_idx[e] / step; // whole grid points along the axis
+        s += A->values[e] * cos(2.0 * PI * (double)k * (double)offset / (double)n);
+    }
+    return s;
+}
+
+void periodic_eigenvalues(int nx, int ny, const smtrx *DX2, const smtrx *DY2, double *lx, double *ly)
+{
+    int k;
+    // DX2 = I (x) dxx: its first row is the x stencil, in columns 0..nx-1.
+    // DY2 = dyy (x) I: its first row is the y stencil, in columns m*nx.
+    for (k = 0; k < nx / 2 + 1; k++)
+        lx[k] = symbol(DX2, k, nx, 1);
+    for (k = 0; k < ny; k++)
+        ly[k] = symbol(DY2, k, ny, nx);
+}
+
+periodic_solver *periodic_setup(int nx, int ny, const smtrx *DX2, const smtrx *DY2)
+{
+    periodic_solver *s = (periodic_solver *)malloc(sizeof(periodic_solver));
+
+    if (!s)
+    {
+        printf("** Error: insufficient memory **\n");
+        exit(1);
+    }
+    s->nx = nx;
+    s->ny = ny;
+    s->kx = nx / 2 + 1;
+    s->in = (double *)fftw_malloc((size_t)nx * ny * sizeof(double));
+    s->spec = (fftw_complex *)fftw_malloc((size_t)s->kx * ny * sizeof(fftw_complex));
+    s->lx = (double *)malloc((size_t)s->kx * sizeof(double));
+    s->ly = (double *)malloc((size_t)ny * sizeof(double));
+    if (!s->in || !s->spec || !s->lx || !s->ly)
+    {
+        printf("** Error: insufficient memory **\n");
+        exit(1);
+    }
+    periodic_eigenvalues(nx, ny, DX2, DY2, s->lx, s->ly);
+
+    s->forward = fftw_plan_dft_r2c_2d(ny, nx, s->in, s->spec, FFTW_ESTIMATE);
+    s->backward = fftw_plan_dft_c2r_2d(ny, nx, s->spec, s->in, FFTW_ESTIMATE);
+    if (!s->forward || !s->backward)
+    {
+        printf("** Error: FFTW could not plan the periodic transform **\n");
+        exit(1);
+    }
+    live_solvers++;
+    return s;
+}
+
+void periodic_cleanup(periodic_solver *s)
+{
+    if (!s) return;
+    fftw_destroy_plan(s->forward);
+    fftw_destroy_plan(s->backward);
+    fftw_free(s->in);
+    fftw_free(s->spec);
+    free(s->lx);
+    free(s->ly);
+    free(s);
+    if (--live_solvers == 0)
+        fftw_cleanup();
+}
+
+void poisson_periodic(periodic_solver *s, mtrx f, mtrx u)
+{
+    int i, n = s->nx * s->ny;
+    double inv_n = 1.0 / (double)n;
+
+    for (i = 0; i < n; i++)
+        s->in[i] = f.M[i];
+    fftw_execute(s->forward);
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static) if (n >= OMP_MIN_WORK)
+#endif
+    for (i = 0; i < s->ny; i++)
+    {
+        int j;
+        for (j = 0; j < s->kx; j++)
+        {
+            double lambda = s->lx[j] + s->ly[i];
+            double scale = (i == 0 && j == 0) ? 0.0 : inv_n / lambda;
+            s->spec[i * s->kx + j][0] *= scale;
+            s->spec[i * s->kx + j][1] *= scale;
+        }
+    }
+    fftw_execute(s->backward);
+    for (i = 0; i < n; i++)
+        u.M[i] = s->in[i];
+}
