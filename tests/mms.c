@@ -184,3 +184,160 @@ mms_errors mms_run(int nx, int ny, double Lx, double Ly, double Re, int order, i
     freesm(DY2);
     return e;
 }
+
+// ---------------------------------------------------------------------------
+// Ablation: a copy of step() (RK4, FFT solver) with parts replaced by the
+// exact solution
+// ---------------------------------------------------------------------------
+
+typedef struct
+{
+    mms_case c;
+    int flags;
+    smtrx DX, DY, DX2, DY2;
+    fft_solver *fft;
+    mtrx psi, rhs, u, v, wx, wy, wxx, wyy, dvx, duy, src, exact, k1, k2, k3, k4, w_tmp;
+} ablation;
+
+// u, v of the stage: from the exact solution, or from psi (exact, or solved
+// from the interior of w) with the wall velocities (zero) imposed
+static void ab_velocity(ablation *a, mtrx w, double t)
+{
+    static const wall_bc walls = {{0., 0., 0., 0.}, {0., 0., 0., 0.}};
+
+    if (a->flags & MMS_EXACT_VELOCITY)
+    {
+        mms_exact(&a->c, t, NULL, &a->u, &a->v, NULL);
+        return;
+    }
+    if (a->flags & MMS_EXACT_PSI)
+        mms_exact(&a->c, t, NULL, NULL, NULL, &a->psi);
+    else
+    {
+        negcpy(a->rhs, w);
+        poisson_FFT(a->fft, a->rhs, a->psi, a->c.dx, a->c.dy);
+    }
+    spmv(a->DY, a->psi.M, a->u.M);
+    spmv(a->DX, a->psi.M, a->v.M);
+    negcpy(a->v, a->v);
+    apply_wall_bc(a->u, a->v, &walls);
+}
+
+// The boundary entries of w: exact, or D_x v - D_y u as set_wall_vorticity()
+// computes them
+static void ab_wall_vorticity(ablation *a, mtrx w, double t)
+{
+    int i, j, ny = w.m, nx = w.n;
+
+    if (a->flags & MMS_EXACT_WALL_W)
+        mms_exact(&a->c, t, &a->exact, NULL, NULL, NULL);
+    else
+    {
+        spmv(a->DX, a->v.M, a->dvx.M);
+        spmv(a->DY, a->u.M, a->duy.M);
+    }
+    for (i = 0; i < ny; i++)
+        for (j = 0; j < nx; j++)
+            if (i == 0 || j == 0 || i == ny - 1 || j == nx - 1)
+                MAt(w, i, j) = (a->flags & MMS_EXACT_WALL_W) ? MAt(a->exact, i, j)
+                                                             : MAt(a->dvx, i, j) - MAt(a->duy, i, j);
+}
+
+// dwdt(): velocity, wall vorticity, derivatives, right-hand side
+static void ab_rhs(ablation *a, mtrx w, double t, mtrx out)
+{
+    int k, n = w.m * w.n;
+
+    ab_velocity(a, w, t);
+    ab_wall_vorticity(a, w, t);
+    spmv(a->DX, w.M, a->wx.M);
+    spmv(a->DY, w.M, a->wy.M);
+    spmv(a->DX2, w.M, a->wxx.M);
+    spmv(a->DY2, w.M, a->wyy.M);
+    for (k = 0; k < n; k++)
+        out.M[k] = -a->u.M[k] * a->wx.M[k] - a->v.M[k] * a->wy.M[k] + (1.0 / a->c.Re) * (a->wxx.M[k] + a->wyy.M[k]);
+    mms_source(t, a->src, &a->c);
+    for (k = 0; k < n; k++)
+        out.M[k] += a->src.M[k];
+}
+
+// step() with RK4: four stages, the final velocity and wall vorticity
+static void ab_step(ablation *a, mtrx w, double t, double dt)
+{
+    int k, n = w.m * w.n;
+
+    ab_rhs(a, w, t, a->k1);
+    for (k = 0; k < n; k++)
+        a->w_tmp.M[k] = w.M[k] + 0.5 * dt * a->k1.M[k];
+    ab_rhs(a, a->w_tmp, t + 0.5 * dt, a->k2);
+    for (k = 0; k < n; k++)
+        a->w_tmp.M[k] = w.M[k] + 0.5 * dt * a->k2.M[k];
+    ab_rhs(a, a->w_tmp, t + 0.5 * dt, a->k3);
+    for (k = 0; k < n; k++)
+        a->w_tmp.M[k] = w.M[k] + dt * a->k3.M[k];
+    ab_rhs(a, a->w_tmp, t + dt, a->k4);
+    for (k = 0; k < n; k++)
+        w.M[k] += (dt / 6.0) * (a->k1.M[k] + 2.0 * a->k2.M[k] + 2.0 * a->k3.M[k] + a->k4.M[k]);
+    ab_velocity(a, w, t + dt);
+    ab_wall_vorticity(a, w, t + dt);
+}
+
+mms_errors mms_run_ablated(int nx, int ny, double Lx, double Ly, double Re, int order, int flags,
+                           double dt, double t0, double T)
+{
+    ablation a;
+    mtrx *fields[] = {&a.psi, &a.rhs, &a.u, &a.v, &a.wx, &a.wy, &a.wxx, &a.wyy, &a.dvx, &a.duy,
+                      &a.src, &a.exact, &a.k1, &a.k2, &a.k3, &a.k4, &a.w_tmp};
+    int f, t, steps, nf = (int)(sizeof(fields) / sizeof(fields[0]));
+    mms_errors e;
+
+    a.c = (mms_case){Lx, Ly, Re, Lx / (nx - 1), Ly / (ny - 1)};
+    a.flags = flags;
+    smtrx d1x = SDiff1(nx, order, a.c.dx), d1y = SDiff1(ny, order, a.c.dy);
+    smtrx d2x = SDiff2(nx, order, a.c.dx), d2y = SDiff2(ny, order, a.c.dy);
+    dt = fmin(dt, 0.5 * max_stable_dt(&d2x, &d2y, Re, 2));
+    steps = (int)ceil(T / dt - 1E-9);
+    dt = T / steps;
+    smtrx Ix = seye(nx), Iy = seye(ny);
+    a.DX = skronecker(Iy, d1x);
+    a.DY = skronecker(d1y, Ix);
+    a.DX2 = skronecker(Iy, d2x);
+    a.DY2 = skronecker(d2y, Ix);
+    freesm(d1x);
+    freesm(d1y);
+    freesm(d2x);
+    freesm(d2y);
+    freesm(Ix);
+    freesm(Iy);
+    a.fft = fft_setup(nx, ny);
+    for (f = 0; f < nf; f++)
+        *fields[f] = initm(ny, nx);
+
+    mtrx w = initm(ny, nx), we = initm(ny, nx), ue = initm(ny, nx), ve = initm(ny, nx), psie = initm(ny, nx);
+    mms_exact(&a.c, t0, &w, NULL, NULL, NULL);
+    for (t = 0; t < steps; t++)
+        ab_step(&a, w, t0 + (double)t * dt, dt);
+
+    mms_exact(&a.c, t0 + T, &we, &ue, &ve, &psie);
+    e.psi = norm_of(a.psi, psie, 0);
+    e.u = norm_of(a.u, ue, 0);
+    e.v = norm_of(a.v, ve, 0);
+    e.w = norm_of(w, we, 0);
+    e.w_wall = norm_of(w, we, 1);
+    e.w_interior = norm_of(w, we, 2);
+    e.steps = steps;
+
+    freem(&w);
+    freem(&we);
+    freem(&ue);
+    freem(&ve);
+    freem(&psie);
+    for (f = 0; f < nf; f++)
+        freem(fields[f]);
+    fft_cleanup(a.fft);
+    freesm(a.DX);
+    freesm(a.DY);
+    freesm(a.DX2);
+    freesm(a.DY2);
+    return e;
+}

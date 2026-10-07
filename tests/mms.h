@@ -53,4 +53,16 @@ typedef struct
 mms_errors mms_run(int nx, int ny, double Lx, double Ly, double Re, int order, int time_scheme,
                    int poisson_type, double dt, double t0, double T);
 
+// Ablation of the discretization (issue #25): parts of the RK4 step replaced
+// by the exact solution at each stage's time. Flags may be combined.
+#define MMS_EXACT_WALL_W 1   // exact wall vorticity instead of D_x v - D_y u
+#define MMS_EXACT_PSI 2      // exact psi instead of the Poisson solve; u, v from D_y psi, -D_x psi
+#define MMS_EXACT_VELOCITY 4 // exact u, v at every node (no psi at all)
+
+// mms_run() with RK4 and the FFT solver, done by a copy of step() in which
+// the parts named by `flags` are replaced with the exact solution. With
+// flags = 0 it computes exactly what mms_run() does, to the last bit.
+mms_errors mms_run_ablated(int nx, int ny, double Lx, double Ly, double Re, int order, int flags,
+                           double dt, double t0, double T);
+
 #endif // MMS_H_INCLUDED

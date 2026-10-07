@@ -536,11 +536,49 @@ static void test_mms_spatial_order(void)
     check("psi max error at 65x65", e[2].psi.max, 3E-4);
     check("w max error at 65x65", e[2].w.max, 5E-3);
 
+    // The ablation study (make ablation) runs a copy of the RK4 step. With
+    // nothing replaced it must compute exactly what step() computes.
+    mms_errors copy = mms_run_ablated(33, 33, 1.0, 1.0, 100.0, 6, 0, 2.5E-3, 0.0, 0.25);
+    check("ablation copy of step(), nothing replaced: same errors, bitwise",
+          (copy.psi.max != e[1].psi.max) + (copy.u.max != e[1].u.max) + (copy.v.rms != e[1].v.rms) +
+              (copy.w.max != e[1].w.max) + (copy.w.rms != e[1].w.rms) + (copy.w_interior.rms != e[1].w_interior.rms),
+          0.0);
+
     // A run that starts at t0 = 0.4 must evaluate the source at the times of
     // that run, so its error is no larger than from t = 0
     mms_errors late = mms_run(33, 33, 1.0, 1.0, 100.0, 6, 2, 3, 2.5E-3, 0.4, 0.25);
     snprintf(name, sizeof(name), "start at t0 = 0.4: psi error %.2e vs %.2e from t = 0", late.psi.max, e[1].psi.max);
     check(name, late.psi.max / e[1].psi.max, 1.5);
+}
+
+// The ablation (make ablation, issue #25): with derivative order 6, the
+// Poisson operator alone and the wall-vorticity closure alone each hold the
+// order of w to two; with both replaced by the exact solution it rises to
+// about four
+static void test_order_ablation(void)
+{
+    static const struct
+    {
+        const char *name;
+        int flags;
+        double target, tol; // order between 33 and 65: |order - target| <= tol
+    } cases[] = {
+        {"exact wall w (Poisson limits)", MMS_EXACT_WALL_W, 2.0, 0.15},
+        {"exact psi (wall closure limits)", MMS_EXACT_PSI, 2.0, 0.15},
+        {"exact psi and wall w", MMS_EXACT_PSI | MMS_EXACT_WALL_W, 4.0, 0.3},
+    };
+    int k;
+    char name[96];
+
+    printf("Unit: what limits the spatial order (ablation), order 6, 33x33 -> 65x65\n");
+    for (k = 0; k < (int)(sizeof(cases) / sizeof(cases[0])); k++)
+    {
+        mms_errors a = mms_run_ablated(33, 33, 1.0, 1.0, 100.0, 6, cases[k].flags, 2.5E-3, 0.0, 0.25);
+        mms_errors b = mms_run_ablated(65, 65, 1.0, 1.0, 100.0, 6, cases[k].flags, 2.5E-3, 0.0, 0.25);
+        double order = log2(a.w.max / b.w.max);
+        snprintf(name, sizeof(name), "%s: w order %.2f, |order - %.0f|", cases[k].name, order, cases[k].target);
+        check(name, isnan(order) ? INFINITY : fabs(order - cases[k].target), cases[k].tol);
+    }
 }
 
 // Wall velocities go to the right nodes; at the corners the walls x = 0 and
@@ -1545,6 +1583,7 @@ int main(int argc, char **argv)
     test_temporal_order();
     test_source_temporal_order();
     test_mms_spatial_order();
+    test_order_ablation();
     test_cpu_operator_axes(13, 9);
     test_cpu_operator_axes(9, 13);
     test_cpu_poisson_fft(8, 8);
