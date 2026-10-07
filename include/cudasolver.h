@@ -31,6 +31,10 @@ extern "C"
     // Max and min of du/dx + dv/dy for the current velocity field
     void gpu_continuity(gpu_solver *g, double *cmax, double *cmin);
 
+    // Energy, enstrophy and palinstrophy, as compute_integrals() in
+    // diagnostics.c, by reductions on the device
+    void gpu_integrals(gpu_solver *g, double *E, double *Z, double *P);
+
     // Copy fields between host and device. NULL arguments are skipped.
     void gpu_set_fields(gpu_solver *g, const mtrx *u, const mtrx *v, const mtrx *w);
     void gpu_get_fields(gpu_solver *g, mtrx *u, mtrx *v, mtrx *w);

@@ -863,6 +863,53 @@ void gpu_step(gpu_solver *g)
     g->steps++;
 }
 
+// Weighted integrand of compute_integrals() at each node: which = 0 energy
+// (wall velocities on the wall nodes), 1 enstrophy, 2 palinstrophy
+__global__ void integrand_kernel(csr_dev DX, csr_dev DY, const double *u, const double *v, const double *w,
+                                 wall_bc bc, int periodic, int which, int nx, int ny, double *out)
+{
+    int k = blockIdx.x * blockDim.x + threadIdx.x;
+    if (k >= nx * ny) return;
+    int i = k / nx, j = k % nx, wall = -1;
+    double weight = 1.0, val;
+
+    if (!periodic)
+    {
+        weight = ((i == 0 || i == ny - 1) ? 0.5 : 1.0) * ((j == 0 || j == nx - 1) ? 0.5 : 1.0);
+        wall = j == 0 ? 0 : j == nx - 1 ? 1
+                        : i == 0        ? 2
+                        : i == ny - 1   ? 3
+                                        : -1;
+    }
+    if (which == 0)
+    {
+        double uu = wall < 0 ? u[k] : bc.u[wall], vv = wall < 0 ? v[k] : bc.v[wall];
+        val = uu * uu + vv * vv;
+    }
+    else if (which == 1)
+        val = w[k] * w[k];
+    else
+    {
+        double wx = csr_row(DX, w, k), wy = csr_row(DY, w, k);
+        val = wx * wx + wy * wy;
+    }
+    out[k] = weight * val;
+}
+
+void gpu_integrals(gpu_solver *g, double *E, double *Z, double *P)
+{
+    double *res[3] = {E, Z, P};
+    double norm = g->cfg.periodic ? (double)g->nx * g->ny : (double)(g->nx - 1) * (g->ny - 1);
+    int q;
+
+    for (q = 0; q < 3; q++)
+    {
+        LAUNCH(integrand_kernel, g->n, g->DX, g->DY, g->u, g->v, g->w, g->cfg.bc, g->cfg.periodic, q, g->nx, g->ny,
+               g->scratch);
+        *res[q] = 0.5 * reduce(g, g->scratch, g->n, RED_SUM) / norm;
+    }
+}
+
 void gpu_continuity(gpu_solver *g, double *cmax, double *cmin)
 {
     LAUNCH(continuity_kernel, g->n, g->DXv, g->DYv, g->u, g->v, g->scratch, g->n);

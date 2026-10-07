@@ -13,6 +13,7 @@
 #include "fluiddyn.h"
 #include "threads.h"
 #include "backend.h"
+#include "diagnostics.h"
 #ifdef _OPENMP
 #include <omp.h>
 #endif
@@ -436,6 +437,18 @@ int main(int argc, char *argv[])
     printf("Backend: %s\n", backend_name(solver));
     if (backend_device(solver)) printf("CUDA device: %s\n", backend_device(solver));
 
+    // Energy, enstrophy and palinstrophy after every step, and on periodic
+    // grids the spectra with every VTK frame
+    FILE *integrals = fopen("./output/integrals.csv", "w");
+    if (!integrals)
+    {
+        printf("\nError while opening file\n");
+        exit(1);
+    }
+    flow_integrals fi = backend_integrals(solver);
+    fprintf(integrals, "step,t,E,Z,P\n0,0,%.17g,%.17g,%.17g\n", fi.E, fi.Z, fi.P);
+    spectra *spec = periodic && output_interval > 0 ? spectra_setup(&cfg) : NULL;
+
     struct timespec t_start, t_end;
     clock_gettime(CLOCK_MONOTONIC, &t_start);
 
@@ -454,16 +467,22 @@ int main(int argc, char *argv[])
                t, (double)t * dt, it_max > 0 ? (double)100 * t / it_max : 100.);
         printf("Continuity max: %E | min: %E\n", cmax, cmin);
 
+        fi = backend_integrals(solver);
+        fprintf(integrals, "%d,%.17g,%.17g,%.17g,%.17g\n", t + 1, (double)(t + 1) * dt, fi.E, fi.Z, fi.P);
+
         if (output_interval > 0 && t % output_interval == 0)
         {
-            backend_fields(solver, NULL, NULL, &w);
+            backend_fields(solver, spec ? &u : NULL, spec ? &v : NULL, &w);
             printvtk(*w, "vorticity", dx, dy);
+            if (spec) spectra_write(spec, *u, *v, *w, (double)(t + 1) * dt);
         }
     }
 
     clock_gettime(CLOCK_MONOTONIC, &t_end);
     double elapsed = (double)(t_end.tv_sec - t_start.tv_sec) + 1E-9 * (double)(t_end.tv_nsec - t_start.tv_nsec);
 
+    fclose(integrals);
+    spectra_free(spec);
     backend_fields(solver, &u, &v, &w);
 
     if (flow == CASE_CAVITY)

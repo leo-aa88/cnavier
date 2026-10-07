@@ -31,6 +31,11 @@ int poisson_SOR(mtrx f, mtrx u, mtrx u0, double dx, double dy, int itmax, double
 // belong to the returned solver, so several can exist at once. Free each with
 // fft_cleanup().
 typedef struct fft_solver fft_solver;
+
+// Other FFTW users (the spectra) hold FFTW while they have plans, so that
+// fftw_cleanup() runs only after the last plan of any user is destroyed
+void fftw_plans_hold(void);
+void fftw_plans_release(void);
 fft_solver *fft_setup(int nx, int ny);
 void fft_cleanup(fft_solver *s);
 

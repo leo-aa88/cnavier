@@ -10,6 +10,11 @@ double randdouble(double min, double max); // generates random double number bet
 // grid with spacing dx, dy
 void printvtk(mtrx A, char *title, double dx, double dy);
 
+// Next frame number of the output series output/<title>-1-<n><ext>. The
+// first call for a series returns 0 and deletes the files an earlier run
+// left of it.
+int output_frame(const char *title, const char *ext);
+
 // Memory the process can allocate now, in bytes: the kernel's MemAvailable,
 // or the room left under a cgroup memory limit if that is smaller. 0 means
 // none (a cgroup at or above its limit); -1 means it cannot be determined.
