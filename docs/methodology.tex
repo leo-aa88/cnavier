@@ -81,10 +81,10 @@ The main numerical components are:
 \begin{itemize}[leftmargin=2em]
   \item \code{src/main.c}: run configuration, command line, operator construction, time loop, diagnostics, and output;
   \item \code{src/backend.c}: one interface over the CPU and CUDA solvers, and the choice between them;
-  \item \code{src/finitediff.c}: one-dimensional first- and second-derivative finite-difference matrices and CSR conversion;
+  \item \code{src/finitediff.c}: one-dimensional first- and second-derivative finite-difference matrices, with walls or periodic, and CSR conversion;
   \item \code{src/linearalg.c}: dense storage utilities, CSR sparse matrices, sparse matrix--vector multiplication, and Kronecker products;
   \item \code{src/fluiddyn.c}: wall conditions, vorticity transport, Euler and RK4 integration, recovery of the velocity from the streamfunction, and full timesteps;
-  \item \code{src/poisson.c}: Gauss--Seidel, SOR, and FFTW/DST-I Poisson solvers;
+  \item \code{src/poisson.c}: Gauss--Seidel, SOR, and FFTW/DST-I Poisson solvers, and the periodic FFT solver;
   \item \code{src/cudasolver.cu}: CUDA implementations of the time loop, sparse operators, elliptic solvers, and diagnostics;
   \item \code{src/threads.c}: the default number of OpenMP threads (one per physical core);
   \item \code{src/utils.c}: VTK output, centerline data for comparison with Ghia et al., and the available-memory check;
@@ -495,6 +495,17 @@ Once Gauss--Seidel or SOR has converged, all three solvers return the same $\psi
 
 The FFT solver is ``direct'' with respect to the \emph{discrete second-order Poisson problem}: once the transform is performed, no iterative convergence tolerance is required.  It is not an exact solver for the continuous Poisson equation; the continuous truncation error remains that of the discrete Laplacian and the grid representation.
 
+\subsection{Doubly periodic boundaries}
+\label{sec:periodic}
+
+With \code{solver_config.periodic} set, the domain $[0,L_x)\times[0,L_y)$ is periodic in both directions and has no walls.  The grid has $n_x$ points spaced $\dx=L_x/n_x$ (the point at $x=L_x$ is the point at $x=0$), and likewise in $y$.  Three things change.
+\begin{itemize}[leftmargin=2em]
+  \item \textbf{Derivative operators.}  Every row of \code{SDiff1_periodic} and \code{SDiff2_periodic} is the centered interior stencil of the chosen order, with the indices taken modulo $n$, so there are no one-sided rows.
+  \item \textbf{Poisson operator.}  The Laplacian is $D_{xx}+D_{yy}$, built from the same second-derivative operators as the transport, so the Poisson solve has the order of the derivatives rather than second order.  Both operators are circulant, so the two-dimensional discrete Fourier transform diagonalises them: mode $(k_x,k_y)$ has eigenvalue $\lambda_x(k_x)+\lambda_y(k_y)$, where $\lambda_x(k)=\sum_m c_m\cos(2\pi km/n_x)$ is the symbol of the stencil with coefficients $c_m$, read from the operator's first row.  The solver transforms $-\omega$ with a real-to-complex FFT (FFTW, or cuFFT on the GPU), divides by the eigenvalues, and transforms back.  The mean mode has eigenvalue zero: the mean of $\psi$ is set to zero and the mean of $\omega$ is ignored, as a periodic domain carries no net circulation.
+  \item \textbf{No wall terms.}  The wall-velocity and wall-vorticity updates are skipped.  The periodic grids need the FFT solver; Gauss--Seidel and SOR are not offered.
+\end{itemize}
+The command line provides two periodic cases on the unit square: the Taylor--Green vortex $\psi=\sin(kx)\sin(ky)\,e^{-2k^2t/\Rey}/k$, $k=2\pi$, an exact solution whose error the program prints at the end, and the double shear layer of Bell, Colella and Glaz (1989), which rolls up into vortices at high Reynolds numbers.
+
 % =============================================================================
 \section{Complete Timestep Algorithms}
 % =============================================================================
@@ -848,9 +859,31 @@ Order 4 gives the same orders (measured up to $129^2$); order 2 gives 2.00 in ev
 \begin{itemize}[leftmargin=2em]
   \item \textbf{Both the Poisson operator and the wall-vorticity closure limit the order to two, each on its own.}  With the exact wall vorticity, the five-point Poisson operator still gives second order; with the exact $\psi$, the wall closure still gives second order.  A higher-order Poisson operator alone (or a higher-order wall closure alone) would therefore not raise the global order.
   \item \textbf{The two errors partly cancel.}  Replacing only $\psi$ by the exact solution makes the vorticity error ten times \emph{larger} ($1.2\times10^{-3}$ against $1.2\times10^{-4}$), although the solver's error contains the wall closure's error as well as the Poisson operator's: in the coupled scheme the two partly cancel.  This is consistent with the observation that a locally low-order wall formula such as Thom's can be part of a globally second-order method.
-  \item \textbf{With both replaced, the order rises to four, not six.}  The remaining limit is in the derivative operators themselves: their rows next to the walls are of second and fourth order (\cref{tab:closure}).  With the exact velocity and wall vorticity, only those operators are left, and $\omega$ converges at $3.9$, approaching four.  Sixth order would need sixth-order rows next to the walls as well, or no walls (periodic boundaries).
+  \item \textbf{With both replaced, the order rises to four, not six.}  With the exact velocity and wall vorticity, only the derivative operators are left, and $\omega$ converges at $3.9$, approaching four.  For this solution, that is consistent with the operators' rows next to the walls, which are of second and fourth order (\cref{tab:closure}); the first- and second-derivative rows were not ablated separately.  Without walls the same stencils reach sixth order (\cref{sec:periodic-verification}).
 \end{itemize}
 \code{make ablation} prints this study for orders 2, 4 and 6 up to $129^2$; \code{make test} checks three of its results on $33^2$ and $65^2$ (orders $2$, $2$ and $4$ for exact wall $\omega$, exact $\psi$, and both).
+
+\subsection{Spatial order without walls}
+\label{sec:periodic-verification}
+
+On the periodic grid of \cref{sec:periodic}, the manufactured solution is a sum of three Fourier modes,
+\begin{equation}
+\psi=g(t)\sum_{m=1}^{3}A_m\cos\!\left(2\pi\left(\frac{a_mx}{L_x}+\frac{b_my}{L_y}\right)+\varphi_m\right),
+\end{equation}
+with $(a_m,b_m)=(1,1),(2,-1),(1,3)$ and amplitudes $(1,\tfrac12,\tfrac14)/(2\pi)$.  The wavenumbers differ, so the nonlinear term does not vanish.  With the same $g(t)$, $\Rey$, final time and time-step control as in \cref{sec:mms}, the maximum error of $\omega$ is
+\begin{center}
+\begin{tabular}{lccc}
+\toprule
+Grid & order 2 & order 4 & order 6 \\
+\midrule
+$32^2$ & $3.34\times10^{-1}$ & $1.87\times10^{-2}$ & $1.23\times10^{-3}$ \\
+$64^2$ & $8.44\times10^{-2}$ (1.99) & $1.22\times10^{-3}$ (3.94) & $2.05\times10^{-5}$ (5.91) \\
+$128^2$ & $2.11\times10^{-2}$ (2.00) & $7.68\times10^{-5}$ (3.98) & $3.25\times10^{-7}$ (5.98) \\
+$256^2$ & $5.27\times10^{-3}$ (2.00) & $4.81\times10^{-6}$ (4.00) & $5.09\times10^{-9}$ (6.00) \\
+\bottomrule
+\end{tabular}
+\end{center}
+and $\psi$, $u$ and $v$ show the same orders ($\psi$ reaches $1.9\times10^{-11}$ at $256^2$ with order 6).  Without walls, and with a Poisson operator of the same order, the method reaches the nominal order of its stencils, which completes the picture of \cref{sec:ablation}: the second order of the wall-bounded method comes from the wall closures and the five-point Poisson operator, not from the interior stencils.  \code{make test} checks the orders between $32^2$ and $64^2$ (within $0.15$ of 2, 4 and 6) and on a $2\times1$ domain; \code{make regression} checks the Taylor--Green vortex, whose error falls by a factor of 64 from $32^2$ to $64^2$.
 
 \subsection{Physical validation against Ghia et al.}
 \label{sec:ghia}
@@ -948,6 +981,8 @@ The current binary accepts:
 --dt DT & Timestep. \\
 --tf TF & Final simulation time. \\
 --output-interval N & Write VTK every $N$ steps; zero disables VTK output. \\
+--re RE & Reynolds number. \\
+--case NAME & \texttt{cavity} (default), or on a doubly periodic unit square \texttt{taylor-green} or \texttt{shear-layer} (\cref{sec:periodic}). \\
 --cpu & In a CUDA build, force the CPU backend. \\
 --help & Print command-line help. \\
 \bottomrule
@@ -998,7 +1033,7 @@ The following points are important when interpreting results scientifically.
 
 \subsection{Mixed formal spatial order}
 
-The transport derivatives may be sixth-order in the deep interior, but the boundary closures are lower order and the Poisson solve is based on a second-order discrete Laplacian.  Measured against a smooth manufactured solution with stationary no-slip walls, the complete algorithm converges at second order in space for every derivative order, and orders 4 and 6 give the same errors (\cref{sec:mms}).  This is evidence for one solution family, not a proof for every flow.  The ablation of \cref{sec:ablation} shows that the Poisson operator and the wall-vorticity closure each limit the order to two on their own, so higher-order results need both improved, and beyond fourth order also the derivative rows next to the walls.
+The transport derivatives may be sixth-order in the deep interior, but the boundary closures are lower order and the Poisson solve is based on a second-order discrete Laplacian.  Measured against a smooth manufactured solution with stationary no-slip walls, the complete algorithm converges at second order in space for every derivative order, and orders 4 and 6 give the same errors (\cref{sec:mms}).  This is evidence for one solution family, not a proof for every flow.  The ablation of \cref{sec:ablation} shows that the Poisson operator and the wall-vorticity closure each limit the order to two on their own, so higher-order results need both improved, and beyond fourth order also the derivative rows next to the walls.  On a doubly periodic grid, with no walls and a Poisson operator of the same order as the derivatives, the method reaches the nominal order 2, 4 or 6 (\cref{sec:periodic-verification}).
 
 \subsection{Poisson operator differs from transport Laplacian}
 
