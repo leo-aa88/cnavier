@@ -265,13 +265,20 @@ void print_centerline(mtrx u, mtrx v, int nx, int ny, double dx, double dy)
                                      -0.1031,-0.0886,-0.0739,-0.0591, 0.0000};
     int n_ghia = 17;
 
-    // --- u along vertical centerline (i = nx/2): simulation data ---
-    int ci = ny / 2;
+    // The centerlines lie halfway between the walls. With an even number of
+    // nodes no node lies on them, so interpolate linearly between the two
+    // nearest columns (rows); with an odd number t is 0 and the middle node
+    // is used as is.
+    int    cj = (ny - 1) / 2, ci = (nx - 1) / 2;
+    double tj = 0.5 * (ny - 1) - cj, ti = 0.5 * (nx - 1) - ci;
+
+    // --- u along the vertical centerline: simulation data at the nodes y = i*dy ---
     f = fopen("./output/centerline_u_sim.csv", "w");
     if (!f) { printf("Error opening centerline_u_sim.csv\n"); return; }
     fprintf(f, "y,u\n");
     for (i = 0; i < nx; i++)
-        fprintf(f, "%.6f,%.6f\n", (i + 0.5) * dy, MAt(u, i, ci));
+        fprintf(f, "%.6f,%.6f\n", i * dy,
+                (1.0 - tj) * MAt(u, i, cj) + (tj > 0.0 ? tj * MAt(u, i, cj + 1) : 0.0));
     fclose(f);
 
     // --- u along vertical centerline: Ghia et al. (1982) reference ---
@@ -282,13 +289,13 @@ void print_centerline(mtrx u, mtrx v, int nx, int ny, double dx, double dy)
         fprintf(f, "%.6f,%.6f\n", ghia_y[j], ghia_u[j]);
     fclose(f);
 
-    // --- v along horizontal centerline (j = ny/2): simulation data ---
-    int cj = nx / 2;
+    // --- v along the horizontal centerline: simulation data at the nodes x = j*dx ---
     f = fopen("./output/centerline_v_sim.csv", "w");
     if (!f) { printf("Error opening centerline_v_sim.csv\n"); return; }
     fprintf(f, "x,v\n");
     for (j = 0; j < ny; j++)
-        fprintf(f, "%.6f,%.6f\n", (j + 0.5) * dx, MAt(v, cj, j));
+        fprintf(f, "%.6f,%.6f\n", j * dx,
+                (1.0 - ti) * MAt(v, ci, j) + (ti > 0.0 ? ti * MAt(v, ci + 1, j) : 0.0));
     fclose(f);
 
     // --- v along horizontal centerline: Ghia et al. (1982) reference ---

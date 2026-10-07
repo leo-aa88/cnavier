@@ -17,8 +17,9 @@ void poisson(mtrx f, mtrx u, mtrx u0, double dx, double dy, int itmax, double to
 void poisson_SOR(mtrx f, mtrx u, mtrx u0, double dx, double dy, int itmax, double tol, double beta);
 
 // FFT-based direct Poisson solver (exact, O(n² log n), no iteration needed).
-// Uses DST-I (sine transform) which satisfies homogeneous Dirichlet BCs exactly.
-// Result written into pre-allocated matrix u. No scratch buffer needed.
+// Uses a DST-I (sine transform) of the interior nodes, so u = 0 on the wall
+// nodes, as in the iterative solvers. Result written into pre-allocated
+// matrix u. No scratch buffer needed.
 void poisson_FFT(mtrx f, mtrx u, double dx, double dy);
 
 // Call once at program start to pre-plan FFTW transforms for an nx*ny grid.

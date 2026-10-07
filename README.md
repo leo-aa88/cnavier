@@ -136,7 +136,7 @@ make CUDA=1 CUDA_HOME=/opt/cuda
 
 **What runs on the GPU**: everything inside the time loop. The fields (`u`, `v`, `ω`, `ψ`, RK4 stages) and the four CSR derivative operators are uploaded once and stay on the device; boundary conditions, derivatives (CSR SpMV kernels), Euler/RK4 and all three Poisson solvers run as kernels. Data returns to the host only for the VTK files, the per-iteration continuity min/max and the final centerline profiles. All arithmetic is double precision, as on the CPU.
 
-- *FFT solver*: cuFFT has no sine transform, so the DST-I is computed as a real-to-complex FFT of the odd extension of the field (size `2(nx+1) × 2(ny+1)`).
+- *FFT solver*: cuFFT has no sine transform, so the DST-I is computed as a real-to-complex FFT of the odd extension of the interior (size `2(nx−1) × 2(ny−1)`).
 - *Gauss-Seidel / SOR*: red-black ordering, the same one the OpenMP build uses, with the same stopping rule.
 
 **Agreement with the CPU**
@@ -152,23 +152,23 @@ Time per timestep, RK4 + FFT, Re=100, `dt = 10/n²`, VTK output off. Measured on
 
 | Grid | CPU, `make` | OpenMP, 8 threads | CUDA | CUDA vs CPU |
 |---|---|---|---|---|
-| 63×63 | 1.14 ms | 0.98 ms | 0.87 ms | 1.3× |
-| 127×127 | 3.68 ms | 3.31 ms | 1.61 ms | 2.3× |
-| 255×255 | 19.9 ms | 15.5 ms | 5.01 ms | 4.0× |
-| 511×511 | 91.8 ms | 67.0 ms | 20.9 ms | 4.4× |
-| 1023×1023 | 486 ms | 301 ms | 82.4 ms | 5.9× |
+| 65×65 | 0.92 ms | 0.92 ms | 0.78 ms | 1.2× |
+| 129×129 | 3.97 ms | 3.41 ms | 1.45 ms | 2.7× |
+| 257×257 | 19.9 ms | 15.2 ms | 4.97 ms | 4.0× |
+| 513×513 | 83.8 ms | 70.2 ms | 20.2 ms | 4.1× |
+| 1025×1025 | 390 ms | 306 ms | 79.8 ms | 4.9× |
 
-These are single runs on a laptop; repeat runs vary by 10–15%. All builds use the Makefile's default `-O2`. Each row is a run such as:
+These are single runs on a laptop; repeat runs usually vary by 10–15%, occasionally by more. All builds use the Makefile's default `-O2`. Each row is a run such as:
 
 ```bash
-./cnavier --n 511 --dt 3.83e-5 --tf 7.68e-3 --output-interval 0
+./cnavier --n 513 --dt 3.80e-5 --tf 7.62e-3 --output-interval 0
 ```
 
 Things to keep in mind:
 
-- The GPU pays off from roughly 127×127 upwards. On small grids the fixed cost of launching kernels dominates and the CPU is just as fast.
-- About 60% of the GPU time at 511×511 is the double-precision FFTs. Consumer GeForce cards are much slower in double than in single precision, so expect larger gains on workstation/datacenter GPUs.
-- Pick grid sizes where `n + 1` has only small prime factors (63, 127, 255, 511, 1023, ...). The sine transform works on length `2(n+1)`, and awkward lengths are slow on both backends: 1024×1024 takes 132 ms per step on the GPU and 624 ms on the CPU, against 82 ms and 486 ms for 1023×1023.
+- The GPU pays off from roughly 129×129 upwards. On small grids the fixed cost of launching kernels dominates and the CPU is just as fast.
+- About 60% of the GPU time at 513×513 is the double-precision FFTs. Consumer GeForce cards are much slower in double than in single precision, so expect larger gains on workstation/datacenter GPUs.
+- Pick grid sizes where `n − 1` has only small prime factors (65, 129, 257, 513, 1025, ...). The sine transform of the interior works on length `2(n−1)`, and awkward lengths are slow on both backends: 1024×1024 takes 126 ms per step on the GPU and 573 ms on the CPU, against 80 ms and 390 ms for 1025×1025.
 - The table is for the FFT solver only. Gauss-Seidel and SOR are on the GPU so that every solver option works there, not because they are fast: the convergence test after each sweep copies a value back to the host, and on the default 64×64 case SOR takes tens of milliseconds per step on the GPU, no faster than the CPU and far behind the FFT solver's 1 ms.
 
 ## Configuration
@@ -211,7 +211,7 @@ Both time schemes are explicit, so `dt` has to shrink with the grid spacing. Bef
 
 For Euler there is a third limit, `dt ≤ 2/(Re·u²)` (that is `2ν/u²`), the stability limit of forward Euler for centered advection. It assumes the wall speed everywhere and is conservative for the cavity (at Re=1000 runs stayed stable up to about 3× it), so exceeding it only prints a warning. When an Euler run is refused, the suggested `dt` respects this limit as well, so following the suggestion does not lead to the warning.
 
-At the defaults (64×64, Re=100, 6th order) the limits are `dt ≤ 0.0056` for RK4 and `dt ≤ 0.0040` for Euler. The benchmarks above use `dt = 10/n²`.
+At the defaults (64×64, Re=100, 6th order) the limits are `dt ≤ 0.00580` for RK4 and `dt ≤ 0.00416` for Euler. The benchmarks above use `dt = 10/n²`.
 
 ```bash
 ./cnavier --n 127 --dt 6.2e-4 --tf 20
@@ -220,6 +220,9 @@ At the defaults (64×64, Re=100, 6th order) the limits are `dt ≤ 0.0056` for R
 Values that cannot be used (not a number, a grid outside 8–16384, `tf/dt` below one step or beyond the integer range) are rejected with an error before anything is computed or written.
 
 The wall-clock time of the time loop is printed at the end of every run.
+
+### Grid
+The grid is nodal: node `i` sits at `x = i·Lx/(nx−1)`, so the first and last row and column of nodes lie on the walls. Wall velocities are imposed on those nodes, ψ = 0 there for every Poisson solver, and the centerline CSVs are written at the node coordinates (interpolated onto `x = Lx/2` or `y = Ly/2` when no node lies on the centerline, i.e. for an even number of nodes).
 
 ### Boundary conditions
 The default case is the **lid-driven cavity**: the top wall moves at u=1, all other walls are stationary no-slip. Boundary conditions are set via `u1`–`u4` and `v1`–`v4` in `main.c`.
@@ -295,6 +298,6 @@ cnavier/
 
 ## Notes on the FFT Poisson solver
 
-The default `poisson_type = 3` uses FFTW3's `RODFT00` plan (DST-I) to solve the Poisson equation exactly in O(n² log n). This is orders of magnitude faster than the iterative solvers at high Reynolds numbers where many iterations are required for convergence. FFTW plans are computed once at startup via `fft_setup()` and reused every timestep.
+The default `poisson_type = 3` uses FFTW3's `RODFT00` plan (DST-I) of the interior nodes to solve the Poisson equation exactly in O(n² log n). It solves the same discrete problem as Gauss-Seidel and SOR (the 5-point Laplacian with ψ = 0 on the wall nodes), so once those have converged all three give the same ψ. This is orders of magnitude faster than the iterative solvers at high Reynolds numbers where many iterations are required for convergence. FFTW plans are computed once at startup via `fft_setup()` and reused every timestep.
 
 With RK4 (`time_scheme = 2`), the Poisson equation is solved once per RK4 stage (5 solves per timestep total). Since each solve is O(n² log n), this remains fast and gives 4th-order temporal accuracy.

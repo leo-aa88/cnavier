@@ -78,8 +78,8 @@ struct gpu_solver
 
     // FFT Poisson solver (poisson_type 3)
     cufftHandle         plan;  // real-to-complex FFT of the odd extension
-    double             *ext;   // odd extension, 2(nx+1) x 2(ny+1)
-    cufftDoubleComplex *spec;  // its spectrum, 2(nx+1) x (ny+2)
+    double             *ext;   // odd extension of the interior, 2(nx-1) x 2(ny-1)
+    cufftDoubleComplex *spec;  // its spectrum, 2(nx-1) x ny
     double *lambda_i, *lambda_j; // eigenvalues of the 1D second differences
 };
 
@@ -207,29 +207,37 @@ __global__ void redblack_kernel(double *psi, const double *w, double *delta, int
     delta[k] = fabs(upd - old);
 }
 
-// Odd extension of an nx*ny field to 2(nx+1) x 2(ny+1). The real FFT of the
-// extension is, up to a constant factor, the 2D DST-I of the field — the
+// Odd extension of the interior of an nx*ny field to 2(nx-1) x 2(ny-1). The
+// wall nodes become the zeros of the extension, and the real FFT of the
+// extension is, up to a constant factor, the 2D DST-I of the interior — the
 // transform FFTW calls RODFT00, which cuFFT does not provide.
 __global__ void odd_extend_kernel(const double *src, double *ext, int nx, int ny)
 {
-    int mx = 2 * (nx + 1), my = 2 * (ny + 1);
+    int mx = 2 * (nx - 1), my = 2 * (ny - 1);
     int k = blockIdx.x * blockDim.x + threadIdx.x;
     if (k >= mx * my) return;
     int p = k / my, q = k % my;
 
-    if (p == 0 || p == nx + 1 || q == 0 || q == ny + 1)
+    if (p == 0 || p == nx - 1 || q == 0 || q == ny - 1)
     {
         ext[k] = 0.0;
         return;
     }
-    int i = (p <= nx) ? p - 1 : mx - p - 1;
-    int j = (q <= ny) ? q - 1 : my - q - 1;
-    double sign = ((p <= nx) == (q <= ny)) ? 1.0 : -1.0;
+    int i = (p < nx) ? p : mx - p;
+    int j = (q < ny) ? q : my - q;
+    double sign = ((p < nx) == (q < ny)) ? 1.0 : -1.0;
     ext[k] = sign * src[i * ny + j];
 }
 
+// Interior node (i, j) corresponds to sine mode (i-1, j-1), which sits at
+// row i, column j of the spectrum of the odd extension.
+__device__ inline int spec_index(int i, int j, int ny)
+{
+    return i * ny + j; // the D2Z output has 2(ny-1)/2 + 1 = ny columns
+}
+
 // Pick the sine modes out of the spectrum of the odd extension and divide
-// each one by its eigenvalue of the 2D Laplacian.
+// each one by its eigenvalue of the 2D Laplacian. Wall nodes are set to 0.
 __global__ void spectral_divide_kernel(const cufftDoubleComplex *spec, double *out,
                                        const double *lambda_i, const double *lambda_j,
                                        int nx, int ny)
@@ -238,10 +246,14 @@ __global__ void spectral_divide_kernel(const cufftDoubleComplex *spec, double *o
     if (k >= nx * ny) return;
     int i = k / ny, j = k % ny;
 
-    out[k] = spec[(i + 1) * (ny + 2) + (j + 1)].x / (lambda_i[i] + lambda_j[j]);
+    if (i == 0 || i == nx - 1 || j == 0 || j == ny - 1)
+        out[k] = 0.0;
+    else
+        out[k] = spec[spec_index(i, j, ny)].x / (lambda_i[i - 1] + lambda_j[j - 1]);
 }
 
-// Pick the sine modes out of the spectrum of the odd extension and scale them
+// Pick the sine modes out of the spectrum of the odd extension and scale them.
+// Wall nodes are set to 0.
 __global__ void spectral_scale_kernel(const cufftDoubleComplex *spec, double *out,
                                       double scale, int nx, int ny)
 {
@@ -249,7 +261,10 @@ __global__ void spectral_scale_kernel(const cufftDoubleComplex *spec, double *ou
     if (k >= nx * ny) return;
     int i = k / ny, j = k % ny;
 
-    out[k] = spec[(i + 1) * (ny + 2) + (j + 1)].x * scale;
+    if (i == 0 || i == nx - 1 || j == 0 || j == ny - 1)
+        out[k] = 0.0;
+    else
+        out[k] = spec[spec_index(i, j, ny)].x * scale;
 }
 
 enum { RED_SUM, RED_MAX, RED_MIN };
@@ -368,8 +383,8 @@ static void poisson_redblack(gpu_solver *g, const double *w)
 static void poisson_fft(gpu_solver *g, const double *w)
 {
     int nx = g->nx, ny = g->ny, n = g->n;
-    int next = 4 * (nx + 1) * (ny + 1);
-    double inv_norm = 1.0 / (4.0 * (double)(nx + 1) * (double)(ny + 1));
+    int next = 4 * (nx - 1) * (ny - 1);
+    double inv_norm = 1.0 / (4.0 * (double)(nx - 1) * (double)(ny - 1));
 
     LAUNCH(odd_extend_kernel, next, w, g->ext, nx, ny);
     CUFFT_CHECK(cufftExecD2Z(g->plan, g->ext, g->spec));
@@ -461,7 +476,7 @@ gpu_solver *gpu_init(const rk4_ctx *ctx, double dt, int time_scheme, const wall_
 
     if (g->poisson_type == 3)
     {
-        int mx = 2 * (nx + 1), my = 2 * (ny + 1);
+        int mx = 2 * (nx - 1), my = 2 * (ny - 1); // odd extension of the interior
         double *lambda = (double *)malloc((size_t)(nx > ny ? nx : ny) * sizeof(double));
         if (!lambda)
         {
@@ -474,17 +489,18 @@ gpu_solver *gpu_init(const rk4_ctx *ctx, double dt, int time_scheme, const wall_
         CUDA_CHECK(cudaMalloc((void **)&g->spec,
                               (size_t)mx * (my / 2 + 1) * sizeof(cufftDoubleComplex)));
 
-        // Eigenvalues of the 2D Laplacian under DST-I, as in poisson_FFT():
-        //   λ_ij = (2*cos(π*(i+1)/(nx+1)) - 2) / dx²
-        //         + (2*cos(π*(j+1)/(ny+1)) - 2) / dy²
-        g->lambda_i = dev_alloc(nx);
-        g->lambda_j = dev_alloc(ny);
-        for (i = 0; i < nx; i++)
-            lambda[i] = (2.0 * cos(PI * (i + 1) / (double)(nx + 1)) - 2.0) / (g->dx * g->dx);
-        CUDA_CHECK(cudaMemcpy(g->lambda_i, lambda, nx * sizeof(double), cudaMemcpyHostToDevice));
-        for (i = 0; i < ny; i++)
-            lambda[i] = (2.0 * cos(PI * (i + 1) / (double)(ny + 1)) - 2.0) / (g->dy * g->dy);
-        CUDA_CHECK(cudaMemcpy(g->lambda_j, lambda, ny * sizeof(double), cudaMemcpyHostToDevice));
+        // Eigenvalues of the 2D Laplacian under the DST-I of the interior, as
+        // in poisson_FFT():
+        //   λ_ij = (2*cos(π*(i+1)/(nx-1)) - 2) / dx²
+        //         + (2*cos(π*(j+1)/(ny-1)) - 2) / dy²
+        g->lambda_i = dev_alloc(nx - 2);
+        g->lambda_j = dev_alloc(ny - 2);
+        for (i = 0; i < nx - 2; i++)
+            lambda[i] = (2.0 * cos(PI * (i + 1) / (double)(nx - 1)) - 2.0) / (g->dx * g->dx);
+        CUDA_CHECK(cudaMemcpy(g->lambda_i, lambda, (nx - 2) * sizeof(double), cudaMemcpyHostToDevice));
+        for (i = 0; i < ny - 2; i++)
+            lambda[i] = (2.0 * cos(PI * (i + 1) / (double)(ny - 1)) - 2.0) / (g->dy * g->dy);
+        CUDA_CHECK(cudaMemcpy(g->lambda_j, lambda, (ny - 2) * sizeof(double), cudaMemcpyHostToDevice));
         free(lambda);
     }
     return g;

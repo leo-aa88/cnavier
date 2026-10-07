@@ -183,9 +183,9 @@ Because the operators are built as Kronecker products acting in separate coordin
 
 The physical domain is specified by $L_x$ and $L_y$ and the computational array by $n_x\times n_y$.  The implementation defines
 \begin{equation}
-\dx=\frac{L_x}{n_x},
+\dx=\frac{L_x}{n_x-1},
 \qquad
-\dy=\frac{L_y}{n_y}.
+\dy=\frac{L_y}{n_y-1},
 \label{eq:grid-spacing}
 \end{equation}
 At present, the public command line accepts a single \code{--n} value and the solver requires
@@ -196,16 +196,17 @@ The allowed range is 8 through 16384 samples per direction.
 
 Fields are stored as contiguous row-major arrays wrapped by the \code{mtrx} structure.  Flattening a field is therefore a direct memory copy, and the two-dimensional derivative operations are implemented as sparse matrix--vector products.
 
-\subsection{Grid convention in the current implementation}
+\subsection{Grid convention}
 
-The current source combines two closely related conventions:
+The grid is nodal.  Node $i$ lies at $x_i=i\,\dx$, $i=0,\dots,n_x-1$, so the first and last rows and columns of the arrays lie on the walls and $n_x$ nodes span $L_x$ with $n_x-1$ intervals, as in \cref{eq:grid-spacing}.  All parts of the code use this convention:
 
 \begin{enumerate}[leftmargin=2em]
-  \item The FFT/DST Poisson solver treats the $n_x\times n_y$ transformed values as the interior unknowns of a homogeneous-Dirichlet problem, with the zero streamfunction boundary represented implicitly by the sine basis.
-  \item The velocity and vorticity routines treat the first and last array rows/columns as the locations at which wall values are imposed and one-sided finite-difference closures are evaluated.  Centerline CSV output labels samples using coordinates of the form $(i+1/2)\Delta x$ or $(j+1/2)\Delta y$.
+  \item wall velocities are imposed on the wall nodes, and the one-sided finite-difference closures are evaluated there;
+  \item all three Poisson solvers treat the $(n_x-2)\times(n_y-2)$ interior nodes as the unknowns and set $\psi=0$ on the wall nodes (\cref{sec:poisson-fft});
+  \item centerline CSV output uses the node coordinates $i\,\dy$ and $j\,\dx$, and interpolates linearly onto $x=L_x/2$ (or $y=L_y/2$) when no node lies on the centerline, i.e.\ for an even number of nodes.
 \end{enumerate}
 
-This convention works consistently enough for the present cavity calculations and verification suite, but it should be made geometrically explicit before claiming a strict global order of accuracy or extending the method to more complicated boundary conditions.  A future refactor could choose either a fully nodal layout with $\Delta x=L/(n-1)$ or an explicitly cell-centered layout with separate boundary/ghost values.  The scientific interpretation of grid-convergence studies should take this implementation detail into account.
+Earlier versions mixed conventions: the spacing was $L/n$, the FFT solver treated all $n_x\times n_y$ nodes as unknowns (placing $\psi=0$ one cell outside the walls, while Gauss--Seidel and SOR placed it on them), and centerline coordinates were labelled $(i+\tfrac12)\dx$.  Switching between solvers changed the flow, and the centerline profiles of the default case differed from Ghia et al.\ by up to $0.06$; see \cref{sec:ghia}.
 
 % =============================================================================
 \section{Finite-Difference Spatial Discretization}
@@ -443,10 +444,10 @@ SOR applies a relaxation factor $\beta$:
 +(1-\beta)\psi_{i,j}^{(k)}.
 \label{eq:sor}
 \end{equation}
-The default program estimates an optimal relaxation parameter using
+The default program estimates an optimal relaxation parameter from the spectral radius of Jacobi iteration on the $(n_x-2)\times(n_y-2)$ interior nodes,
 \begin{align}
-\rho &= \frac{1}{2}\left[\cos\left(\frac{\pi}{n_x}\right)
-+\cos\left(\frac{\pi}{n_y}\right)\right],\\
+\rho &= \frac{1}{2}\left[\cos\left(\frac{\pi}{n_x-1}\right)
++\cos\left(\frac{\pi}{n_y-1}\right)\right],\\
 \beta &= \frac{2}{1+\sqrt{1-\rho^2}}.
 \label{eq:sor-beta}
 \end{align}
@@ -464,17 +465,18 @@ not a residual norm and not a root-sum-square norm.  The console string currentl
 Because the default tolerance can stop the iteration before full convergence, the sweep ordering can affect the returned approximation.  This is why the serial lexicographic CPU result and the red--black GPU result need not be identical at the shipped tolerance; they approach the same solution as the tolerance is tightened.
 
 \subsection{Direct FFT/DST-I solver}
+\label{sec:poisson-fft}
 
-The default \code{poisson\_type = 3} uses a two-dimensional discrete sine transform of type I (DST-I).  Homogeneous Dirichlet conditions are built into the sine basis.  For each spectral mode $(p,q)$, the standard second-difference Laplacian has eigenvalue
+The default \code{poisson\_type = 3} uses a two-dimensional discrete sine transform of type I (DST-I) of the $m_x\times m_y$ interior nodes, $m_x=n_x-2$, $m_y=n_y-2$.  A DST-I of length $m$ implies zeros at indices $-1$ and $m$, which are exactly the wall nodes, so the solver imposes $\psi=0$ on the wall nodes like the iterative solvers and solves the same discrete problem.  For each spectral mode $(p,q)$, the standard second-difference Laplacian has eigenvalue
 \begin{equation}
 \lambda_{p,q}
 =
-\frac{2\cos\left(\frac{\pi p}{n_x+1}\right)-2}{\dx^2}
+\frac{2\cos\left(\frac{\pi p}{m_x+1}\right)-2}{\dx^2}
 +
-\frac{2\cos\left(\frac{\pi q}{n_y+1}\right)-2}{\dy^2},
+\frac{2\cos\left(\frac{\pi q}{m_y+1}\right)-2}{\dy^2},
 \label{eq:dst-eigenvalue}
 \end{equation}
-with $p=1,\dots,n_x$ and $q=1,\dots,n_y$.
+with $p=1,\dots,m_x$ and $q=1,\dots,m_y$; note $m_x+1=n_x-1$.
 
 The algorithm is:
 \begin{enumerate}[leftmargin=2em]
@@ -483,11 +485,13 @@ The algorithm is:
   \item apply the DST-I again;
   \item multiply by the inverse transform normalization
   \[
-  \frac{1}{4(n_x+1)(n_y+1)}.
+  \frac{1}{4(m_x+1)(m_y+1)}=\frac{1}{4(n_x-1)(n_y-1)}.
   \]
 \end{enumerate}
 
 On the CPU, FFTW3 \code{RODFT00} plans are created once at startup and reused.  The asymptotic cost is $\Oh(N\log N)$ with $N=n_xn_y$, compared with a potentially large number of $\Oh(N)$ sweeps for Gauss--Seidel or SOR.
+
+Once Gauss--Seidel or SOR has converged, all three solvers return the same $\psi$; the test suite checks agreement to $10^{-9}$ on a random right-hand side.
 
 The FFT solver is ``direct'' with respect to the \emph{discrete second-order Poisson problem}: once the transform is performed, no iterative convergence tolerance is required.  It is not an exact solver for the continuous Poisson equation; the continuous truncation error remains that of the discrete Laplacian and the grid representation.
 
@@ -581,7 +585,7 @@ taken from the middle row of the one-dimensional operators (which is also the mi
 \qquad
 \rho=\begin{cases}2 & \text{forward Euler},\\ 2.785293\ldots & \text{classical RK4},\end{cases}
 \end{equation}
-$\rho$ being the extent of each method's stability region along the negative real axis, and unless the Courant condition holds; the message names both limits and suggests the smaller one, rounded down so that the suggestion itself passes.  For forward Euler the classical centered advection--diffusion condition $\dt\le 2\nu/U^2 = 2/(\Rey\,U^2)$ is checked as well, but only as a warning, since it is conservative here (below); when an Euler run is refused, the suggested $\dt$ is the smallest of all three limits, so that following it does not trigger the warning.  Measured on the lid-driven cavity, the viscous bound is sharp: for orders 2, 4 and 6, both schemes and $n=64$ and $128$, runs at $0.95$ times the bound stay bounded for 3000 steps and runs at $1.05$ times diverge.  The advection condition is conservative: at $\Rey=1000$, $n=64$, Euler stayed bounded up to about three times it.  At the defaults ($n=64$, $\Rey=100$, sixth order) the bounds are $\dt\le 0.0056$ for RK4 and $\dt\le 0.0040$ for Euler.
+$\rho$ being the extent of each method's stability region along the negative real axis, and unless the Courant condition holds; the message names both limits and suggests the smaller one, rounded down so that the suggestion itself passes.  For forward Euler the classical centered advection--diffusion condition $\dt\le 2\nu/U^2 = 2/(\Rey\,U^2)$ is checked as well, but only as a warning, since it is conservative here (below); when an Euler run is refused, the suggested $\dt$ is the smallest of all three limits, so that following it does not trigger the warning.  Measured on the lid-driven cavity, the viscous bound is sharp: for orders 2, 4 and 6, both schemes and $n=64$ and $128$, runs at $0.95$ times the bound stay bounded for 3000 steps and runs at $1.05$ times diverge.  The advection condition is conservative: at $\Rey=1000$, $n=64$, Euler stayed bounded up to about three times it.  At the defaults ($n=64$, $\Rey=100$, sixth order) the bounds are $\dt\le 0.00580$ for RK4 and $\dt\le 0.00416$ for Euler.
 
 \subsection{Diffusive scaling}
 
@@ -664,9 +668,9 @@ All solver arithmetic is double precision.
 
 \subsection{GPU sine transform through odd extension}
 
-cuFFT does not expose a native DST-I.  The CUDA backend therefore constructs the odd extension of an $n_x\times n_y$ real field on a
+cuFFT does not expose a native DST-I.  The CUDA backend therefore constructs the odd extension of the $(n_x-2)\times(n_y-2)$ interior of a field on a
 \begin{equation}
-2(n_x+1)\times 2(n_y+1)
+2(n_x-1)\times 2(n_y-1)
 \end{equation}
 grid.  A real-to-complex FFT of this odd extension contains the sine-transform modes required for the Dirichlet Poisson problem.  The code extracts those modes, divides by the same eigenvalues as \cref{eq:dst-eigenvalue}, applies the construction again, and scales by the DST normalization.
 
@@ -715,10 +719,10 @@ It is useful to separate \emph{verification} from \emph{validation}.  Verificati
 
 The test suite constructs a discrete sine eigenmode
 \begin{equation}
-f_{ij}=\sin\left(\frac{\pi p(i+1)}{n+1}\right)
-       \sin\left(\frac{\pi q(j+1)}{n+1}\right)
+f_{ij}=\sin\left(\frac{\pi p\,i}{n-1}\right)
+       \sin\left(\frac{\pi q\,j}{n-1}\right)
 \end{equation}
-with $n=32$, $p=3$, and $q=5$.  Since this is an exact eigenvector of the discrete Laplacian, the exact discrete solution is
+on the nodes $i,j=0,\dots,n-1$ (it vanishes on the wall nodes), with $n=32$, $p=3$, and $q=5$.  Since this is an exact eigenvector of the discrete Laplacian, the exact discrete solution is
 \begin{equation}
 \psi=\frac{f}{\lambda_{p,q}}.
 \end{equation}
@@ -763,6 +767,7 @@ Typical comparison thresholds in the tests are $10^{-12}$ for CSR and FFT buildi
 A CUDA test build with no usable GPU returns exit status 77 rather than reporting a false pass.
 
 \subsection{Physical validation against Ghia et al.}
+\label{sec:ghia}
 
 The code embeds the standard $\Rey=100$ centerline velocity values from Ghia et al. \cite{ghia1982} and writes them alongside the simulation profile.  This supports a conventional cavity-flow validation workflow:
 \begin{enumerate}[leftmargin=2em]
@@ -772,6 +777,25 @@ The code embeds the standard $\Rey=100$ centerline velocity values from Ghia et 
   \item repeat on successively refined grids;
   \item repeat with smaller timesteps to separate spatial and temporal error.
 \end{enumerate}
+
+For the default case ($\Rey=100$, RK4, FFT solver, $t_f=30$), the simulated centerline velocities interpolated to the 15 interior Ghia points give:
+
+\begin{center}
+\begin{tabular}{lcccc}
+\toprule
+ & \multicolumn{2}{c}{$u$ on $x=0.5$} & \multicolumn{2}{c}{$v$ on $y=0.5$} \\
+Grid & max error & rms error & max error & rms error \\
+\midrule
+$64\times64$, mixed convention (before) & 0.0594 & 0.0372 & 0.0595 & 0.0301 \\
+$64\times64$, nodal convention & 0.0024 & 0.0014 & 0.0074 & 0.0039 \\
+$65\times65$, nodal convention & 0.0027 & 0.0014 & 0.0077 & 0.0040 \\
+$129\times129$, nodal convention & 0.0045 & 0.0024 & 0.0089 & 0.0049 \\
+$257\times257$, nodal convention & 0.0050 & 0.0025 & 0.0091 & 0.0051 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The solution has converged at these resolutions: at the Ghia points the $129\times129$ and $257\times257$ profiles differ by at most $4.5\times10^{-4}$ ($u$) and $3.5\times10^{-4}$ ($v$), an order of magnitude less than either differs from the reference.  The remaining discrepancy is therefore not grid error of this code; it is of the order of the accuracy of the reference data themselves, which were computed on a $129\times129$ grid with a second-order scheme.  The errors grow slightly from $64\times64$ to $129\times129$: the smaller error of the coarse grid comes partly from its discretisation error cancelling against the difference to the reference, so $64\times64$ should not be read as the most accurate grid.  The $257\times257$ run used $\dt=3\times10^{-4}$.
 
 At present, these error norms and grid-convergence rates are not automated in \code{make test}.  Therefore the repository has strong code-level verification, while quantitative benchmark validation remains a user-facing post-processing step.
 
@@ -788,26 +812,9 @@ where $r$ is the refinement ratio.  Because of the lower-order wall closure and 
 \section{Performance Characteristics}
 % =============================================================================
 
-The default FFT-based Poisson solver generally dominates the timestep cost, especially under RK4 where five elliptic solves are performed per step.  The repository reports the following representative RK4+FFT timings for a laptop Intel i7-12650H and NVIDIA RTX 3050 Laptop GPU under WSL2; these figures are implementation benchmarks rather than universal performance guarantees.
+The default FFT-based Poisson solver generally dominates the timestep cost, especially under RK4 where five elliptic solves are performed per step.  Measured timings per timestep for the CPU, OpenMP and CUDA builds are kept in one place, the Performance section of \code{README.md}, so that they are not maintained in two copies; they are implementation benchmarks on one machine rather than performance guarantees.
 
-\begin{table}[htbp]
-\centering
-\caption{Representative reported time per timestep for RK4 + FFT, $\Rey=100$, with VTK output disabled.}
-\label{tab:performance}
-\begin{tabular}{@{}rrrrr@{}}
-\toprule
-Grid & CPU \code{make} & CPU \code{-O2} & OpenMP \code{-O2}, 8 threads & CUDA \\
-\midrule
-$63^2$   & 2.19 ms & 1.14 ms & 0.98 ms & 0.87 ms \\
-$127^2$  & 8.98 ms & 3.68 ms & 3.31 ms & 1.61 ms \\
-$255^2$  & 39.6 ms & 19.9 ms & 15.5 ms & 5.01 ms \\
-$511^2$  & 162 ms & 91.8 ms & 67.0 ms & 20.9 ms \\
-$1023^2$ & 804 ms & 486 ms & 301 ms & 82.4 ms \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-For transform performance, grid sizes for which $n+1$ factors into small primes are advantageous because the sine transform acts through FFT lengths proportional to $2(n+1)$.  This is why sizes such as 63, 127, 255, 511, and 1023 can outperform an adjacent nominally round number such as 1024.
+For transform performance, grid sizes for which $n-1$ factors into small primes are advantageous, because the sine transform of the $n-2$ interior nodes acts through FFT lengths of $2(n-1)$.  Sizes such as 65, 129, 257, 513 and 1025 are therefore fast, and their neighbours can be several times slower: on the machine of the README benchmarks one serial FFT Poisson solve takes 6.7\,ms at $255^2$ ($2(n-1)=508=4\cdot127$) against 1.6\,ms at $257^2$ ($512$), and 85\,ms at $1023^2$ against 31\,ms at $1025^2$.
 
 The GPU becomes increasingly advantageous as the grid grows because the fixed kernel-launch overhead is amortized over more work.  Double-precision FFT throughput is a major cost on consumer GPUs, so larger speedups may be observed on hardware with stronger FP64 capability.
 
@@ -960,7 +967,7 @@ The current architecture makes several research-oriented extensions relatively n
 
 \begin{itemize}[leftmargin=2em]
   \item a consistent fourth- or sixth-order Poisson discretization, solved by an appropriate sparse/direct/iterative method;
-  \item dedicated high-order wall-vorticity formulas and an explicit nodal or cell-centered grid convention;
+  \item dedicated high-order wall-vorticity formulas;
   \item adaptive timestep selection from advective and diffusive spectral bounds;
   \item automated steady-state residual monitoring;
   \item automated Ghia interpolation and error norms in the test suite;
