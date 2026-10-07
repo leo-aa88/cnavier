@@ -33,3 +33,18 @@ python3 "$here/check_centerline.py" reference output "$here/reference" 1e-5
 echo "Regression: steady default case against Ghia et al. (1982)"
 "$bin" --output-interval 0 > run_full.txt
 python3 "$here/check_centerline.py" ghia output "$here/reference" 0.004 0.010
+
+# The periodic Taylor-Green vortex decays like the exact solution: on 32^2
+# and 64^2 (sixth-order operators) the error at t = 0.5 is about 4e-8 and
+# 6e-10 of max |w|, a factor of 64 = 2^6 apart.
+echo "Regression: periodic Taylor-Green vortex against the exact solution"
+"$bin" --case taylor-green --n 32 --dt 0.001 --tf 0.5 --output-interval 0 > tg32.txt
+"$bin" --case taylor-green --n 64 --dt 0.001 --tf 0.5 --output-interval 0 > tg64.txt
+e32=$(sed -n 's/.*relative to max |w| \([^ ]*\)$/\1/p' tg32.txt)
+e64=$(sed -n 's/.*relative to max |w| \([^ ]*\)$/\1/p' tg64.txt)
+if awk -v a="$e32" -v b="$e64" 'BEGIN { ok = (a + 0 > 0 && a < 1e-7 && b > 0 && a / b > 48); exit !ok }'; then
+    echo "  [ ok ] relative error $e32 (32^2), $e64 (64^2): order $(awk -v a="$e32" -v b="$e64" 'BEGIN { printf "%.2f", log(a / b) / log(2) }')"
+else
+    echo "  [FAIL] relative error '$e32' (32^2), '$e64' (64^2): need < 1e-7 at 32^2 and a ratio above 48"
+    exit 1
+fi

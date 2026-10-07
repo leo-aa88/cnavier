@@ -37,4 +37,17 @@ void fft_cleanup(fft_solver *s);
 // Result written into pre-allocated matrix u. No scratch buffer needed.
 void poisson_FFT(fft_solver *s, mtrx f, mtrx u, double dx, double dy);
 
+// Periodic Poisson solver: (DX2 + DY2) u = f on a doubly periodic nx x ny
+// grid, with the solver's own second-derivative operators (built with
+// SDiff2_periodic), by a 2D real FFT. u has zero mean; the mean of f is
+// ignored. Plans and buffers belong to the returned solver.
+typedef struct periodic_solver periodic_solver;
+periodic_solver *periodic_setup(int nx, int ny, const smtrx *DX2, const smtrx *DY2);
+void periodic_cleanup(periodic_solver *s);
+void poisson_periodic(periodic_solver *s, mtrx f, mtrx u);
+
+// The eigenvalues the periodic solver divides by: lx[k] of DX2 for
+// k = 0..nx/2, ly[k] of DY2 for k = 0..ny-1 (shared with the CUDA solver)
+void periodic_eigenvalues(int nx, int ny, const smtrx *DX2, const smtrx *DY2, double *lx, double *ly);
+
 #endif // POISSON_H_INCLUDED

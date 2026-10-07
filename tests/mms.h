@@ -10,6 +10,11 @@
 //   u = dpsi/dy, v = -dpsi/dx
 //
 // is f = dw/dt + u dw/dx + v dw/dy - (1/Re) lap(w), in closed form.
+//
+// On a doubly periodic grid the solution is instead a sum of three Fourier
+// modes of different wavenumbers (so that the nonlinear term does not vanish):
+//
+//   psi = g(t) sum_m A_m cos(2 pi (a_m x / Lx + b_m y / Ly) + phi_m)
 
 #ifndef MMS_H_INCLUDED
 #define MMS_H_INCLUDED
@@ -21,6 +26,7 @@ typedef struct
     double Lx, Ly; // domain size
     double Re;     // Reynolds number
     double dx, dy; // grid spacing: node (i, j) is at x = j*dx, y = i*dy
+    int periodic;  // 0: the wall solution, 1: the periodic one
 } mms_case;
 
 // Exact w, u, v and psi at time t on the case's grid. NULL arguments are skipped.
@@ -52,6 +58,11 @@ typedef struct
 // shortened so that a whole number of steps reaches T.
 mms_errors mms_run(int nx, int ny, double Lx, double Ly, double Re, int order, int time_scheme,
                    int poisson_type, double dt, double t0, double T);
+
+// mms_run() on a doubly periodic nx x ny grid (dx = Lx/nx) with the periodic
+// solution, RK4 or Euler, and the periodic FFT Poisson solver
+mms_errors mms_run_periodic(int nx, int ny, double Lx, double Ly, double Re, int order, int time_scheme,
+                            double dt, double t0, double T);
 
 // Ablation of the discretization (issue #25): parts of the RK4 step replaced
 // by the exact solution at each stage's time. Flags may be combined.

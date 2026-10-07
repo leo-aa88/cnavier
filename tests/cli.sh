@@ -53,6 +53,12 @@ expect nonzero --output-interval -1
 expect nonzero --output-interval 2x
 expect nonzero --dt 0.02
 expect nonzero --dt 0.0059
+expect nonzero --re 0
+expect nonzero --re -100
+expect nonzero --re nan
+expect nonzero --case nonsense
+expect nonzero --case ""
+expect nonzero --case taylor-green --dt 0.02
 expect nonzero --bogus
 expect nonzero stray-argument
 
@@ -60,6 +66,8 @@ echo "Command line: valid edge cases run"
 expect 0 --help
 expect 0 --tf 0.005 --output-interval 0
 expect 0 --nx 33 --ny 17 --tf 0.01 --output-interval 0
+expect 0 --case taylor-green --nx 32 --ny 24 --tf 0.01 --output-interval 0
+expect 0 --case shear-layer --n 33 --re 1000 --tf 0.01 --output-interval 0
 
 echo
 echo "$count checks, $failed failed"

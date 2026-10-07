@@ -34,10 +34,40 @@ typedef struct
     double psi, u, v, w, wx, wy, lapw;
 } point;
 
+// The periodic solution: modes (a, b, amplitude, phase)
+static const double modes[3][4] = {
+    {1.0, 1.0, 1.0, 0.3},
+    {2.0, -1.0, 0.5, 1.1},
+    {1.0, 3.0, 0.25, 2.0},
+};
+
+static point at_periodic(const mms_case *c, double x, double y)
+{
+    int m;
+    point p = {0, 0, 0, 0, 0, 0, 0};
+
+    for (m = 0; m < 3; m++)
+    {
+        double kx = 2.0 * MMS_PI * modes[m][0] / c->Lx, ky = 2.0 * MMS_PI * modes[m][1] / c->Ly;
+        double A = modes[m][2] / (2.0 * MMS_PI), K2 = kx * kx + ky * ky;
+        double th = kx * x + ky * y + modes[m][3], cs = cos(th), sn = sin(th);
+        p.psi += A * cs;
+        p.u += -A * ky * sn;
+        p.v += A * kx * sn;
+        p.w += A * K2 * cs;
+        p.wx += -A * K2 * kx * sn;
+        p.wy += -A * K2 * ky * sn;
+        p.lapw += -A * K2 * K2 * cs;
+    }
+    return p;
+}
+
 static point at(const mms_case *c, double x, double y)
 {
     double X[5], Y[5];
     point p;
+
+    if (c->periodic) return at_periodic(c, x, y);
 
     shape(MMS_PI / c->Lx, x, X);
     shape(MMS_PI / c->Ly, y, Y);
@@ -109,16 +139,18 @@ static mms_norm norm_of(mtrx a, mtrx b, int part)
     return r;
 }
 
-mms_errors mms_run(int nx, int ny, double Lx, double Ly, double Re, int order, int time_scheme,
-                   int poisson_type, double dt, double t0, double T)
+static mms_errors run(int nx, int ny, double Lx, double Ly, double Re, int order, int time_scheme,
+                      int poisson_type, double dt, double t0, double T, int periodic)
 {
-    mms_case c = {Lx, Ly, Re, Lx / (nx - 1), Ly / (ny - 1)};
+    mms_case c = {Lx, Ly, Re, Lx / (periodic ? nx : nx - 1), Ly / (periodic ? ny : ny - 1), periodic};
     wall_bc walls = {{0., 0., 0., 0.}, {0., 0., 0., 0.}};
     int t, steps;
     mms_errors e;
 
-    smtrx d1x = SDiff1(nx, order, c.dx), d1y = SDiff1(ny, order, c.dy);
-    smtrx d2x = SDiff2(nx, order, c.dx), d2y = SDiff2(ny, order, c.dy);
+    smtrx d1x = periodic ? SDiff1_periodic(nx, order, c.dx) : SDiff1(nx, order, c.dx);
+    smtrx d1y = periodic ? SDiff1_periodic(ny, order, c.dy) : SDiff1(ny, order, c.dy);
+    smtrx d2x = periodic ? SDiff2_periodic(nx, order, c.dx) : SDiff2(nx, order, c.dx);
+    smtrx d2y = periodic ? SDiff2_periodic(ny, order, c.dy) : SDiff2(ny, order, c.dy);
     dt = fmin(dt, 0.5 * max_stable_dt(&d2x, &d2y, Re, time_scheme));
     steps = (int)ceil(T / dt - 1E-9);
     smtrx Ix = seye(nx), Iy = seye(ny);
@@ -144,6 +176,7 @@ mms_errors mms_run(int nx, int ny, double Lx, double Ly, double Re, int order, i
     cfg.poisson_max_it = 1000000;
     cfg.poisson_tol = 1E-13;
     cfg.beta = sor_beta(nx, ny, c.dx, c.dy);
+    cfg.periodic = periodic;
     cfg.bc = walls;
     cfg.DX = &DX;
     cfg.DY = &DY;
@@ -161,7 +194,7 @@ mms_errors mms_run(int nx, int ny, double Lx, double Ly, double Re, int order, i
         step(w, u, v, &ctx);
 
     mms_exact(&c, t0 + T, &we, &ue, &ve, &psie);
-    apply_wall_bc(u, v, &walls);
+    if (!periodic) apply_wall_bc(u, v, &walls);
     e.psi = norm_of(ctx.psi, psie, 0);
     e.u = norm_of(u, ue, 0);
     e.v = norm_of(v, ve, 0);
@@ -183,6 +216,18 @@ mms_errors mms_run(int nx, int ny, double Lx, double Ly, double Re, int order, i
     freesm(DX2);
     freesm(DY2);
     return e;
+}
+
+mms_errors mms_run(int nx, int ny, double Lx, double Ly, double Re, int order, int time_scheme,
+                   int poisson_type, double dt, double t0, double T)
+{
+    return run(nx, ny, Lx, Ly, Re, order, time_scheme, poisson_type, dt, t0, T, 0);
+}
+
+mms_errors mms_run_periodic(int nx, int ny, double Lx, double Ly, double Re, int order, int time_scheme,
+                            double dt, double t0, double T)
+{
+    return run(nx, ny, Lx, Ly, Re, order, time_scheme, 3, dt, t0, T, 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -291,7 +336,7 @@ mms_errors mms_run_ablated(int nx, int ny, double Lx, double Ly, double Re, int 
     int f, t, steps, nf = (int)(sizeof(fields) / sizeof(fields[0]));
     mms_errors e;
 
-    a.c = (mms_case){Lx, Ly, Re, Lx / (nx - 1), Ly / (ny - 1)};
+    a.c = (mms_case){Lx, Ly, Re, Lx / (nx - 1), Ly / (ny - 1), 0};
     a.flags = flags;
     smtrx d1x = SDiff1(nx, order, a.c.dx), d1y = SDiff1(ny, order, a.c.dy);
     smtrx d2x = SDiff2(nx, order, a.c.dx), d2y = SDiff2(ny, order, a.c.dy);

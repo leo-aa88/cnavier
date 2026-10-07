@@ -50,7 +50,13 @@ rk4_ctx rk4_alloc(const solver_config *cfg)
     ctx.k4 = initm(ny, nx);
     ctx.w_tmp = initm(ny, nx);
     ctx.rhs = initm(ny, nx);
-    ctx.fft = cfg->poisson_type == 3 ? fft_setup(nx, ny) : NULL;
+    if (cfg->periodic && cfg->poisson_type != 3)
+    {
+        printf("** Error: periodic boundaries need the FFT Poisson solver (poisson_type 3) **\n");
+        exit(1);
+    }
+    ctx.fft = cfg->poisson_type == 3 && !cfg->periodic ? fft_setup(nx, ny) : NULL;
+    ctx.periodic = cfg->periodic ? periodic_setup(nx, ny, cfg->DX2, cfg->DY2) : NULL;
     ctx.source = cfg->vorticity_source ? initm(ny, nx) : (mtrx){0};
     ctx.steps = 0;
     return ctx;
@@ -72,6 +78,8 @@ void rk4_free(rk4_ctx *ctx)
     freem(&ctx->rhs);
     fft_cleanup(ctx->fft);
     ctx->fft = NULL;
+    periodic_cleanup(ctx->periodic);
+    ctx->periodic = NULL;
     if (ctx->source.M) freem(&ctx->source);
 }
 
@@ -80,7 +88,9 @@ static void velocity_from_vorticity(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx)
 {
     // Poisson solve: nabla^2 psi = -w
     negcpy(ctx->rhs, w);
-    if (ctx->cfg.poisson_type == 1)
+    if (ctx->cfg.periodic)
+        poisson_periodic(ctx->periodic, ctx->rhs, ctx->psi);
+    else if (ctx->cfg.poisson_type == 1)
         poisson(ctx->rhs, ctx->psi, ctx->psi_scratch, ctx->cfg.dx, ctx->cfg.dy,
                 ctx->cfg.poisson_max_it, ctx->cfg.poisson_tol);
     else if (ctx->cfg.poisson_type == 2)
@@ -163,10 +173,13 @@ void dwdt(mtrx w, mtrx u, mtrx v, mtrx out, double t, rk4_ctx *ctx)
     // Velocity of this stage, then the wall vorticity that goes with it. The
     // wall vorticity follows the velocity, so it has to be set again at every
     // RK4 stage: set once per step, it lags the interior and limits RK4 to
-    // first order in time.
+    // first order in time. A periodic grid has no walls.
     velocity_from_vorticity(w, u, v, ctx);
-    apply_wall_bc(u, v, &ctx->cfg.bc);
-    set_wall_vorticity(w, u, v, ctx);
+    if (!ctx->cfg.periodic)
+    {
+        apply_wall_bc(u, v, &ctx->cfg.bc);
+        set_wall_vorticity(w, u, v, ctx);
+    }
 
     derivatives(w, ctx);
 
@@ -334,10 +347,12 @@ void step(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx)
     double dt = ctx->cfg.dt;
     const wall_bc *bc = &ctx->cfg.bc;
 
-    apply_wall_bc(u, v, bc);
-
-    // Vorticity BCs: w = dv/dx - du/dy evaluated at boundaries
-    set_wall_vorticity(w, u, v, ctx);
+    // Vorticity BCs: w = dv/dx - du/dy evaluated at boundaries (walls only)
+    if (!ctx->cfg.periodic)
+    {
+        apply_wall_bc(u, v, bc);
+        set_wall_vorticity(w, u, v, ctx);
+    }
 
     if (ctx->cfg.time_scheme == 1)
     {
@@ -361,9 +376,12 @@ void step(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx)
     // consistent with u and v. u and v themselves stay the velocity of the
     // Poisson solution, whose divergence the continuity check measures; the
     // wall velocities are imposed on copies in the stage buffers.
-    mtrxcpy(ctx->k1, u);
-    mtrxcpy(ctx->k2, v);
-    apply_wall_bc(ctx->k1, ctx->k2, bc);
-    set_wall_vorticity(w, ctx->k1, ctx->k2, ctx);
+    if (!ctx->cfg.periodic)
+    {
+        mtrxcpy(ctx->k1, u);
+        mtrxcpy(ctx->k2, v);
+        apply_wall_bc(ctx->k1, ctx->k2, bc);
+        set_wall_vorticity(w, ctx->k1, ctx->k2, ctx);
+    }
     ctx->steps++;
 }
