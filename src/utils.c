@@ -96,7 +96,7 @@ double available_memory(void)
 
     // What the kernel thinks can be allocated without swapping
     double kb = read_number("/proc/meminfo", "MemAvailable:");
-    if (kb > 0) avail = kb * 1024.0;
+    if (kb >= 0) avail = kb * 1024.0; // -1: no MemAvailable line
     else
     {
         long pages = sysconf(_SC_PHYS_PAGES), size = sysconf(_SC_PAGESIZE);
