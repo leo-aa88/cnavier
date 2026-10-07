@@ -2,8 +2,8 @@
 
 % -----------------------------------------------------------------------------
 % cnavier scientific methodology / user manual
-% Repository state reviewed: main @ d015a85087de383ae4a97b7c2266ff8b7d2b8b98
-% Generated: 2026-10-04
+% Repository state reviewed: main @ 5018e29bff534b252a7ac9025ece4ac43efd78ad
+% Generated: 2026-10-06
 % -----------------------------------------------------------------------------
 
 \usepackage[margin=2.5cm]{geometry}
@@ -49,7 +49,7 @@
 \title{\textbf{cnavier}\\[0.5em]
 \large Numerical Methodology and Scientific User Manual}
 \author{cnavier project}
-\date{Repository state: \code{main} at \code{d015a85087de383ae4a97b7c2266ff8b7d2b8b98}\\4 October 2026}
+\date{Repository state: \code{main} at \code{5018e29bff534b252a7ac9025ece4ac43efd78ad}\\6 October 2026}
 
 \begin{document}
 
@@ -83,10 +83,11 @@ The main numerical components are:
   \item \code{src/backend.c}: one interface over the CPU and CUDA solvers, and the choice between them;
   \item \code{src/finitediff.c}: one-dimensional first- and second-derivative finite-difference matrices and CSR conversion;
   \item \code{src/linearalg.c}: dense storage utilities, CSR sparse matrices, sparse matrix--vector multiplication, and Kronecker products;
-  \item \code{src/fluiddyn.c}: wall conditions, vorticity transport, Euler and RK4 integration, streamfunction-to-velocity recovery, and full timesteps;
+  \item \code{src/fluiddyn.c}: wall conditions, vorticity transport, Euler and RK4 integration, recovery of the velocity from the streamfunction, and full timesteps;
   \item \code{src/poisson.c}: Gauss--Seidel, SOR, and FFTW/DST-I Poisson solvers;
   \item \code{src/cudasolver.cu}: CUDA implementations of the time loop, sparse operators, elliptic solvers, and diagnostics;
-  \item \code{src/utils.c}: VTK output and centerline data for comparison with Ghia et al.;
+  \item \code{src/threads.c}: the default number of OpenMP threads (one per physical core);
+  \item \code{src/utils.c}: VTK output, centerline data for comparison with Ghia et al., and the available-memory check;
   \item \code{tests/test_solver.c}: CPU verification and CPU--GPU parity tests.
 \end{itemize}
 
@@ -994,7 +995,7 @@ The current architecture makes several research-oriented extensions relatively n
 \section{Final Remarks}
 % =============================================================================
 
-\texttt{cnavier} implements a mathematically clean and computationally compact route to two-dimensional incompressible flow: evolve vorticity, invert a scalar Poisson equation, and differentiate a streamfunction to recover velocity.  The code is particularly transparent because the spatial derivatives are explicit finite-difference matrices, the two-dimensional operators are tensor products, and both CPU and GPU backends expose the same algorithmic sequence.
+\texttt{cnavier} implements a mathematically clean and computationally compact route to incompressible flow in two dimensions: evolve vorticity, invert a scalar Poisson equation, and differentiate a streamfunction to recover velocity.  The code is particularly transparent because the spatial derivatives are explicit finite-difference matrices, the two-dimensional operators are tensor products, and both CPU and GPU backends expose the same algorithmic sequence.
 
 The strongest parts of the present methodology are the exact discrete streamfunction enforcement of incompressibility, the direct DST-based Poisson option, reusable sparse operators, RK4 stage consistency, and unusually thorough CPU--GPU equivalence tests for a compact CFD code.  The main scientific qualifications are equally clear: high-order accuracy applies primarily to interior transport derivatives; boundary closures are lower order; the streamfunction Poisson operator is second order; and quantitative benchmark/grid-convergence validation is not yet automated.
 
@@ -1038,9 +1039,9 @@ This document was prepared from the public repository
 \end{center}
 with \code{main} observed at commit
 \begin{center}
-\code{d015a85087de383ae4a97b7c2266ff8b7d2b8b98}
+\code{5018e29bff534b252a7ac9025ece4ac43efd78ad}
 \end{center}
-on 4 October 2026.  Numerical details in this manual describe the source code at that repository state; later commits may change defaults or algorithms.
+on 6 October 2026.  Numerical details in this manual describe the source code at that repository state; later commits may change defaults or algorithms.
 
 % =============================================================================
 \begin{thebibliography}{9}
