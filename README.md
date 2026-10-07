@@ -329,9 +329,28 @@ Maximum errors, derivative order 6, unit square (observed order against the prev
 | 257² | 1.52e-5 (2.01) | 4.67e-5 (2.00) | 1.19e-4 (2.37) | 1.11e-4 (2.31) |
 | 513² | 3.78e-6 (2.01) | 1.17e-5 (2.00) | 2.58e-5 (2.21) | 2.47e-5 (2.16) |
 
-- **Second order in space for this solution.** For this smooth manufactured solution with stationary no-slip walls, the complete method converges at second order with every derivative order: ψ, `u` and `v` at 2.0 on every grid, and ω faster on coarse grids, approaching 2 under refinement. So `order = 6` means sixth-order stencils in the deep interior, not sixth-order results. The order is held back by something all derivative orders share: the five-point Poisson operator or the low-order rows next to the walls (which one is the subject of an ablation study, #25).
+- **Second order in space for this solution.** For this smooth manufactured solution with stationary no-slip walls, the complete method converges at second order with every derivative order: ψ, `u` and `v` at 2.0 on every grid, and ω faster on coarse grids, approaching 2 under refinement. So `order = 6` means sixth-order stencils in the deep interior, not sixth-order results. The order is held back by what all derivative orders share; see the ablation below.
 - **Orders 4 and 6 give the same errors** to three digits. Compared with order 2 they reduce the vorticity error about 2.6× at 513², and leave the velocity error unchanged (order 2: 1.02e-5 for `u` at 513², order 6: 1.17e-5).
 - The 2×1 domain and the `dx = dy/2` grid show the same orders.
+
+```bash
+make OPENMP=1 ablation
+```
+
+finds what holds the order to two. A copy of the RK4 step (bitwise identical to `step()` when nothing is replaced) swaps parts of the method for the exact solution at each stage's time. Derivative order 6, error of ω at 257² and its order from 129²:
+
+| Replaced by the exact solution | ω error | order of ω | order of `u` |
+|---|---|---|---|
+| nothing (the solver) | 1.2e-4 | 2.37 | 2.00 |
+| wall vorticity | 5.1e-5 | 2.00 | 2.00 |
+| ψ (no Poisson solve) | 1.2e-3 | 2.00 | 3.00 |
+| ψ and wall vorticity | 2.8e-7 | 4.02 | 3.00 |
+| `u`, `v` | 5.9e-4 | 2.00 | – |
+| `u`, `v` and wall vorticity | 2.7e-7 | 3.89 | – |
+
+- **The Poisson operator and the wall-vorticity closure each limit the order to two on their own.** Improving only one of them would not raise the global order.
+- **Their errors partly cancel:** replacing only ψ by the exact solution makes the error ten times larger. This fits the known observation that a locally low-order wall formula can sit in a globally second-order method.
+- **With both replaced, the order is four, not six,** for derivative orders 4 and 6. The rest is in the derivative operators' rows next to the walls, which are of second and fourth order; sixth order needs better near-wall rows too, or periodic boundaries.
 
 ### Continuous integration
 
@@ -366,8 +385,9 @@ cnavier/
 │   └── utils.h
 ├── tests/
 │   ├── test_solver.c   # Unit and solver tests, GPU-vs-CPU checks
-│   ├── mms.c, mms.h    # Manufactured solution: exact fields, vorticity source, error norms
+│   ├── mms.c, mms.h    # Manufactured solution: exact fields, vorticity source, error norms, ablation
 │   ├── convergence.c   # Spatial convergence study (make convergence)
+│   ├── ablation.c      # What limits the spatial order (make ablation)
 │   ├── cli.sh          # Command-line tests
 │   ├── regression.sh   # Stored-result and Ghia et al. checks
 │   └── reference/      # Stored results and the Ghia et al. data
