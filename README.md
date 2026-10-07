@@ -224,6 +224,7 @@ A few numerical parameters can be overridden without recompiling; anything not g
 | `--tf TF` | Final time |
 | `--output-interval N` | Write VTK every N iterations (`0` disables VTK output) |
 | `--re RE` | Reynolds number |
+| `--integrals-interval N` | Write `E`, `Z`, `P` to `output/integrals.csv` every N steps (default 1; `0` never) |
 | `--poisson-order N` | `2` (five-point, default) or `4` (compact nine-point) Poisson operator of the FFT solver with walls (see [Higher order with walls](#higher-order-with-walls)) |
 | `--wall-closure NAME` | Wall vorticity: `velocity` (`dv/dx − du/dy`, default) or `briley` (third order, from the stream function) |
 | `--velocity-order N` | `2` (default) or `4`: fourth-order derivative rows next to the walls for `u`, `v` from the stream function. These three options apply to walls only |
@@ -277,6 +278,8 @@ VTK files are written to `output/` and can be opened in [ParaView](https://www.p
 
 At the end of a run the velocity profiles along the two centerlines are written to `output/centerline_u_sim.csv` and `output/centerline_v_sim.csv`, next to the Ghia et al. (1982) reference data in `centerline_*_ghia.csv`. The `_sim` files are results and are not tracked by git.
 
+**Diagnostics.** After every step (or every `--integrals-interval N` steps; `0` turns it off), `output/integrals.csv` gets a line `step,t,E,Z,P`: the domain means of the kinetic energy `½(u² + v²)`, the enstrophy `½ω²` and the palinstrophy `½|∇ω|²` (with walls, a trapezoidal mean with the wall velocities on the wall nodes). The GPU computes them on the device. On a periodic grid, every VTK frame also writes `output/spectrum-1-<n>.csv` with the energy and enstrophy spectra `E(k)`, `Z(k)`, summed over shells of `|k|` (divide by `dk` for a spectral density), and the fluxes `Pi_E(k)`, `Pi_Z(k)` through each wavenumber (positive: towards larger `k`). The fluxes are those of the discrete equations: they use the solver's own nonlinear term, and the energy flux weights each mode by `A/Q`, the ratio of the first-derivative symbols that give `u`, `v` to the Laplacian's, so that summed over all shells it equals the rate at which the nonlinear term changes `½⟨u² + v²⟩`, to round-off. The spectra sum to `E` and `Z` (Parseval). In an unforced periodic flow `dE/dt = −2νZ`; with order 6 at 128² the computed integrals satisfy it to 7e-8, and the nonlinear term conserves energy and enstrophy to the order of the scheme.
+
 ## Tests
 
 ```bash
@@ -290,6 +293,7 @@ builds and runs `test_cnavier`:
 - **Time stepping**: short cavity runs with both schemes on square and non-square grids (finite, divergence-free); the stability limit (0.95× runs, 1.05× diverges) and the suggested `dt`; the observed order in `dt` on all nodes, walls included: Euler first order, RK4 fourth order, with RK4's error at the same step about a million times smaller than Euler's. Both orders also hold with a time-dependent vorticity source, which checks that each RK4 stage evaluates the source at its own time; a run started at t0 > 0 checks that the source is evaluated at that run's times.
 - **Spatial accuracy**: a manufactured solution (see [Spatial convergence](#spatial-convergence)) on 17², 33² and 65² grids: ψ, `u` and `v` converge at second order and ω at least at second order, and the errors themselves are within fixed bounds. On a periodic grid, a second manufactured solution converges at the nominal order 2, 4 and 6 (also on a 2×1 domain).
 - **Higher order with walls**: the compact Poisson operator converges at least at fourth order (on a test with a non-zero Laplacian on the walls); with the third-order wall closure the manufactured solution converges at fourth order, and the wall closure alone stays at two. The fourth-order velocity rows are exact on quartics, and with all three options `u` converges at fourth order.
+- **Diagnostics**: the Taylor-Green integrals and spectrum against the exact solution; Parseval; the summed spectral transfers equal to the physical-space nonlinear rates of `E` and `Z` to round-off; the net nonlinear energy and enstrophy transfer and the residual of `dE/dt = −2νZ` falling at the order of the scheme; the GPU integrals against the CPU.
 - **Periodic boundaries**: the periodic operators differentiate at their nominal order and annihilate constants; the periodic Poisson solver solves `(DX2 + DY2) ψ = f` to round-off on odd and even grid sizes, with zero-mean ψ.
 - **Backends**: driving the solver through `backend.c` gives exactly what calling it directly gives, and every solver ignores changes to the caller's configuration after it is created.
 - **OpenMP** (with `OPENMP=1`): results on 1 and on 4 threads are bitwise identical above the size where loops go parallel.
@@ -321,7 +325,7 @@ A CUDA build tested on a machine without a GPU therefore does **not** count as a
 | Command | What it checks |
 |---|---|
 | `make test-cli` | Invalid command lines (NaN, garbage after numbers, grids out of range, unstable `dt`, ...) are refused with exit status 1 and an error message, and write nothing. A crash counts as a failure |
-| `make regression` | 100 steps of the default case against `tests/reference/`, and the steady default case within 0.004 (`u`) and 0.010 (`v`) of the Ghia et al. (1982) data stored in `tests/reference/`. Non-finite values fail; a self-test checks that. The periodic Taylor-Green vortex against its exact solution on 32² and 64², at sixth order |
+| `make regression` | 100 steps of the default case against `tests/reference/`, and the steady default case within 0.004 (`u`) and 0.010 (`v`) of the Ghia et al. (1982) data stored in `tests/reference/`. Non-finite values fail; a self-test checks that. The periodic Taylor-Green vortex against its exact solution on 32² and 64², at sixth order, and its energy in `integrals.csv` |
 | `make test-asan` | The test suite and a short run under AddressSanitizer and UndefinedBehaviorSanitizer |
 | `make valgrind` | The test suite and a short run under valgrind; any leak, including memory still reachable at exit, fails |
 | `make format-check` | Formatting against `.clang-format` (`make format` applies it) |
@@ -432,6 +436,7 @@ cnavier/
 │   ├── fluiddyn.c      # CPU timestep: Euler/RK4, wall and vorticity BCs, stability limit
 │   ├── poisson.c       # Gauss-Seidel, SOR, and FFT Poisson solvers
 │   ├── threads.c       # Default number of OpenMP threads
+│   ├── diagnostics.c   # Energy, enstrophy, palinstrophy; spectra and fluxes
 │   ├── cudasolver.cu   # CUDA backend (built only with CUDA=1)
 │   └── utils.c         # VTK output, random utilities
 ├── include/
@@ -442,6 +447,7 @@ cnavier/
 │   ├── poisson.h
 │   ├── cudasolver.h
 │   ├── threads.h
+│   ├── diagnostics.h
 │   └── utils.h
 ├── tests/
 │   ├── test_solver.c   # Unit and solver tests, GPU-vs-CPU checks

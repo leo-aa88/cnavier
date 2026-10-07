@@ -6,6 +6,7 @@
 
 #include "linearalg.h"
 #include "fluiddyn.h"
+#include "diagnostics.h"
 
 typedef struct backend backend;
 
@@ -33,6 +34,10 @@ void backend_step(backend *b);
 
 // Max and min of du/dx + dv/dy for the current velocity field
 void backend_continuity(backend *b, double *cmax, double *cmin);
+
+// Energy, enstrophy and palinstrophy of the current fields (diagnostics.h),
+// on the GPU by reductions on the device
+flow_integrals backend_integrals(backend *b);
 
 // A read view of the current fields on the host; NULL arguments are skipped.
 // On the CPU these are the solver's own arrays, on the GPU host arrays

@@ -5,6 +5,7 @@
 #include "poisson.h"
 #include "backend.h"
 #include "utils.h"
+#include "diagnostics.h"
 #ifdef USE_CUDA
 #include "cudasolver.h"
 #endif
@@ -168,6 +169,19 @@ void backend_continuity(backend *b, double *cmax, double *cmin)
         if (c > *cmax) *cmax = c;
         if (c < *cmin) *cmin = c;
     }
+}
+
+flow_integrals backend_integrals(backend *b)
+{
+#ifdef USE_CUDA
+    if (b->gpu)
+    {
+        flow_integrals r;
+        gpu_integrals(b->gpu, &r.E, &r.Z, &r.P);
+        return r;
+    }
+#endif
+    return compute_integrals(&b->cfg, b->u, b->v, b->w, b->dudx.M, b->dvdy.M);
 }
 
 void backend_fields(backend *b, mtrx **u, mtrx **v, mtrx **w)

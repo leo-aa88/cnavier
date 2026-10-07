@@ -48,3 +48,14 @@ else
     echo "  [FAIL] relative error '$e32' (32^2), '$e64' (64^2): need < 1e-7 at 32^2 and a ratio above 48"
     exit 1
 fi
+
+# The energy the Taylor-Green run writes to integrals.csv decays as
+# E = 1/4 exp(-4 nu k^2 t), k = 2 pi, nu = 1/Re = 0.01
+echo "Regression: Taylor-Green energy in output/integrals.csv"
+last=$(tail -1 output/integrals.csv)
+if echo "$last" | awk -F, '{ e = 0.25 * exp(-4 * 0.01 * (2 * 3.14159265358979) ^ 2 * $2); r = ($3 - e) / e; if (r < 0) r = -r; exit !(NF == 5 && r < 1e-6) }'; then
+    echo "  [ ok ] E = $(echo "$last" | cut -d, -f3) at t = $(echo "$last" | cut -d, -f2), within 1e-6 of the exact decay"
+else
+    echo "  [FAIL] last line of integrals.csv: '$last'"
+    exit 1
+fi

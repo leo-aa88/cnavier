@@ -63,6 +63,7 @@ expect nonzero --poisson-order 3
 expect nonzero --poisson-order 4x
 expect nonzero --wall-closure thom
 expect nonzero --velocity-order 3
+expect nonzero --integrals-interval -1
 expect nonzero --n 9 --velocity-order 4
 expect nonzero --case taylor-green --velocity-order 4
 expect nonzero --case shear-layer --poisson-order 4

@@ -174,6 +174,17 @@ struct fft_solver
 // solver is freed
 static int live_solvers = 0;
 
+void fftw_plans_hold(void)
+{
+    live_solvers++;
+}
+
+void fftw_plans_release(void)
+{
+    if (--live_solvers == 0)
+        fftw_cleanup();
+}
+
 // count transforms of length len, elements stride apart, transforms dist apart
 static dst_pass make_pass(double *buf, int len, int count, int stride, int dist)
 {

@@ -16,6 +16,7 @@
 #include "fluiddyn.h"
 #include "threads.h"
 #include "mms.h"
+#include "diagnostics.h"
 #include "backend.h"
 #include "utils.h"
 #ifdef USE_CUDA
@@ -847,6 +848,194 @@ static void test_wall_order_pairing(void)
     snprintf(name, sizeof(name), "all three: w order %.2f, 3.7 - order", order);
     check(name, isnan(order) ? INFINITY : 3.7 - order, 0.0);
     check("all three: u max error at 65x65", b.u.max, 3E-6);
+}
+
+// Integrals of the Taylor-Green vortex psi = sin(kx) sin(ky) e^(-2 nu k^2 t)/k,
+// k = 2 pi: E = 1/4 e^(-4 nu k^2 t), Z = k^2/2 and P = k^4 times that factor
+// over 1/4; and its whole spectrum in the shell |k| = sqrt(2) 2 pi
+static void test_integrals_taylor_green(void)
+{
+    int i, j, t, n = 32, steps = 100, B;
+    double k = 2.0 * PI, nu = 0.01, dt = 1E-3, *E, total = 0.0;
+    problem p;
+    spectra *sp;
+    char name[96];
+
+    printf("Diagnostics: Taylor-Green vortex, %dx%d periodic grid\n", n, n);
+    problem_init_ext(&p, n, n, 1.0, 1.0, 1, 6, 1.0 / nu, 2, 3, dt, 1E-10, NULL, 0.0, NULL, NULL, 2, 0, 2);
+    for (i = 0; i < n; i++)
+        for (j = 0; j < n; j++)
+        {
+            double x = j * p.cfg.dx, y = i * p.cfg.dy;
+            MAt(p.w, i, j) = 2.0 * k * sin(k * x) * sin(k * y);
+            MAt(p.u, i, j) = sin(k * x) * cos(k * y);
+            MAt(p.v, i, j) = -cos(k * x) * sin(k * y);
+        }
+    flow_integrals f = compute_integrals(&p.cfg, p.u, p.v, p.w, p.ctx.k1.M, p.ctx.k2.M);
+    check("E at t = 0 is 1/4", fabs(f.E - 0.25), 1E-14);
+    check("Z at t = 0 is k^2/2", fabs(f.Z - k * k / 2.0) / (k * k / 2.0), 1E-14);
+    check("P at t = 0 is k^4 (finite differences, order 6)", fabs(f.P - k * k * k * k) / (k * k * k * k), 1E-5);
+    for (t = 0; t < steps; t++)
+        step(p.w, p.u, p.v, &p.ctx);
+    f = compute_integrals(&p.cfg, p.u, p.v, p.w, p.ctx.k1.M, p.ctx.k2.M);
+    snprintf(name, sizeof(name), "E at t = %g against 1/4 e^(-4 nu k^2 t)", steps * dt);
+    check(name, fabs(f.E - 0.25 * exp(-4.0 * nu * k * k * steps * dt)) / f.E, 1E-6);
+
+    sp = spectra_setup(&p.cfg);
+    B = spectra_bins(sp);
+    E = (double *)calloc(B, sizeof(double));
+    spectra_compute(sp, p.u, p.v, p.w, E, NULL, NULL, NULL);
+    for (i = 0; i < B; i++)
+        if (i != 1) total += E[i];
+    check("all energy in the shell of |k| = sqrt(2) 2 pi (bin 1)", fabs(E[1] - f.E) / f.E + total / f.E, 1E-12);
+    free(E);
+    spectra_free(sp);
+    problem_free(&p);
+}
+
+// On the unforced three-mode periodic flow of mms.h: the spectra sum to the
+// integrals (Parseval), the nonlinear term conserves energy and enstrophy up
+// to the order of the scheme, and dE/dt = -2 nu Z up to that order too
+static void budget_run(int n, double out[4])
+{
+    int t, B, k;
+    double nu = 0.01, dt = 1E-4, *E, *Z, *PE, *PZ, sE = 0.0, sZ = 0.0, mE = 0.0, mZ = 0.0;
+    mms_case c = {1.0, 1.0, 1.0 / nu, 1.0 / n, 1.0 / n, 1};
+    problem p;
+    spectra *sp;
+
+    problem_init_ext(&p, n, n, 1.0, 1.0, 1, 6, 1.0 / nu, 2, 3, dt, 1E-10, NULL, 0.0, NULL, NULL, 2, 0, 2);
+    mms_exact(&c, 0.0, &p.w, &p.u, &p.v, NULL);
+    for (t = 0; t < 10; t++)
+        step(p.w, p.u, p.v, &p.ctx);
+    sp = spectra_setup(&p.cfg);
+    B = spectra_bins(sp);
+    E = (double *)calloc(B, sizeof(double));
+    Z = (double *)calloc(B, sizeof(double));
+    PE = (double *)calloc(B, sizeof(double));
+    PZ = (double *)calloc(B, sizeof(double));
+    flow_integrals f0 = compute_integrals(&p.cfg, p.u, p.v, p.w, p.ctx.k1.M, p.ctx.k2.M);
+    spectra_compute(sp, p.u, p.v, p.w, E, Z, PE, PZ);
+    for (k = 0; k < B; k++)
+    {
+        sE += E[k];
+        sZ += Z[k];
+        mE = fmax(mE, fabs(PE[k]));
+        mZ = fmax(mZ, fabs(PZ[k]));
+    }
+    step(p.w, p.u, p.v, &p.ctx);
+    flow_integrals f1 = compute_integrals(&p.cfg, p.u, p.v, p.w, p.ctx.k1.M, p.ctx.k2.M);
+    out[0] = fabs(sE - f0.E) / f0.E + fabs(sZ - f0.Z) / f0.Z;                      // Parseval
+    out[1] = fabs(PE[B - 1]) / mE;                                                 // net nonlinear energy transfer
+    out[2] = fabs(PZ[B - 1]) / mZ;                                                 // ... and enstrophy transfer
+    out[3] = fabs((f1.E - f0.E) / dt + nu * (f0.Z + f1.Z)) / (nu * (f0.Z + f1.Z)); // budget
+    free(E);
+    free(Z);
+    free(PE);
+    free(PZ);
+    spectra_free(sp);
+    problem_free(&p);
+}
+
+// The spectral fluxes are those of the discrete equations, exactly: the net
+// nonlinear transfer summed over all shells equals the rate at which the
+// solver's nonlinear term changes E = 1/2 <u^2 + v^2> and Z = 1/2 <w^2>,
+// computed in physical space with the solver's own operators, to round-off.
+// On coarse grids, where the first-derivative symbols differ from the
+// Laplacian's, this needs the A/Q weight in the energy transfer.
+static void flux_consistency(int nx, int ny, int order, double out[2])
+{
+    int k, B, N = nx * ny;
+    double rE = 0.0, rZ = 0.0, mE = 0.0, mZ = 0.0;
+    problem p;
+    problem_init_ext(&p, nx, ny, 1.0, 1.0, 1, order, 100., 2, 3, 1E-3, 1E-10, NULL, 0.0, NULL, NULL, 2, 0, 2);
+    periodic_solver *ps = periodic_setup(nx, ny, &p.DX2, &p.DY2);
+    mtrx f = initm(ny, nx), psi = initm(ny, nx), nl = initm(ny, nx), un = initm(ny, nx), vn = initm(ny, nx);
+    double *a = (double *)malloc(N * sizeof(double)), *b = (double *)malloc(N * sizeof(double));
+    spectra *sp = spectra_setup(&p.cfg);
+    double *PE, *PZ;
+
+    // A pseudo-random w, with energy at every wavenumber (a few smooth modes
+    // would not exchange energy at all: their products fall outside the
+    // field's modes); psi, u and v as the solver makes them
+    fill_pseudo_random(p.w.M, N, 7u);
+    negcpy(f, p.w);
+    poisson_periodic(ps, f, psi);
+    spmv(p.DY, psi.M, p.u.M);
+    spmv(p.DX, psi.M, p.v.M);
+    negcpy(p.v, p.v);
+    // The nonlinear term, and the velocity change it causes
+    spmv(p.DX, p.w.M, a);
+    spmv(p.DY, p.w.M, b);
+    for (k = 0; k < N; k++)
+        nl.M[k] = -(p.u.M[k] * a[k] + p.v.M[k] * b[k]);
+    negcpy(f, nl);
+    poisson_periodic(ps, f, psi);
+    spmv(p.DY, psi.M, un.M);
+    spmv(p.DX, psi.M, vn.M);
+    negcpy(vn, vn);
+    for (k = 0; k < N; k++)
+    {
+        rE += (p.u.M[k] * un.M[k] + p.v.M[k] * vn.M[k]) / N;
+        rZ += p.w.M[k] * nl.M[k] / N;
+    }
+    B = spectra_bins(sp);
+    PE = (double *)calloc(B, sizeof(double));
+    PZ = (double *)calloc(B, sizeof(double));
+    spectra_compute(sp, p.u, p.v, p.w, NULL, NULL, PE, PZ);
+    for (k = 0; k < B; k++)
+    {
+        mE = fmax(mE, fabs(PE[k]));
+        mZ = fmax(mZ, fabs(PZ[k]));
+    }
+    // The flux through the last shell is minus the net transfer
+    out[0] = fabs(rE + PE[B - 1]) / mE;
+    out[1] = fabs(rZ + PZ[B - 1]) / mZ;
+
+    free(a);
+    free(b);
+    free(PE);
+    free(PZ);
+    freem(&f);
+    freem(&psi);
+    freem(&nl);
+    freem(&un);
+    freem(&vn);
+    spectra_free(sp);
+    periodic_cleanup(ps);
+    problem_free(&p);
+}
+
+static void test_budgets(void)
+{
+    double a[4], b[4], o;
+    char name[96];
+
+    printf("Diagnostics: net spectral transfer = the nonlinear rate of change of E and Z\n");
+    for (int o = 2; o <= 6; o += 4)
+    {
+        double r[2];
+        flux_consistency(16, 16, o, r);
+        snprintf(name, sizeof(name), "order %d, 16x16: energy %.1e, enstrophy %.1e", o, r[0], r[1]);
+        check(name, r[0] + r[1], 1E-12);
+        flux_consistency(24, 20, o, r);
+        snprintf(name, sizeof(name), "order %d, 24x20: energy %.1e, enstrophy %.1e", o, r[0], r[1]);
+        check(name, r[0] + r[1], 1E-12);
+    }
+
+    printf("Diagnostics: spectra and budgets, unforced periodic flow, order 6, 32x32 -> 64x64\n");
+    budget_run(32, a);
+    budget_run(64, b);
+    check("Parseval: spectra sum to E and Z", fmax(a[0], b[0]), 1E-13);
+    o = log2(a[1] / b[1]);
+    snprintf(name, sizeof(name), "net nonlinear energy transfer %.1e, order %.2f", b[1], o);
+    check(name, isnan(o) ? INFINITY : 5.0 - o, 0.0);
+    o = log2(a[2] / b[2]);
+    snprintf(name, sizeof(name), "net nonlinear enstrophy transfer %.1e, order %.2f", b[2], o);
+    check(name, isnan(o) ? INFINITY : 5.0 - o, 0.0);
+    o = log2(a[3] / b[3]);
+    snprintf(name, sizeof(name), "dE/dt + 2 nu Z, relative %.1e, order %.2f", b[3], o);
+    check(name, isnan(o) ? INFINITY : 5.0 - o, 0.0);
 }
 
 // Wall velocities go to the right nodes; at the corners the walls x = 0 and
@@ -1794,6 +1983,39 @@ static void test_gpu_closures(int nx, int ny, int steps, int time_scheme, const 
     problem_free(&p);
 }
 
+// The GPU integrals match compute_integrals() on the same fields, with walls
+// (lid-driven cavity, after some steps, so the wall nodes carry the wall
+// velocity) and on a periodic grid
+static void test_gpu_integrals(void)
+{
+    int t, periodic;
+    char name[96];
+
+    printf("GPU: energy, enstrophy and palinstrophy\n");
+    for (periodic = 0; periodic <= 1; periodic++)
+    {
+        int nx = periodic ? 48 : 40, ny = periodic ? 33 : 25;
+        mms_case c = {1.0, 1.0, 100.0, 1.0 / nx, 1.0 / ny, 1};
+        problem p;
+        problem_init_ext(&p, nx, ny, 1.0, 1.0, periodic, 6, 100., 2, 3, 0.002, 1E-10, NULL, 0.0, NULL, NULL, 2, 0, 2);
+        gpu_solver *g = gpu_for(&p);
+        double E, Z, P;
+        if (periodic) mms_exact(&c, 0.0, &p.w, &p.u, &p.v, NULL);
+        gpu_set_fields(g, &p.u, &p.v, &p.w);
+        for (t = 0; t < 20; t++)
+        {
+            step(p.w, p.u, p.v, &p.ctx);
+            gpu_step(g);
+        }
+        flow_integrals f = compute_integrals(&p.cfg, p.u, p.v, p.w, p.ctx.k1.M, p.ctx.k2.M);
+        gpu_integrals(g, &E, &Z, &P);
+        snprintf(name, sizeof(name), "%s: E, Z, P vs CPU", periodic ? "periodic" : "walls");
+        check(name, fabs(E - f.E) / f.E + fabs(Z - f.Z) / f.Z + fabs(P - f.P) / f.P, 1E-11);
+        gpu_free(g);
+        problem_free(&p);
+    }
+}
+
 // Fields written to the device must come back unchanged, and the continuity
 // diagnostic (a max and a min reduction) must match the CPU on a field that
 // is far from divergence-free.
@@ -1882,6 +2104,7 @@ static void run_gpu_tests(void)
     GPU_TEST(test_gpu_step(24, 40, 50, 0.002, 1, 3, 1E-10, NULL, "Euler + FFT", 1E-11));
     GPU_TEST(test_gpu_source(33, 33, 50, 2, "RK4 + FFT"));
     GPU_TEST(test_gpu_periodic(48, 33, 50, 2, "RK4"));
+    GPU_TEST(test_gpu_integrals());
     GPU_TEST(test_gpu_closures(40, 25, 30, 2, "RK4"));
     GPU_TEST(test_gpu_closures(32, 32, 30, 1, "Euler"));
     GPU_TEST(test_gpu_periodic(32, 32, 50, 1, "Euler"));
@@ -1941,6 +2164,8 @@ int main(int argc, char **argv)
     test_periodic_poisson(15, 21, 4);
     test_periodic_poisson(16, 16, 2);
     test_periodic_mms_order();
+    test_integrals_taylor_green();
+    test_budgets();
     test_cpu_operator_axes(13, 9);
     test_cpu_operator_axes(9, 13);
     test_cpu_poisson_fft(8, 8);

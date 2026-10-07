@@ -135,10 +135,10 @@ double randdouble(double min, double max)
     return min + (rand() / div);
 }
 
-// Delete output/<title>-1-<number>.vtk, the series an earlier run left behind.
-// A shorter run would otherwise leave the earlier run's later frames in place,
-// and ParaView would show them as part of this run's series.
-static void remove_old_series(const char *title)
+// Delete output/<title>-1-<number><ext>, the series an earlier run left
+// behind. A shorter run would otherwise leave the earlier run's later frames
+// in place, and ParaView would show them as part of this run's series.
+static void remove_old_series(const char *title, const char *ext)
 {
     char prefix[64], path[512];
     size_t len;
@@ -155,7 +155,7 @@ static void remove_old_series(const char *title)
         if (strncmp(e->d_name, prefix, len) != 0) continue; // also skips names shorter than prefix
         rest = e->d_name + len;
         digits = strspn(rest, "0123456789");
-        if (digits > 0 && strcmp(rest + digits, ".vtk") == 0)
+        if (digits > 0 && strcmp(rest + digits, ext) == 0)
         {
             snprintf(path, sizeof(path), "./output/%s", e->d_name);
             unlink(path);
@@ -164,25 +164,24 @@ static void remove_old_series(const char *title)
     closedir(d);
 }
 
-// Next frame number of the series `title`. The first call for a title starts
-// its series at 0 and deletes what an earlier run left of it.
-static int next_frame(const char *title)
+int output_frame(const char *title, const char *ext)
 {
-    static char titles[16][64];
+    static char titles[16][64], exts[16][16];
     static int frames[16], n = 0;
     int k;
 
     for (k = 0; k < n; k++)
-        if (strcmp(titles[k], title) == 0) return frames[k]++;
+        if (strcmp(titles[k], title) == 0 && strcmp(exts[k], ext) == 0) return frames[k]++;
     if (n == 16)
     {
-        printf("\n** Error: more than 16 VTK series **\n");
+        printf("\n** Error: more than 16 output series **\n");
         exit(1);
     }
     snprintf(titles[n], sizeof(titles[n]), "%s", title);
+    snprintf(exts[n], sizeof(exts[n]), "%s", ext);
     frames[n] = 1;
     n++;
-    remove_old_series(title);
+    remove_old_series(title, ext);
     return 0;
 }
 
@@ -204,7 +203,7 @@ void printvtk(mtrx A, char *title, double dx, double dy)
         exit(1);
     }
 
-    count = next_frame(title);
+    count = output_frame(title, ".vtk");
     snprintf(name, sizeof(name), "./output/%s-1-%d.vtk", title, count);
 
     if ((pf = fopen(name, "w")) == NULL)
