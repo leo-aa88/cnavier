@@ -89,7 +89,26 @@ Optional **OpenMP** (shared-memory parallelism in the hot loops — SpMV, Euler/
 make OPENMP=1
 ```
 
-Thread count follows `OMP_NUM_THREADS` (and the OpenMP runtime defaults). The default `make` build is unchanged (no OpenMP).
+The default `make` build is unchanged (no OpenMP). Results are bit-identical to the serial build with any number of threads (with Gauss-Seidel/SOR, identical to other OpenMP runs: the parallel sweep order differs from the serial one).
+
+**Threads.** Without `OMP_NUM_THREADS`, the solver uses one thread per physical core it may run on (the distinct cores among the CPUs in its affinity mask, read from Linux sysfs; elsewhere the OpenMP default applies) and prints the count at start-up. Set `OMP_NUM_THREADS` to override. If a thread placement is set (`OMP_PROC_BIND`, `OMP_PLACES` or `GOMP_CPU_AFFINITY`), the OpenMP default is kept, which is one thread per logical CPU; combine the placement with `OMP_NUM_THREADS` to choose the count, e.g. `OMP_PLACES=cores OMP_NUM_THREADS=8`.
+
+Time per step on an i7-12650H under WSL2 (which presents it as 8 cores with 2 hardware threads each), RK4 + FFT, best of 2–3 runs:
+
+| Threads | 129×129 | 1025×1025 |
+|---|---|---|
+| serial build | 3.66 ms | 326 ms |
+| 1 | 3.55 ms | 330 ms |
+| 2 | 2.06 ms | 213 ms |
+| 4 | 1.57 ms | 179 ms |
+| 8 (default here) | 1.55 ms | 157 ms |
+| 16 | 2.16 ms | 191 ms |
+
+The 8- and 16-thread rows come from one interleaved comparison. The speed-up levels off at about 2× from 4 threads on: the sparse derivatives and the transforms are limited by memory bandwidth rather than by arithmetic, so a second hardware thread per core does not help, and 16 threads were 25–40% slower than 8.
+
+**On a busy machine, use fewer threads.** A step has about 70 parallel loops, each ending at a barrier where all threads wait for the slowest. When other programs occupy the cores, a thread that is descheduled holds everyone up: with other jobs running, 16 threads took 577 ms per step at 1025×1025 and the 8-thread default slowed down severalfold too. On a shared machine set `OMP_NUM_THREADS` below the number of free cores, or `OMP_WAIT_POLICY=passive` so that waiting threads sleep instead of spinning.
+
+Loops over grids of fewer than 2048 points (`OMP_MIN_WORK` in `linearalg.h`) stay serial, since below that waking the threads costs more than it saves.
 
 Optional **CUDA** (GPU) build — see [CUDA](#cuda-gpu) for details:
 
@@ -152,11 +171,11 @@ Time per timestep, RK4 + FFT, Re=100, `dt = 10/n²`, VTK output off. Measured on
 
 | Grid | CPU, `make` | OpenMP, 8 threads | CUDA | CUDA vs CPU |
 |---|---|---|---|---|
-| 65×65 | 0.92 ms | 0.92 ms | 0.78 ms | 1.2× |
-| 129×129 | 3.97 ms | 3.41 ms | 1.45 ms | 2.7× |
-| 257×257 | 19.9 ms | 15.2 ms | 4.97 ms | 4.0× |
-| 513×513 | 83.8 ms | 70.2 ms | 20.2 ms | 4.1× |
-| 1025×1025 | 390 ms | 306 ms | 79.8 ms | 4.9× |
+| 65×65 | 0.85 ms | 0.44 ms | 0.78 ms | 1.1× |
+| 129×129 | 3.66 ms | 1.46 ms | 1.45 ms | 2.5× |
+| 257×257 | 17.3 ms | 6.26 ms | 4.97 ms | 3.5× |
+| 513×513 | 85.9 ms | 40.9 ms | 20.2 ms | 4.3× |
+| 1025×1025 | 326 ms | 171 ms | 79.8 ms | 4.1× |
 
 These are single runs on a laptop; repeat runs usually vary by 10–15%, occasionally by more. All builds use the Makefile's default `-O2`. Each row is a run such as:
 
@@ -168,7 +187,7 @@ Things to keep in mind:
 
 - The GPU pays off from roughly 129×129 upwards. On small grids the fixed cost of launching kernels dominates and the CPU is just as fast.
 - About 60% of the GPU time at 513×513 is the double-precision FFTs. Consumer GeForce cards are much slower in double than in single precision, so expect larger gains on workstation/datacenter GPUs.
-- Pick grid sizes where `n − 1` has only small prime factors (65, 129, 257, 513, 1025, ...). The sine transform of the interior works on length `2(n−1)`, and awkward lengths are slow on both backends: 1024×1024 takes 126 ms per step on the GPU and 573 ms on the CPU, against 80 ms and 390 ms for 1025×1025.
+- Pick grid sizes where `n − 1` has only small prime factors (65, 129, 257, 513, 1025, ...). The sine transform of the interior works on length `2(n−1)`, and awkward lengths are slow on both backends: 1024×1024 takes 126 ms per step on the GPU, against 80 ms for 1025×1025.
 - The table is for the FFT solver only. Gauss-Seidel and SOR are on the GPU so that every solver option works there, not because they are fast: the convergence test after each sweep copies a value back to the host, and on the default 64×64 case SOR takes tens of milliseconds per step on the GPU, no faster than the CPU and far behind the FFT solver's 1 ms.
 
 ## Configuration

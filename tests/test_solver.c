@@ -8,10 +8,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <unistd.h>
 #include "linearalg.h"
 #include "finitediff.h"
 #include "poisson.h"
 #include "fluiddyn.h"
+#include "threads.h"
 #ifdef USE_CUDA
 #include "cudasolver.h"
 #endif
@@ -20,7 +22,8 @@
 
 static int n_checks = 0;
 static int n_failed = 0;
-static int n_skipped = 0; // GPU tests that could not run
+static int n_skipped = 0;       // GPU tests that could not run
+static int n_skipped_other = 0; // other checks this machine cannot run
 
 // Pass when value <= limit (a NaN value fails)
 static void check(const char *name, double value, double limit)
@@ -271,15 +274,18 @@ static void test_finitediff_rows(void)
 
 // A sine mode that vanishes on the wall nodes is an eigenvector of the discrete
 // Laplacian, so the FFT solver must return it divided by its eigenvalue.
-static void test_cpu_poisson_fft(void)
+// n = 8, 9, 10 and 17 cover a transform pass with fewer than one batch of 8
+// rows, exactly one batch, and a full batch plus a short one.
+static void test_cpu_poisson_fft(int n)
 {
-    int i, j, n = 32, p = 3, q = 5;
+    int i, j, p = 3 < n - 2 ? 3 : 1, q = 5 < n - 2 ? 5 : 2;
+    char name[96];
     double dx = 1.0 / (n - 1);
     mtrx f = initm(n, n), psi = initm(n, n), expected = initm(n, n);
     double lambda = (2.0 * cos(PI * p / (double)(n - 1)) - 2.0) / (dx * dx)
                   + (2.0 * cos(PI * q / (double)(n - 1)) - 2.0) / (dx * dx);
 
-    printf("CPU: FFT Poisson solver against an exact eigenmode\n");
+    printf("CPU: FFT Poisson solver against an exact eigenmode, %dx%d grid\n", n, n);
     for (i = 1; i < n - 1; i++)
         for (j = 1; j < n - 1; j++)
         {
@@ -291,7 +297,8 @@ static void test_cpu_poisson_fft(void)
     fft_setup(n, n);
     poisson_FFT(f, psi, dx, dx);
     fft_cleanup();
-    check("psi vs eigenmode / eigenvalue", rel_diff(psi.M, expected.M, n * n), 1E-10);
+    snprintf(name, sizeof(name), "psi vs eigenmode / eigenvalue, n = %d", n);
+    check(name, rel_diff(psi.M, expected.M, n * n), 1E-10);
 
     freem(&f); freem(&psi); freem(&expected);
 }
@@ -491,6 +498,113 @@ static void test_cpu_time_step_limits(void)
     check(name, worst, 0.0);
     freesm(d2);
 }
+
+// ---------------------------------------------------------------------------
+// OpenMP
+// ---------------------------------------------------------------------------
+
+#ifdef _OPENMP
+#include <omp.h>
+
+// Run `steps` steps with `threads` threads and return w, u, v in out[0..2]
+static void run_threads(int n, int scheme, int poisson_type, int steps, int threads, mtrx out[3])
+{
+    int t, saved = omp_get_max_threads();
+    problem p = problem_alloc(n, scheme, poisson_type, 0.002, 1E-3);
+    problem_bind(&p);
+    omp_set_num_threads(threads);
+    for (t = 0; t < steps; t++)
+        step(p.w, p.u, p.v, p.dt, p.time_scheme, &p.bc, &p.ctx);
+    omp_set_num_threads(saved);
+    out[0] = initm(n, n); out[1] = initm(n, n); out[2] = initm(n, n);
+    mtrxcpy(out[0], p.w); mtrxcpy(out[1], p.u); mtrxcpy(out[2], p.v);
+    problem_free(&p);
+}
+
+// Above OMP_MIN_WORK every parallel loop and the batched transforms run on
+// several threads. The results must not depend on how many: with the FFT
+// solver they are bitwise those of one thread, and so are the red-black
+// Gauss-Seidel/SOR sweeps.
+static void test_openmp_thread_count(int scheme, int poisson_type, const char *label)
+{
+    int k, n = 65, threads = omp_get_num_procs() > 4 ? 4 : (omp_get_num_procs() > 1 ? omp_get_num_procs() : 2);
+    mtrx one[3], many[3];
+    char name[96];
+
+    printf("OpenMP: 1 vs %d threads, %s, %dx%d grid (above OMP_MIN_WORK = %d points)\n",
+           threads, label, n, n, OMP_MIN_WORK);
+    run_threads(n, scheme, poisson_type, 10, 1, one);
+    run_threads(n, scheme, poisson_type, 10, threads, many);
+    double diff = 0.0;
+    for (k = 0; k < 3; k++)
+    {
+        diff += memcmp(one[k].M, many[k].M, (size_t)n * n * sizeof(double)) != 0;
+        freem(&one[k]); freem(&many[k]);
+    }
+    snprintf(name, sizeof(name), "%s: w, u, v bitwise identical", label);
+    check(name, diff, 0.0);
+}
+
+// Path of this executable, or "" where /proc/self/exe does not exist
+static const char *self_path(void)
+{
+    static char self[4096];
+    ssize_t len = readlink("/proc/self/exe", self, sizeof(self) - 1);
+    self[len > 0 ? len : 0] = '\0';
+    return self;
+}
+
+// The thread count default_threads() picks, in a fresh process started with
+// the given environment (OpenMP reads its variables at start-up). -1 if the
+// child fails.
+static int child_threads(const char *env)
+{
+    char cmd[4400];
+    int threads = -1;
+    FILE *f;
+
+    snprintf(cmd, sizeof(cmd),
+             "env -u OMP_NUM_THREADS -u OMP_PROC_BIND -u OMP_PLACES -u GOMP_CPU_AFFINITY %s '%s' --default-threads",
+             env, self_path());
+    if (!(f = popen(cmd, "r"))) return -1;
+    if (fscanf(f, "%d", &threads) != 1) threads = -1;
+    pclose(f);
+    return threads;
+}
+
+// One thread per physical core by default, but a thread placement or count
+// the user sets is respected. With a placement set, the runtime binds the
+// initial thread to one place before main(), so counting cores from its
+// affinity mask would give 1.
+static void test_openmp_default_threads(void)
+{
+    int procs = omp_get_num_procs(), cores = physical_cores();
+    int expect = cores > 0 && cores < procs ? cores : procs;
+    char name[96];
+
+    printf("OpenMP: default thread count (%d CPUs, %d physical cores)\n", procs, cores);
+    // The children inherit this thread's CPU mask, which the runtime has
+    // already narrowed to one place if a placement is set here. The core count
+    // and the child processes need Linux.
+    // Only these reasons skip the checks; a child that fails is a failure.
+    if (omp_get_proc_bind() != omp_proc_bind_false || cores == 0 || self_path()[0] == '\0')
+    {
+        printf("  SKIPPED: %s\n", omp_get_proc_bind() != omp_proc_bind_false
+                                      ? "this process has a thread placement (OMP_PROC_BIND, OMP_PLACES "
+                                        "or GOMP_CPU_AFFINITY)"
+                                      : "needs Linux sysfs and /proc/self/exe");
+        n_skipped_other += 4;
+        return;
+    }
+    snprintf(name, sizeof(name), "no OpenMP settings: %d threads", expect);
+    check(name, child_threads("") != expect, 0.0);
+    snprintf(name, sizeof(name), "OMP_PROC_BIND=close: all %d CPUs", procs);
+    check(name, child_threads("OMP_PROC_BIND=close") != procs, 0.0);
+    snprintf(name, sizeof(name), "OMP_PLACES=cores: all %d CPUs", procs);
+    check(name, child_threads("OMP_PLACES=cores") != procs, 0.0);
+    check("OMP_NUM_THREADS=3: 3 threads", child_threads("OMP_NUM_THREADS=3") != 3, 0.0);
+}
+#endif
 
 // ---------------------------------------------------------------------------
 // GPU tests — every check compares the device result with the CPU one
@@ -701,11 +815,27 @@ static void run_gpu_tests(void)
 
 #endif // USE_CUDA
 
-int main(void)
+int main(int argc, char **argv)
 {
+#ifdef _OPENMP
+    // Used by test_openmp_default_threads()
+    if (argc > 1 && strcmp(argv[1], "--default-threads") == 0)
+    {
+        default_threads();
+        printf("%d\n", omp_get_max_threads());
+        return 0;
+    }
+#else
+    (void)argc;
+    (void)argv;
+#endif
     test_finitediff_exactness();
     test_finitediff_rows();
-    test_cpu_poisson_fft();
+    test_cpu_poisson_fft(8);
+    test_cpu_poisson_fft(9);
+    test_cpu_poisson_fft(10);
+    test_cpu_poisson_fft(17);
+    test_cpu_poisson_fft(32);
     test_cpu_poisson_agree();
     test_cpu_poisson_iterative();
     test_cpu_step(2, "RK4");
@@ -713,11 +843,18 @@ int main(void)
     test_cpu_stability_limit(1, "Euler");
     test_cpu_stability_limit(2, "RK4");
     test_cpu_time_step_limits();
+#ifdef _OPENMP
+    test_openmp_thread_count(2, 3, "RK4 + FFT");
+    test_openmp_thread_count(2, 2, "RK4 + SOR");
+    test_openmp_thread_count(1, 1, "Euler + Gauss-Seidel");
+    test_openmp_default_threads();
+#endif
 #ifdef USE_CUDA
     run_gpu_tests();
 #endif
 
     printf("\n%d checks, %d failed", n_checks, n_failed);
+    if (n_skipped_other) printf(", %d OpenMP thread-count checks SKIPPED (see above)", n_skipped_other);
 #ifdef USE_CUDA
     if (n_skipped)
         printf(", %d GPU tests SKIPPED (no usable CUDA device)", n_skipped);

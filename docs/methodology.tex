@@ -489,7 +489,7 @@ The algorithm is:
   \]
 \end{enumerate}
 
-On the CPU, FFTW3 \code{RODFT00} plans are created once at startup and reused.  The asymptotic cost is $\Oh(N\log N)$ with $N=n_xn_y$, compared with a potentially large number of $\Oh(N)$ sweeps for Gauss--Seidel or SOR.
+On the CPU the two-dimensional DST-I is applied as two passes of one-dimensional FFTW3 \code{RODFT00} transforms, first along the rows and then along the columns, in batches of eight rows or columns.  The plans are created once at startup with \code{FFTW\_ESTIMATE} and reused.  Two choices make the result deterministic.  \code{FFTW\_ESTIMATE} picks plans without timing them; \code{FFTW\_MEASURE}, used previously, could pick a different plan on every run, and different plans round differently, so repeated runs at $513\times513$ differed in the last bits.  And every row is transformed by the same plan whatever the number of threads, so serial and OpenMP builds give bit-identical results.  The asymptotic cost is $\Oh(N\log N)$ with $N=n_xn_y$, compared with a potentially large number of $\Oh(N)$ sweeps for Gauss--Seidel or SOR.
 
 Once Gauss--Seidel or SOR has converged, all three solvers return the same $\psi$; the test suite checks agreement to $10^{-9}$ on a random right-hand side.
 
@@ -643,7 +643,7 @@ Building with
 \begin{lstlisting}[language=bash]
 make OPENMP=1
 \end{lstlisting}
-enables shared-memory parallel loops in the principal CSR operations, explicit right-hand-side loops, and suitable Poisson operations.  Iterative elliptic solves use red--black coloring because a naive parallelization of lexicographic Gauss--Seidel would violate its data dependence.
+enables shared-memory parallel loops in the principal CSR operations, explicit right-hand-side loops, and suitable Poisson operations, including the batches of one-dimensional sine transforms.  Loops over fewer than 2048 grid points (\code{OMP\_MIN\_WORK}) stay serial, since starting the threads would cost more than they save.  Unless \code{OMP\_NUM\_THREADS} or a thread placement (\code{OMP\_PROC\_BIND}, \code{OMP\_PLACES}) is set, the program uses one thread per physical core in its affinity mask instead of the OpenMP default of one per logical CPU: with two hardware threads per core the second adds nothing to these bandwidth-limited loops, and on an idle machine 16 threads on 8 cores were 25--40\% slower than 8.  Surplus threads are far more costly when other programs occupy the cores, since every parallel loop ends at a barrier where all threads wait for the slowest.  Because the CSR products and transforms are limited by memory bandwidth, the speed-up levels off at about two from four threads on.  Iterative elliptic solves use red--black coloring because a naive parallelization of lexicographic Gauss--Seidel would violate its data dependence.
 
 Changing the sweep order is numerically relevant when the solver is stopped before convergence.  Therefore, at a loose iterate-change tolerance, serial Gauss--Seidel/SOR and OpenMP red--black Gauss--Seidel/SOR can return slightly different intermediate approximations even though they converge to the same discrete solution when the tolerance is sufficiently tight.
 

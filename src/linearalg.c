@@ -249,6 +249,16 @@ double minel(mtrx A)
     return min;
 }
 
+void negcpy(mtrx A, mtrx B)
+{
+    int i, total = A.m * A.n;
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static) if (total >= OMP_MIN_WORK)
+#endif
+    for (i = 0; i < total; i++)
+        A.M[i] = -B.M[i];
+}
+
 void mtrxcpy(mtrx A, mtrx B)
 {
     memcpy(A.M, B.M, (size_t)A.m * A.n * sizeof(double));
@@ -284,7 +294,7 @@ void spmv(smtrx A, double *x, double *y)
 {
     int i;
 #ifdef _OPENMP
-#pragma omp parallel for schedule(static)
+#pragma omp parallel for schedule(static) if (A.m >= OMP_MIN_WORK)
 #endif
     for (i = 0; i < A.m; i++)
     {

@@ -9,7 +9,7 @@ void euler(mtrx w, mtrx dwdx, mtrx dwdy, mtrx d2wdx2, mtrx d2wdy2, mtrx u, mtrx 
     int i;
 
 #ifdef _OPENMP
-#pragma omp parallel for schedule(static)
+#pragma omp parallel for schedule(static) if (w.m * w.n >= OMP_MIN_WORK)
 #endif
     for (i = 0; i < w.m; i++)
     {
@@ -45,15 +45,7 @@ rk4_ctx rk4_alloc(int nx, int ny)
     ctx.psi     = initm(nx, ny); ctx.psi_scratch = initm(nx, ny);
     ctx.k1      = initm(nx, ny); ctx.k2      = initm(nx, ny);
     ctx.k3      = initm(nx, ny); ctx.k4      = initm(nx, ny);
-    ctx.w_tmp   = initm(nx, ny);
-    ctx.flat_w   = (double *)malloc((size_t)nx * ny * sizeof(double));
-    ctx.flat_psi = (double *)malloc((size_t)nx * ny * sizeof(double));
-    ctx.flat_tmp = (double *)malloc((size_t)nx * ny * sizeof(double));
-    if (!ctx.flat_w || !ctx.flat_psi || !ctx.flat_tmp)
-    {
-        printf("** Error: insufficient memory for RK4 workspace **\n");
-        exit(1);
-    }
+    ctx.w_tmp   = initm(nx, ny); ctx.rhs     = initm(nx, ny);
     return ctx;
 }
 
@@ -65,41 +57,41 @@ void rk4_free(rk4_ctx *ctx)
     freem(&ctx->psi);    freem(&ctx->psi_scratch);
     freem(&ctx->k1);     freem(&ctx->k2);
     freem(&ctx->k3);     freem(&ctx->k4);
-    freem(&ctx->w_tmp);
-    free(ctx->flat_w);
-    free(ctx->flat_psi);
-    free(ctx->flat_tmp);
+    freem(&ctx->w_tmp);  freem(&ctx->rhs);
 }
 
 // Solve nabla^2 psi = -w and recover u = dpsi/dy, v = -dpsi/dx.
 static void velocity_from_vorticity(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx)
 {
-    int nx = ctx->nx, ny = ctx->ny;
-
-    // Poisson solve: nabla^2 psi = -w  =>  invert sign, solve, restore
-    invsig(w);
+    // Poisson solve: nabla^2 psi = -w
+    negcpy(ctx->rhs, w);
     if (ctx->poisson_type == 1)
-        poisson(w, ctx->psi, ctx->psi_scratch, ctx->dx, ctx->dy,
+        poisson(ctx->rhs, ctx->psi, ctx->psi_scratch, ctx->dx, ctx->dy,
                 ctx->poisson_max_it, ctx->poisson_tol);
     else if (ctx->poisson_type == 2)
-        poisson_SOR(w, ctx->psi, ctx->psi_scratch, ctx->dx, ctx->dy,
+        poisson_SOR(ctx->rhs, ctx->psi, ctx->psi_scratch, ctx->dx, ctx->dy,
                     ctx->poisson_max_it, ctx->poisson_tol, ctx->beta);
     else if (ctx->poisson_type == 3)
-        poisson_FFT(w, ctx->psi, ctx->dx, ctx->dy);
+        poisson_FFT(ctx->rhs, ctx->psi, ctx->dx, ctx->dy);
     else
     {
         printf("** Error: valid Poisson solver types are 1, 2 or 3 **\n");
         exit(1);
     }
-    invsig(w);
 
     // Recover u = dpsi/dy, v = -dpsi/dx
-    flatten(ctx->psi, ctx->flat_psi, nx, ny);
-    spmv(*ctx->DY, ctx->flat_psi, ctx->flat_tmp); unflatten(ctx->flat_tmp, ctx->dpsidy, nx, ny);
-    spmv(*ctx->DX, ctx->flat_psi, ctx->flat_tmp); unflatten(ctx->flat_tmp, ctx->dpsidx, nx, ny);
-    mtrxcpy(u, ctx->dpsidy);
-    invsig(ctx->dpsidx);
-    mtrxcpy(v, ctx->dpsidx);
+    spmv(*ctx->DY, ctx->psi.M, u.M);
+    spmv(*ctx->DX, ctx->psi.M, v.M);
+    negcpy(v, v);
+}
+
+// First and second derivatives of w into the workspace
+static void derivatives(mtrx w, rk4_ctx *ctx)
+{
+    spmv(*ctx->DX,  w.M, ctx->dwdx.M);
+    spmv(*ctx->DY,  w.M, ctx->dwdy.M);
+    spmv(*ctx->DX2, w.M, ctx->d2wdx2.M);
+    spmv(*ctx->DY2, w.M, ctx->d2wdy2.M);
 }
 
 // Evaluate dw/dt and update u, v consistent with w via Poisson solve.
@@ -109,18 +101,13 @@ void dwdt(mtrx w, mtrx u, mtrx v, mtrx out, rk4_ctx *ctx)
     int i;
     int nx = ctx->nx, ny = ctx->ny;
 
-    // Derivatives of w
-    flatten(w, ctx->flat_w, nx, ny);
-    spmv(*ctx->DX,  ctx->flat_w, ctx->flat_tmp); unflatten(ctx->flat_tmp, ctx->dwdx,   nx, ny);
-    spmv(*ctx->DY,  ctx->flat_w, ctx->flat_tmp); unflatten(ctx->flat_tmp, ctx->dwdy,   nx, ny);
-    spmv(*ctx->DX2, ctx->flat_w, ctx->flat_tmp); unflatten(ctx->flat_tmp, ctx->d2wdx2, nx, ny);
-    spmv(*ctx->DY2, ctx->flat_w, ctx->flat_tmp); unflatten(ctx->flat_tmp, ctx->d2wdy2, nx, ny);
+    derivatives(w, ctx);
 
     velocity_from_vorticity(w, u, v, ctx);
 
     // RHS: dw/dt = -u*dw/dx - v*dw/dy + (1/Re)*(d2w/dx2 + d2w/dy2)
 #ifdef _OPENMP
-#pragma omp parallel for schedule(static)
+#pragma omp parallel for schedule(static) if (nx * ny >= OMP_MIN_WORK)
 #endif
     for (i = 0; i < nx; i++)
     {
@@ -145,7 +132,7 @@ void rk4(mtrx w, mtrx u, mtrx v, double dt, rk4_ctx *ctx)
 
     // k2 = f(w_n + dt/2 * k1)
 #ifdef _OPENMP
-#pragma omp parallel for schedule(static)
+#pragma omp parallel for schedule(static) if (nx * ny >= OMP_MIN_WORK)
 #endif
     for (i = 0; i < nx; i++)
     {
@@ -157,7 +144,7 @@ void rk4(mtrx w, mtrx u, mtrx v, double dt, rk4_ctx *ctx)
 
     // k3 = f(w_n + dt/2 * k2)
 #ifdef _OPENMP
-#pragma omp parallel for schedule(static)
+#pragma omp parallel for schedule(static) if (nx * ny >= OMP_MIN_WORK)
 #endif
     for (i = 0; i < nx; i++)
     {
@@ -169,7 +156,7 @@ void rk4(mtrx w, mtrx u, mtrx v, double dt, rk4_ctx *ctx)
 
     // k4 = f(w_n + dt * k3)
 #ifdef _OPENMP
-#pragma omp parallel for schedule(static)
+#pragma omp parallel for schedule(static) if (nx * ny >= OMP_MIN_WORK)
 #endif
     for (i = 0; i < nx; i++)
     {
@@ -181,7 +168,7 @@ void rk4(mtrx w, mtrx u, mtrx v, double dt, rk4_ctx *ctx)
 
     // Combine: w_{n+1} = w_n + (dt/6)*(k1 + 2*k2 + 2*k3 + k4)
 #ifdef _OPENMP
-#pragma omp parallel for schedule(static)
+#pragma omp parallel for schedule(static) if (nx * ny >= OMP_MIN_WORK)
 #endif
     for (i = 0; i < nx; i++)
     {
@@ -281,10 +268,8 @@ void step(mtrx w, mtrx u, mtrx v, double dt, int time_scheme, const wall_bc *bc,
     apply_wall_bc(u, v, bc);
 
     // Vorticity BCs: w = dv/dx - du/dy evaluated at boundaries
-    flatten(u, ctx->flat_psi, nx, ny);
-    spmv(*ctx->DY, ctx->flat_psi, ctx->flat_tmp);  unflatten(ctx->flat_tmp, dudy, nx, ny);
-    flatten(v, ctx->flat_psi, nx, ny);
-    spmv(*ctx->DX, ctx->flat_psi, ctx->flat_tmp);  unflatten(ctx->flat_tmp, dvdx, nx, ny);
+    spmv(*ctx->DY, u.M, dudy.M);
+    spmv(*ctx->DX, v.M, dvdx.M);
 
     for (j = 0; j < ny; j++)
     {
@@ -300,11 +285,7 @@ void step(mtrx w, mtrx u, mtrx v, double dt, int time_scheme, const wall_bc *bc,
     if (time_scheme == 1)
     {
         // Euler: single RHS evaluation, then one Poisson solve
-        flatten(w, ctx->flat_w, nx, ny);
-        spmv(*ctx->DX,  ctx->flat_w, ctx->flat_tmp); unflatten(ctx->flat_tmp, ctx->dwdx,   nx, ny);
-        spmv(*ctx->DY,  ctx->flat_w, ctx->flat_tmp); unflatten(ctx->flat_tmp, ctx->dwdy,   nx, ny);
-        spmv(*ctx->DX2, ctx->flat_w, ctx->flat_tmp); unflatten(ctx->flat_tmp, ctx->d2wdx2, nx, ny);
-        spmv(*ctx->DY2, ctx->flat_w, ctx->flat_tmp); unflatten(ctx->flat_tmp, ctx->d2wdy2, nx, ny);
+        derivatives(w, ctx);
 
         euler(w, ctx->dwdx, ctx->dwdy, ctx->d2wdx2, ctx->d2wdy2, u, v, ctx->Re, dt);
         velocity_from_vorticity(w, u, v, ctx);
