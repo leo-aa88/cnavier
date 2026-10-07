@@ -87,6 +87,7 @@ The main numerical components are:
   \item \code{src/poisson.c}: Gauss--Seidel, SOR, and FFTW/DST-I Poisson solvers, and the periodic FFT solver;
   \item \code{src/cudasolver.cu}: CUDA implementations of the time loop, sparse operators, elliptic solvers, and diagnostics;
   \item \code{src/threads.c}: the default number of OpenMP threads (one per physical core);
+  \item \code{src/forcing.c}: Kolmogorov and random forcing;
   \item \code{src/diagnostics.c}: energy, enstrophy and palinstrophy, and on periodic grids spectra and spectral fluxes;
   \item \code{src/utils.c}: VTK output, centerline data for comparison with Ghia et al., and the available-memory check;
   \item \code{tests/test_solver.c}: CPU verification and CPU--GPU parity tests.
@@ -502,6 +503,20 @@ On the CPU the two-dimensional DST-I is applied as two passes of one-dimensional
 Once Gauss--Seidel or SOR has converged, all three solvers return the same $\psi$; the test suite checks agreement to $10^{-9}$ on a random right-hand side.
 
 The FFT solver is ``direct'' with respect to the \emph{discrete second-order Poisson problem}: once the transform is performed, no iterative convergence tolerance is required.  It is not an exact solver for the continuous Poisson equation; the continuous truncation error remains that of the discrete Laplacian and the grid representation.
+
+\subsection{Forcing and drag}
+\label{sec:forcing}
+
+On the periodic grid three built-in terms drive and damp the flow,
+\begin{equation}
+\frac{\partial\omega}{\partial t}=-\mathbf{u}\cdot\nabla\omega+\nu\nabla^2\omega-\alpha\omega+f_K,
+\qquad f_K=-Ak\cos(ky),\quad k=2\pi n/L_y,
+\end{equation}
+plus a random kick before every step (\code{solver_config.forcing}, \code{src/forcing.c}).  The linear drag $-\alpha\omega$ removes the energy the inverse cascade carries to the largest scales.  $f_K$ is the curl of the Kolmogorov body force $A\sin(ky)\,\hat{\mathbf x}$; its laminar state is $\omega=f_K/(\nu k^2+\alpha)$, on which the nonlinear term vanishes.  The random kick adds
+\begin{equation}
+\delta\omega=\sum_m a_m\cos(\mathbf{k}_m\cdot\mathbf{x}+\phi_m)
+\end{equation}
+over the wavevectors $\mathbf{k}_m$ of the half plane with $|\,|\mathbf{k}_m|/\Delta k-k_f|\le\delta_k$, with phases $\phi_m$ drawn anew each step.  With $A_m$ and $Q_m$ the symbols of \cref{sec:diagnostics}, a mode carries the discrete energy $A_ma_m^2/(4Q_m^2)$, and distinct modes are orthogonal on the grid, so $a_m=2Q_m\sqrt{\varepsilon\,\Delta t/(MA_m)}$ makes each kick carry exactly $\varepsilon\,\Delta t$ of the solver's own kinetic energy.  Since the phases are independent of the flow, the cross term with $\omega$ averages to zero and the energy is injected at rate $\varepsilon$: white-in-time forcing.  The phases come from a seeded generator on the host, so the CPU and GPU solvers make the same kicks; only the phases go to the GPU each step.  The integrals of \cref{sec:diagnostics} gain the energy input $I=\langle u\,A\sin(ky)\rangle+\varepsilon$, and at steady state $I=2\nu Z+2\alpha E$.
 
 \subsection{Fourth-order compact Poisson operator}
 \label{sec:compact-poisson}
@@ -973,6 +988,10 @@ Order, grids & energy transfer & enstrophy transfer & $|\dot E+2\nu Z|/2\nu Z$ \
 \end{center}
 (net nonlinear transfers, relative to the largest flux).  The spectra sum to the integrals to round-off.  The nonlinear term conserves energy and enstrophy, and the energy budget closes, up to errors that fall at the order of the derivatives.  On a pseudo-random field the summed spectral transfers equal the physical-space nonlinear rates of $E$ and $Z$ to $3\times10^{-15}$ (orders 2 and 6, $16^2$ and $24\times20$).  \code{make test} checks these, and the GPU integrals against the CPU; \code{make regression} checks the Taylor--Green energy written to \code{integrals.csv}.
 
+\subsection{Forcing and drag}
+
+Kolmogorov forcing ($A=1$, $n=2$, $\nu=0.05$, $\alpha=0.1$, $32^2$, order 6) reaches the discrete laminar state $f_K/(\nu Q+\alpha)$, with $Q$ the symbol of $D_{yy}$, to $4\times10^{-11}$, and the continuum one to $6\times10^{-6}$; the energy input then balances $2\nu Z+2\alpha E$ to $2.5\times10^{-5}$ ($I$ is the continuum work, so the balance holds to the order of the scheme).  Drag on the Taylor--Green vortex gives $E=\tfrac14e^{-(4\nu k^2+2\alpha)t}$ to $6\times10^{-7}$.  A random kick carries $\varepsilon\,\Delta t$ of discrete energy to $5\times10^{-15}$, and two generators with the same seed make the same kick.  The GPU matches the CPU with all three terms to $3\times10^{-15}$, with RK4 and Euler.  \code{make regression} checks the laminar Kolmogorov energy and energy input from the command line.
+
 \subsection{Physical validation against Ghia et al.}
 \label{sec:ghia}
 
@@ -1073,8 +1092,11 @@ The current binary accepts:
 --poisson-order N & 2 (five-point, default) or 4 (compact, \cref{sec:compact-poisson}); FFT solver with walls. \\
 --wall-closure NAME & \texttt{velocity} (default) or \texttt{briley} (\cref{eq:briley}). \\
 --velocity-order N & 2 (default) or 4: fourth-order rows next to the walls for $u$, $v$ (\cref{sec:wall-order}). \\
---integrals-interval N & Write $E$, $Z$, $P$ to \texttt{output/integrals.csv} every $N$ steps (default 1; 0 never; \cref{sec:diagnostics}). \\
---case NAME & \texttt{cavity} (default), or on a doubly periodic unit square \texttt{taylor-green} or \texttt{shear-layer} (\cref{sec:periodic}). \\
+--integrals-interval N & Write $E$, $Z$, $P$, $I$ to \texttt{output/integrals.csv} every $N$ steps (default 1; 0 never; \cref{sec:diagnostics}). \\
+--drag A & Periodic cases: linear drag $-\alpha\omega$ (\cref{sec:forcing}). \\
+--kolmogorov-amp A & Periodic cases: Kolmogorov forcing amplitude; \texttt{--kolmogorov-n} its wavenumber. \\
+--forcing-rate EPS & Periodic cases: random forcing rate; \texttt{--forcing-k}, \texttt{--forcing-width} its shell, \texttt{--seed} its seed. \\
+--case NAME & \texttt{cavity} (default), or on a doubly periodic unit square \texttt{taylor-green}, \texttt{shear-layer}, \texttt{kolmogorov} or \texttt{forced} (\cref{sec:periodic,sec:forcing}). \\
 --cpu & In a CUDA build, force the CPU backend. \\
 --help & Print command-line help. \\
 \bottomrule
