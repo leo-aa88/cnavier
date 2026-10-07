@@ -64,6 +64,13 @@ expect nonzero --poisson-order 4x
 expect nonzero --wall-closure thom
 expect nonzero --velocity-order 3
 expect nonzero --integrals-interval -1
+expect nonzero --drag 0.1
+expect nonzero --case forced --drag -1
+expect nonzero --case kolmogorov --kolmogorov-n 0
+expect nonzero --case forced --forcing-rate -1
+expect nonzero --case forced --forcing-width 0
+expect nonzero --case forced --seed -1
+expect nonzero --case forced --forcing-k 1000
 expect nonzero --n 9 --velocity-order 4
 expect nonzero --case taylor-green --velocity-order 4
 expect nonzero --case shear-layer --poisson-order 4
@@ -77,6 +84,9 @@ expect 0 --nx 33 --ny 17 --tf 0.01 --output-interval 0
 expect 0 --case taylor-green --nx 32 --ny 24 --tf 0.01 --output-interval 0
 expect 0 --case shear-layer --n 33 --re 1000 --tf 0.01 --output-interval 0
 expect 0 --poisson-order 4 --wall-closure briley --velocity-order 4 --nx 33 --ny 17 --tf 0.01 --output-interval 0
+expect 0 --case kolmogorov --n 32 --re 50 --tf 0.01 --output-interval 0
+expect 0 --case forced --n 32 --tf 0.01 --output-interval 0
+expect 0 --case taylor-green --n 32 --drag 0.5 --forcing-rate 0.1 --tf 0.01 --output-interval 0
 
 echo
 echo "$count checks, $failed failed"

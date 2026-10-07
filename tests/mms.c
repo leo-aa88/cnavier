@@ -198,6 +198,7 @@ static mms_errors run(int nx, int ny, double Lx, double Ly, double Re, int order
     cfg.DYv = velocity_order == 4 ? &DYv : NULL;
     cfg.vorticity_source = mms_source;
     cfg.source_data = &c;
+    cfg.forcing = (forcing_config){0};
     rk4_ctx ctx = rk4_alloc(&cfg);
 
     mtrx w = initm(ny, nx), u = initm(ny, nx), v = initm(ny, nx);

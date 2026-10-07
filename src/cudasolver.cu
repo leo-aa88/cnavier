@@ -73,13 +73,16 @@ struct gpu_solver
     csr_dev DXv, DYv; // velocity operators: cfg.DXv, cfg.DYv, or copies of DX, DY
 
     double *u, *v, *w, *psi;
-    double *k1, *k2, *k3, *k4; // RK4 stage increments
-    double *w_tmp;             // temporary w for intermediate stages
-    double *scratch;           // continuity field / Poisson work array
-    double *partial;           // per-block results of a reduction
-    double *source;            // vorticity source of the current stage (cfg.vorticity_source only)
-    mtrx source_host;          // ... and the host field cfg.vorticity_source fills
-    long steps;                // steps taken; the time is cfg.t0 + steps * cfg.dt
+    double *k1, *k2, *k3, *k4;                         // RK4 stage increments
+    double *w_tmp;                                     // temporary w for intermediate stages
+    double *scratch;                                   // continuity field / Poisson work array
+    double *partial;                                   // per-block results of a reduction
+    double *source;                                    // vorticity source of the current stage (cfg.vorticity_source only)
+    double *kolmogorov;                                // Kolmogorov source of each row (cfg.forcing), else NULL
+    random_forcing *kicks;                             // random forcing: modes on the host, else NULL
+    double *kick_kx, *kick_ky, *kick_amp, *kick_phase; // ... and on the device
+    mtrx source_host;                                  // ... and the host field cfg.vorticity_source fills
+    long steps;                                        // steps taken; the time is cfg.t0 + steps * cfg.dt
 
     // Convergence state of the iterative Poisson solvers, kept on the device
     // so that a batch of sweeps runs without waiting for the host
@@ -615,6 +618,33 @@ static void wall_vorticity(gpu_solver *g, const double *u, const double *v, doub
         LAUNCH(vorticity_bc_kernel, g->n, g->DX, g->DY, u, v, w, g->nx, g->ny);
 }
 
+// out += -drag w + the Kolmogorov source of the row, as add_forcing_terms()
+__global__ void forcing_terms_kernel(double *out, const double *w, double drag, const double *kolmogorov, int nx,
+                                     int n)
+{
+    int k = blockIdx.x * blockDim.x + threadIdx.x;
+    if (k < n)
+        out[k] += -drag * w[k] + (kolmogorov ? kolmogorov[k / nx] : 0.0);
+}
+
+// w += sum over the modes of amp cos(kx x + ky y + phase), as random_forcing_add()
+__global__ void kick_kernel(double *w, const double *kx, const double *ky, const double *amp, const double *phase,
+                            int modes, int nx, double dx, double dy, int n)
+{
+    int k = blockIdx.x * blockDim.x + threadIdx.x;
+    if (k >= n) return;
+    double x = (k % nx) * dx, y = (k / nx) * dy, s = 0.0;
+    for (int m = 0; m < modes; m++)
+        s += amp[m] * cos(kx[m] * x + ky[m] * y + phase[m]);
+    w[k] += s;
+}
+
+static void add_forcing_terms(gpu_solver *g, double *out, const double *w)
+{
+    if (g->cfg.forcing.drag == 0.0 && !g->kolmogorov) return;
+    LAUNCH(forcing_terms_kernel, g->n, out, w, g->cfg.forcing.drag, g->kolmogorov, g->nx, g->n);
+}
+
 // Evaluate dw/dt at time t into out and update u, v consistent with w
 static void dwdt(gpu_solver *g, double *w, double *out, double t)
 {
@@ -628,6 +658,7 @@ static void dwdt(gpu_solver *g, double *w, double *out, double t)
     }
     LAUNCH(rhs_kernel, g->n, g->DX, g->DY, g->DX2, g->DY2, w, g->u, g->v, g->cfg.Re, out, g->n);
     add_vorticity_source(g, t, out);
+    add_forcing_terms(g, out, w);
 }
 
 // ---------------------------------------------------------------------------
@@ -680,6 +711,33 @@ gpu_solver *gpu_init(const solver_config *cfg)
     g->k3 = dev_alloc(n);
     g->k4 = dev_alloc(n);
     g->w_tmp = dev_alloc(n);
+    {
+        double *rows = kolmogorov_rows(&cfg->forcing, ny, cfg->dy, cfg->dy * (cfg->periodic ? ny : ny - 1));
+        if (rows)
+        {
+            g->kolmogorov = dev_alloc(ny);
+            CUDA_CHECK(cudaMemcpy(g->kolmogorov, rows, ny * sizeof(double), cudaMemcpyHostToDevice));
+            free(rows);
+        }
+    }
+    if (cfg->forcing.random_rate > 0.0 && !cfg->periodic)
+    {
+        printf("** Error: random forcing needs a periodic grid **\n");
+        exit(1);
+    }
+    g->kicks = random_forcing_setup(&cfg->forcing, nx, ny, cfg->dx, cfg->dy, cfg->dt, cfg->DX, cfg->DY, cfg->DX2,
+                                    cfg->DY2);
+    if (g->kicks)
+    {
+        size_t bytes = g->kicks->modes * sizeof(double);
+        g->kick_kx = dev_alloc(g->kicks->modes);
+        g->kick_ky = dev_alloc(g->kicks->modes);
+        g->kick_amp = dev_alloc(g->kicks->modes);
+        g->kick_phase = dev_alloc(g->kicks->modes);
+        CUDA_CHECK(cudaMemcpy(g->kick_kx, g->kicks->kx, bytes, cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(g->kick_ky, g->kicks->ky, bytes, cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(g->kick_amp, g->kicks->amp, bytes, cudaMemcpyHostToDevice));
+    }
     if (cfg->vorticity_source)
     {
         g->source = dev_alloc(n);
@@ -777,6 +835,15 @@ void gpu_free(gpu_solver *g)
     cudaFree(g->scratch);
     cudaFree(g->partial);
     cudaFree(g->rb);
+    cudaFree(g->kolmogorov);
+    if (g->kicks)
+    {
+        cudaFree(g->kick_kx);
+        cudaFree(g->kick_ky);
+        cudaFree(g->kick_amp);
+        cudaFree(g->kick_phase);
+        random_forcing_free(g->kicks);
+    }
     if (g->source)
     {
         cudaFree(g->source);
@@ -826,11 +893,24 @@ void gpu_step(gpu_solver *g)
         wall_vorticity(g, g->u, g->v, g->w);
     }
 
+    // Random forcing: phases drawn on the host by the same generator as the
+    // CPU solver's, the kick built on the device; as in step()
+    if (g->kicks)
+    {
+        random_forcing_draw(g->kicks);
+        CUDA_CHECK(cudaMemcpy(g->kick_phase, g->kicks->phase, g->kicks->modes * sizeof(double),
+                              cudaMemcpyHostToDevice));
+        LAUNCH(kick_kernel, n, g->w, g->kick_kx, g->kick_ky, g->kick_amp, g->kick_phase, g->kicks->modes, g->nx,
+               g->cfg.dx, g->cfg.dy, n);
+        if (g->cfg.time_scheme == 1) velocity_from_vorticity(g, g->w);
+    }
+
     if (g->cfg.time_scheme == 1)
     {
         // Euler: single RHS evaluation, then one Poisson solve
         LAUNCH(rhs_kernel, n, g->DX, g->DY, g->DX2, g->DY2, g->w, g->u, g->v, g->cfg.Re, g->k1, n);
         add_vorticity_source(g, t, g->k1);
+        add_forcing_terms(g, g->k1, g->w);
         LAUNCH(axpy_kernel, n, g->w, dt, g->k1, g->w, n);
         velocity_from_vorticity(g, g->w);
     }
@@ -864,9 +944,11 @@ void gpu_step(gpu_solver *g)
 }
 
 // Weighted integrand of compute_integrals() at each node: which = 0 energy
-// (wall velocities on the wall nodes), 1 enstrophy, 2 palinstrophy
+// (wall velocities on the wall nodes), 1 enstrophy, 2 palinstrophy, 3 the
+// Kolmogorov work u sin(k y)
 __global__ void integrand_kernel(csr_dev DX, csr_dev DY, const double *u, const double *v, const double *w,
-                                 wall_bc bc, int periodic, int which, int nx, int ny, double *out)
+                                 wall_bc bc, int periodic, int which, int nx, int ny, double dy, double kk,
+                                 double *out)
 {
     int k = blockIdx.x * blockDim.x + threadIdx.x;
     if (k >= nx * ny) return;
@@ -888,6 +970,8 @@ __global__ void integrand_kernel(csr_dev DX, csr_dev DY, const double *u, const 
     }
     else if (which == 1)
         val = w[k] * w[k];
+    else if (which == 3)
+        val = (wall < 0 ? u[k] : bc.u[wall]) * sin(kk * (i * dy));
     else
     {
         double wx = csr_row(DX, w, k), wy = csr_row(DY, w, k);
@@ -896,17 +980,25 @@ __global__ void integrand_kernel(csr_dev DX, csr_dev DY, const double *u, const 
     out[k] = weight * val;
 }
 
-void gpu_integrals(gpu_solver *g, double *E, double *Z, double *P)
+void gpu_integrals(gpu_solver *g, double *E, double *Z, double *P, double *I)
 {
     double *res[3] = {E, Z, P};
     double norm = g->cfg.periodic ? (double)g->nx * g->ny : (double)(g->nx - 1) * (g->ny - 1);
+    double Ly = g->cfg.dy * (g->cfg.periodic ? g->ny : g->ny - 1), kk = 2.0 * PI * g->cfg.forcing.kolmogorov_n / Ly;
     int q;
 
     for (q = 0; q < 3; q++)
     {
         LAUNCH(integrand_kernel, g->n, g->DX, g->DY, g->u, g->v, g->w, g->cfg.bc, g->cfg.periodic, q, g->nx, g->ny,
-               g->scratch);
+               g->cfg.dy, kk, g->scratch);
         *res[q] = 0.5 * reduce(g, g->scratch, g->n, RED_SUM) / norm;
+    }
+    *I = g->cfg.forcing.random_rate;
+    if (g->cfg.forcing.kolmogorov_amp != 0.0)
+    {
+        LAUNCH(integrand_kernel, g->n, g->DX, g->DY, g->u, g->v, g->w, g->cfg.bc, g->cfg.periodic, 3, g->nx, g->ny,
+               g->cfg.dy, kk, g->scratch);
+        *I += g->cfg.forcing.kolmogorov_amp * reduce(g, g->scratch, g->n, RED_SUM) / norm;
     }
 }
 

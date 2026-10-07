@@ -56,7 +56,9 @@ enum flow_case
 {
     CASE_CAVITY,
     CASE_TAYLOR_GREEN,
-    CASE_SHEAR_LAYER
+    CASE_SHEAR_LAYER,
+    CASE_KOLMOGOROV,
+    CASE_FORCED
 };
 
 #define CASE_PI 3.14159265358979323846
@@ -105,7 +107,17 @@ static void usage(const char *prog)
     printf("  --case NAME          cavity (default; lid-driven, four walls), or on a\n"
            "                       doubly periodic unit square: taylor-green (decaying\n"
            "                       vortex, compared with the exact solution at the end)\n"
-           "                       or shear-layer (double shear layer that rolls up)\n");
+           "                       shear-layer (double shear layer that rolls up),\n"
+           "                       kolmogorov (Kolmogorov forcing from a small random\n"
+           "                       perturbation) or forced (random forcing from rest)\n");
+    printf("  --drag ALPHA         linear drag -ALPHA w (default 0; 0.1 for forced)\n");
+    printf("  --kolmogorov-amp A   Kolmogorov body force A sin(k y) in x (default 1 for\n"
+           "  --kolmogorov-n N     kolmogorov, else 0), k = 2 pi N (default 4)\n");
+    printf("  --forcing-rate EPS   random forcing injecting energy at rate EPS (default\n"
+           "                       0.1 for forced, else 0) on the wavenumbers\n"
+           "  --forcing-k KF       |k| / 2 pi within KF +- DK (defaults 8 and 1)\n"
+           "  --forcing-width DK\n");
+    printf("  --seed S             seed of the random forcing and perturbation (default 1)\n");
 #ifdef USE_CUDA
     printf("  --cpu                run on the CPU instead of the GPU\n");
 #endif
@@ -140,6 +152,11 @@ int main(int argc, char *argv[])
     int wall_closure = 0;       // 0 = dv/dx - du/dy, 1 = Briley's formula from psi
     int velocity_order = 2;     // 4 = fourth-order rows next to the walls for u, v
     int integrals_interval = 1; // steps between lines of output/integrals.csv, 0 = none
+    // Forcing and drag (forcing.h); negative: not given, take the case's default
+    double drag = -1., kolmogorov_amp = -1., forcing_rate = -1., forcing_k = 8., forcing_width = 1.;
+    int kolmogorov_n = 4;
+    unsigned long long seed = 1;
+    int forcing_given = 0;
 
     // Command-line overrides
     static struct option long_opts[] = {
@@ -155,6 +172,13 @@ int main(int argc, char *argv[])
         {"wall-closure", required_argument, 0, 'w'},
         {"velocity-order", required_argument, 0, 'u'},
         {"integrals-interval", required_argument, 0, 'i'},
+        {"drag", required_argument, 0, 'a'},
+        {"kolmogorov-amp", required_argument, 0, 'K'},
+        {"kolmogorov-n", required_argument, 0, 'N'},
+        {"forcing-rate", required_argument, 0, 'e'},
+        {"forcing-k", required_argument, 0, 'q'},
+        {"forcing-width", required_argument, 0, 'W'},
+        {"seed", required_argument, 0, 's'},
         {"cpu", no_argument, 0, 'c'},
         {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}};
@@ -193,6 +217,10 @@ int main(int argc, char *argv[])
                 flow = CASE_TAYLOR_GREEN;
             else if (strcmp(optarg, "shear-layer") == 0)
                 flow = CASE_SHEAR_LAYER;
+            else if (strcmp(optarg, "kolmogorov") == 0)
+                flow = CASE_KOLMOGOROV;
+            else if (strcmp(optarg, "forced") == 0)
+                flow = CASE_FORCED;
             else
                 ok = 0;
             break;
@@ -213,6 +241,37 @@ int main(int argc, char *argv[])
         case 'i':
             ok = parse_int(optarg, &integrals_interval) && integrals_interval >= 0;
             break;
+        case 'a':
+            ok = parse_double(optarg, &drag) && drag >= 0.;
+            forcing_given = 1;
+            break;
+        case 'K':
+            ok = parse_double(optarg, &kolmogorov_amp);
+            forcing_given = 1;
+            break;
+        case 'N':
+            ok = parse_int(optarg, &kolmogorov_n) && kolmogorov_n >= 1;
+            forcing_given = 1;
+            break;
+        case 'e':
+            ok = parse_double(optarg, &forcing_rate) && forcing_rate >= 0.;
+            forcing_given = 1;
+            break;
+        case 'q':
+            ok = parse_double(optarg, &forcing_k) && forcing_k > 0.;
+            forcing_given = 1;
+            break;
+        case 'W':
+            ok = parse_double(optarg, &forcing_width) && forcing_width > 0.;
+            forcing_given = 1;
+            break;
+        case 's':
+        {
+            int sv = 0;
+            ok = parse_int(optarg, &sv) && sv >= 0;
+            seed = (unsigned long long)sv;
+            break;
+        }
         case 'c':
             use_gpu = 0;
             break;
@@ -284,6 +343,15 @@ int main(int argc, char *argv[])
         printf("** Error: the periodic cases need the FFT Poisson solver (poisson_type = 3) **\n");
         return 1;
     }
+    if (!periodic && forcing_given)
+    {
+        printf("** Error: the forcing and drag options apply to the periodic cases **\n");
+        return 1;
+    }
+    // The cases' defaults for what was not given
+    if (drag < 0.) drag = flow == CASE_FORCED ? 0.1 : 0.;
+    if (kolmogorov_amp < 0.) kolmogorov_amp = flow == CASE_KOLMOGOROV ? 1. : 0.;
+    if (forcing_rate < 0.) forcing_rate = flow == CASE_FORCED ? 0.1 : 0.;
     if (periodic && (poisson_order != 2 || wall_closure != 0 || velocity_order != 2))
     {
         printf("** Error: --poisson-order, --wall-closure and --velocity-order apply to walls; "
@@ -309,9 +377,13 @@ int main(int argc, char *argv[])
 
     double beta = sor_beta(nx, ny, dx, dy); // optimal SOR parameter
 
-    printf("Case: %s | Re: %g\n", flow == CASE_CAVITY ? "lid-driven cavity" : flow == CASE_TAYLOR_GREEN ? "Taylor-Green vortex (periodic)"
-                                                                                                        : "double shear layer (periodic)",
-           Re);
+    static const char *case_names[] = {"lid-driven cavity", "Taylor-Green vortex (periodic)",
+                                       "double shear layer (periodic)", "Kolmogorov flow (periodic)",
+                                       "randomly forced flow (periodic)"};
+    printf("Case: %s | Re: %g\n", case_names[flow], Re);
+    if (drag > 0. || kolmogorov_amp != 0. || forcing_rate > 0.)
+        printf("Forcing: drag %g | Kolmogorov A %g, k = 2 pi x %d | random rate %g, |k|/2pi in %g +- %g, seed %llu\n",
+               drag, kolmogorov_amp, kolmogorov_n, forcing_rate, forcing_k, forcing_width, seed);
     printf("Grid: %d x %d | dt: %lf | tf: %lf\n", nx, ny, dt, tf);
 #ifdef _OPENMP
     default_threads();
@@ -336,8 +408,18 @@ int main(int argc, char *argv[])
 
     // Stability checks, before the 2D operators are built so that a run that
     // cannot work fails at once. The velocity scale is the fastest wall, or
-    // for the periodic cases the largest initial speed, which is 1 for both.
+    // for the periodic cases 1 (the largest initial speed of the decaying
+    // cases), or the speed the forcing drives: the laminar Kolmogorov speed
+    // A / (nu k^2 + drag), and three times the r.m.s. speed sqrt(eps / drag)
+    // where random forcing balances drag. Turbulence can exceed these; the
+    // check guards against the clear cases only.
     double u_max = periodic ? 1.0 : 0.;
+    if (kolmogorov_amp != 0.)
+    {
+        double kk = 2.0 * CASE_PI * kolmogorov_n;
+        u_max = fmax(u_max, fabs(kolmogorov_amp) / (kk * kk / Re + drag));
+    }
+    if (forcing_rate > 0. && drag > 0.) u_max = fmax(u_max, 3.0 * sqrt(forcing_rate / drag));
     for (i = 0; i < 4 && !periodic; i++)
     {
         if (fabs(bc.u[i]) > u_max) u_max = fabs(bc.u[i]);
@@ -414,6 +496,14 @@ int main(int argc, char *argv[])
     cfg.t0 = 0.0;
     cfg.vorticity_source = NULL;
     cfg.source_data = NULL;
+    cfg.forcing = (forcing_config){0};
+    cfg.forcing.drag = drag;
+    cfg.forcing.kolmogorov_amp = kolmogorov_amp;
+    cfg.forcing.kolmogorov_n = kolmogorov_n;
+    cfg.forcing.random_rate = forcing_rate;
+    cfg.forcing.random_kf = forcing_k;
+    cfg.forcing.random_dk = forcing_width;
+    cfg.forcing.random_seed = seed;
 
     int it_max = (int)((tf / dt) - 1);
 
@@ -437,8 +527,20 @@ int main(int argc, char *argv[])
             {
                 if (flow == CASE_TAYLOR_GREEN)
                     taylor_green(j * dx, i * dy, 0.0, Re, &MAt(*w, i, j), &MAt(*u, i, j), &MAt(*v, i, j));
-                else
+                else if (flow == CASE_SHEAR_LAYER)
                     shear_layer(j * dx, i * dy, &MAt(*w, i, j), &MAt(*u, i, j), &MAt(*v, i, j));
+                else
+                {
+                    // Kolmogorov: a small random vorticity perturbation, from
+                    // which the instability grows; forced: rest
+                    MAt(*w, i, j) = 0.0;
+                    if (flow == CASE_KOLMOGOROV)
+                    {
+                        seed = seed * 6364136223846793005ULL + 1442695040888963407ULL;
+                        MAt(*w, i, j) = 1E-3 * ((double)(seed >> 11) / 9007199254740992.0 - 0.5);
+                    }
+                    MAt(*u, i, j) = MAt(*v, i, j) = 0.0;
+                }
             }
     backend_set_fields(solver, u, v, w);
     printf("Backend: %s\n", backend_name(solver));
@@ -456,7 +558,7 @@ int main(int argc, char *argv[])
             exit(1);
         }
         fi = backend_integrals(solver);
-        fprintf(integrals, "step,t,E,Z,P\n0,0,%.17g,%.17g,%.17g\n", fi.E, fi.Z, fi.P);
+        fprintf(integrals, "step,t,E,Z,P,I\n0,0,%.17g,%.17g,%.17g,%.17g\n", fi.E, fi.Z, fi.P, fi.I);
     }
     spectra *spec = periodic && output_interval > 0 ? spectra_setup(&cfg) : NULL;
 
@@ -481,7 +583,8 @@ int main(int argc, char *argv[])
         if (integrals && (t + 1) % integrals_interval == 0)
         {
             fi = backend_integrals(solver);
-            fprintf(integrals, "%d,%.17g,%.17g,%.17g,%.17g\n", t + 1, (double)(t + 1) * dt, fi.E, fi.Z, fi.P);
+            fprintf(integrals, "%d,%.17g,%.17g,%.17g,%.17g,%.17g\n", t + 1, (double)(t + 1) * dt, fi.E, fi.Z, fi.P,
+                    fi.I);
         }
 
         if (output_interval > 0 && t % output_interval == 0)

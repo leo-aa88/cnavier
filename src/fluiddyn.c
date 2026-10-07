@@ -68,6 +68,14 @@ rk4_ctx rk4_alloc(const solver_config *cfg)
     ctx.fft = cfg->poisson_type == 3 && !cfg->periodic ? fft_setup(nx, ny) : NULL;
     ctx.periodic = cfg->periodic ? periodic_setup(nx, ny, cfg->DX2, cfg->DY2) : NULL;
     ctx.source = cfg->vorticity_source ? initm(ny, nx) : (mtrx){0};
+    ctx.kolmogorov = kolmogorov_rows(&cfg->forcing, ny, cfg->dy, cfg->dy * (cfg->periodic ? ny : ny - 1));
+    if (cfg->forcing.random_rate > 0.0 && !cfg->periodic)
+    {
+        printf("** Error: random forcing needs a periodic grid **\n");
+        exit(1);
+    }
+    ctx.kicks = random_forcing_setup(&cfg->forcing, nx, ny, cfg->dx, cfg->dy, cfg->dt, cfg->DX, cfg->DY, cfg->DX2,
+                                     cfg->DY2);
     ctx.steps = 0;
     return ctx;
 }
@@ -91,6 +99,10 @@ void rk4_free(rk4_ctx *ctx)
     periodic_cleanup(ctx->periodic);
     ctx->periodic = NULL;
     if (ctx->source.M) freem(&ctx->source);
+    free(ctx->kolmogorov);
+    ctx->kolmogorov = NULL;
+    random_forcing_free(ctx->kicks);
+    ctx->kicks = NULL;
 }
 
 // Solve nabla^2 psi = -w and recover u = dpsi/dy, v = -dpsi/dx.
@@ -215,6 +227,21 @@ static const double *vorticity_source_at(double t, rk4_ctx *ctx)
     return ctx->source.M;
 }
 
+// out += -drag w + the Kolmogorov source (forcing.h)
+static void add_forcing_terms(mtrx out, mtrx w, const rk4_ctx *ctx)
+{
+    int i, nx = ctx->cfg.nx, ny = ctx->cfg.ny;
+    double drag = ctx->cfg.forcing.drag;
+
+    if (drag == 0.0 && !ctx->kolmogorov) return;
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static) if (nx * ny >= OMP_MIN_WORK)
+#endif
+    for (i = 0; i < ny; i++)
+        for (int j = 0; j < nx; j++)
+            MAt(out, i, j) += -drag * MAt(w, i, j) + (ctx->kolmogorov ? ctx->kolmogorov[i] : 0.0);
+}
+
 // out = -u*(dw/dx) - v*(dw/dy) + (1/Re)*(d2w/dx2 + d2w/dy2) + f(t). Also sets
 // u, v from w's interior and the wall velocities, and w's boundary from u, v.
 void dwdt(mtrx w, mtrx u, mtrx v, mtrx out, double t, rk4_ctx *ctx)
@@ -250,6 +277,7 @@ void dwdt(mtrx w, mtrx u, mtrx v, mtrx out, double t, rk4_ctx *ctx)
     if (f)
         for (i = 0; i < nx * ny; i++)
             out.M[i] += f[i];
+    add_forcing_terms(out, w, ctx);
 }
 
 // Classical RK4: w_{n+1} = w_n + (dt/6)*(k1 + 2*k2 + 2*k3 + k4)
@@ -409,13 +437,33 @@ void step(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx)
         set_wall_vorticity(w, u, v, ctx);
     }
 
+    // Random forcing: a kick with new phases at the start of every step.
+    // RK4's first stage derives the velocity from the kicked w; Euler uses
+    // the velocity it is given, so it is updated here.
+    if (ctx->kicks)
+    {
+        random_forcing_draw(ctx->kicks);
+        random_forcing_add(ctx->kicks, w, ctx->cfg.dx, ctx->cfg.dy);
+        if (ctx->cfg.time_scheme == 1) velocity_from_vorticity(w, u, v, ctx);
+    }
+
     if (ctx->cfg.time_scheme == 1)
     {
-        // Euler: single RHS evaluation, then one Poisson solve
+        // Euler: single RHS evaluation, then one Poisson solve. The source,
+        // drag and Kolmogorov forcing go in as one field (in w_tmp, which
+        // Euler does not otherwise use).
+        const double *f = vorticity_source_at(ctx->cfg.t0 + (double)ctx->steps * dt, ctx);
+        if (ctx->cfg.forcing.drag != 0.0 || ctx->kolmogorov)
+        {
+            int k, n = ctx->cfg.nx * ctx->cfg.ny;
+            for (k = 0; k < n; k++)
+                ctx->w_tmp.M[k] = f ? f[k] : 0.0;
+            add_forcing_terms(ctx->w_tmp, w, ctx);
+            f = ctx->w_tmp.M;
+        }
         derivatives(w, ctx);
 
-        euler(w, ctx->dwdx, ctx->dwdy, ctx->d2wdx2, ctx->d2wdy2, u, v,
-              vorticity_source_at(ctx->cfg.t0 + (double)ctx->steps * dt, ctx), ctx->cfg.Re, dt);
+        euler(w, ctx->dwdx, ctx->dwdy, ctx->d2wdx2, ctx->d2wdy2, u, v, f, ctx->cfg.Re, dt);
         velocity_from_vorticity(w, u, v, ctx);
     }
     else

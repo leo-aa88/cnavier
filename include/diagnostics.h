@@ -14,6 +14,7 @@
 typedef struct
 {
     double E, Z, P;
+    double I; // energy input of the built-in forcing: <u A sin(k y)> + eps (forcing.h)
 } flow_integrals;
 
 // wx, wy: scratch of nx*ny values each

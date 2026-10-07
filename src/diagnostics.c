@@ -25,7 +25,8 @@ static void velocity_at(const solver_config *cfg, mtrx u, mtrx v, int i, int j, 
 flow_integrals compute_integrals(const solver_config *cfg, mtrx u, mtrx v, mtrx w, double *wx, double *wy)
 {
     int i, j, nx = cfg->nx, ny = cfg->ny;
-    double sE = 0.0, sZ = 0.0, sP = 0.0, norm;
+    double sE = 0.0, sZ = 0.0, sP = 0.0, sI = 0.0, norm;
+    double Ly = cfg->dy * (cfg->periodic ? ny : ny - 1), kk = 2.0 * PI * cfg->forcing.kolmogorov_n / Ly;
     flow_integrals r;
 
     spmv(*cfg->DX, w.M, wx);
@@ -41,11 +42,15 @@ flow_integrals compute_integrals(const solver_config *cfg, mtrx u, mtrx v, mtrx 
             sE += weight * (uu * uu + vv * vv);
             sZ += weight * w.M[k] * w.M[k];
             sP += weight * (wx[k] * wx[k] + wy[k] * wy[k]);
+            sI += weight * uu * sin(kk * (i * cfg->dy));
         }
     norm = cfg->periodic ? (double)nx * ny : (double)(nx - 1) * (ny - 1);
     r.E = 0.5 * sE / norm;
     r.Z = 0.5 * sZ / norm;
     r.P = 0.5 * sP / norm;
+    // Energy input: the work of the Kolmogorov force A sin(k y) on u, and the
+    // rate the random kicks inject by construction
+    r.I = cfg->forcing.kolmogorov_amp * sI / norm + cfg->forcing.random_rate;
     return r;
 }
 
