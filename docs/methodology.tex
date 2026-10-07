@@ -405,11 +405,11 @@ Three algorithms are available.
 
 \subsection{Five-point discrete Poisson operator}
 
-The iterative solvers and the spectral eigenvalues correspond to the conventional second-order five-point Laplacian.  At an interior point,
+The iterative solvers and the spectral eigenvalues correspond to the conventional second-order five-point Laplacian.  At an interior point, with $i$ the row ($y$) and $j$ the column ($x$) index as everywhere in this document,
 \begin{equation}
-\frac{\psi_{i+1,j}-2\psi_{i,j}+\psi_{i-1,j}}{\dx^2}
+\frac{\psi_{i,j+1}-2\psi_{i,j}+\psi_{i,j-1}}{\dx^2}
 +
-\frac{\psi_{i,j+1}-2\psi_{i,j}+\psi_{i,j-1}}{\dy^2}
+\frac{\psi_{i+1,j}-2\psi_{i,j}+\psi_{i-1,j}}{\dy^2}
 =f_{i,j},
 \qquad f=-\omega.
 \label{eq:5point}
@@ -423,8 +423,8 @@ Solving \cref{eq:5point} for the center value gives the Gauss--Seidel update
 \psi_{i,j}^{\mathrm{GS}}
 =
 \frac{
-\dy^2(\psi_{i+1,j}+\psi_{i-1,j})
-+\dx^2(\psi_{i,j+1}+\psi_{i,j-1})
+\dy^2(\psi_{i,j+1}+\psi_{i,j-1})
++\dx^2(\psi_{i+1,j}+\psi_{i-1,j})
 -\dx^2\dy^2 f_{i,j}
 }{2(\dx^2+\dy^2)}.
 \label{eq:gs}
