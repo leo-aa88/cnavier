@@ -140,8 +140,8 @@ static mms_norm norm_of(mtrx a, mtrx b, int part)
 }
 
 static mms_errors run(int nx, int ny, double Lx, double Ly, double Re, int order, int time_scheme,
-                      int poisson_type, int poisson_order, int wall_closure, double dt, double t0, double T,
-                      int periodic)
+                      int poisson_type, int poisson_order, int wall_closure, int velocity_order, double dt,
+                      double t0, double T, int periodic)
 {
     mms_case c = {Lx, Ly, Re, Lx / (periodic ? nx : nx - 1), Ly / (periodic ? ny : ny - 1), periodic};
     wall_bc walls = {{0., 0., 0., 0.}, {0., 0., 0., 0.}};
@@ -157,6 +157,15 @@ static mms_errors run(int nx, int ny, double Lx, double Ly, double Re, int order
     smtrx Ix = seye(nx), Iy = seye(ny);
     smtrx DX = skronecker(Iy, d1x), DY = skronecker(d1y, Ix);
     smtrx DX2 = skronecker(Iy, d2x), DY2 = skronecker(d2y, Ix);
+    smtrx DXv = {0}, DYv = {0};
+    if (velocity_order == 4)
+    {
+        smtrx vx = SDiff1_wall4(nx, order, c.dx), vy = SDiff1_wall4(ny, order, c.dy);
+        DXv = skronecker(Iy, vx);
+        DYv = skronecker(vy, Ix);
+        freesm(vx);
+        freesm(vy);
+    }
     freesm(d1x);
     freesm(d1y);
     freesm(d2x);
@@ -185,6 +194,8 @@ static mms_errors run(int nx, int ny, double Lx, double Ly, double Re, int order
     cfg.DY = &DY;
     cfg.DX2 = &DX2;
     cfg.DY2 = &DY2;
+    cfg.DXv = velocity_order == 4 ? &DXv : NULL;
+    cfg.DYv = velocity_order == 4 ? &DYv : NULL;
     cfg.vorticity_source = mms_source;
     cfg.source_data = &c;
     rk4_ctx ctx = rk4_alloc(&cfg);
@@ -218,25 +229,30 @@ static mms_errors run(int nx, int ny, double Lx, double Ly, double Re, int order
     freesm(DY);
     freesm(DX2);
     freesm(DY2);
+    if (velocity_order == 4)
+    {
+        freesm(DXv);
+        freesm(DYv);
+    }
     return e;
 }
 
 mms_errors mms_run(int nx, int ny, double Lx, double Ly, double Re, int order, int time_scheme,
                    int poisson_type, double dt, double t0, double T)
 {
-    return run(nx, ny, Lx, Ly, Re, order, time_scheme, poisson_type, 2, 0, dt, t0, T, 0);
+    return run(nx, ny, Lx, Ly, Re, order, time_scheme, poisson_type, 2, 0, 2, dt, t0, T, 0);
 }
 
 mms_errors mms_run_closures(int nx, int ny, double Lx, double Ly, double Re, int order, int poisson_order,
-                            int wall_closure, double dt, double t0, double T)
+                            int wall_closure, int velocity_order, double dt, double t0, double T)
 {
-    return run(nx, ny, Lx, Ly, Re, order, 2, 3, poisson_order, wall_closure, dt, t0, T, 0);
+    return run(nx, ny, Lx, Ly, Re, order, 2, 3, poisson_order, wall_closure, velocity_order, dt, t0, T, 0);
 }
 
 mms_errors mms_run_periodic(int nx, int ny, double Lx, double Ly, double Re, int order, int time_scheme,
                             double dt, double t0, double T)
 {
-    return run(nx, ny, Lx, Ly, Re, order, time_scheme, 3, 2, 0, dt, t0, T, 1);
+    return run(nx, ny, Lx, Ly, Re, order, time_scheme, 3, 2, 0, 2, dt, t0, T, 1);
 }
 
 // ---------------------------------------------------------------------------

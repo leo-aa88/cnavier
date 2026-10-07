@@ -60,10 +60,11 @@ mms_errors mms_run(int nx, int ny, double Lx, double Ly, double Re, int order, i
                    int poisson_type, double dt, double t0, double T);
 
 // mms_run() with RK4 and the FFT solver, with a choice of Poisson operator
-// (poisson_order 2 or 4) and wall-vorticity closure (0: D_x v - D_y u, 1:
-// third order from psi)
+// (poisson_order 2 or 4), wall-vorticity closure (0: D_x v - D_y u, 1: third
+// order from psi) and velocity rows next to the walls (velocity_order 2: the
+// derivative operators', 4: fourth order, SDiff1_wall4)
 mms_errors mms_run_closures(int nx, int ny, double Lx, double Ly, double Re, int order, int poisson_order,
-                            int wall_closure, double dt, double t0, double T);
+                            int wall_closure, int velocity_order, double dt, double t0, double T);
 
 // mms_run() on a doubly periodic nx x ny grid (dx = Lx/nx) with the periodic
 // solution, RK4 or Euler, and the periodic FFT Poisson solver

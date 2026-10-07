@@ -32,7 +32,7 @@ static void cell(double e, double prev)
 // Refine an (n-1)*sx x (n-1)*sy cell grid on an Lx x Ly domain, from n = 17
 // nodes along the shorter side up to max_n nodes along the longer one
 static void study(const char *title, int order, double Lx, double Ly, int sx, int sy, int max_n,
-                  int poisson_order, int wall_closure)
+                  int poisson_order, int wall_closure, int velocity_order)
 {
     int n, s = sx > sy ? sx : sy;
     mms_errors prev;
@@ -44,7 +44,7 @@ static void study(const char *title, int order, double Lx, double Ly, int sx, in
     for (n = 17; (n - 1) * s + 1 <= max_n; n = 2 * n - 1)
     {
         int nx = (n - 1) * sx + 1, ny = (n - 1) * sy + 1;
-        mms_errors e = mms_run_closures(nx, ny, Lx, Ly, RE, order, poisson_order, wall_closure, DT, 0.0, T_FINAL);
+        mms_errors e = mms_run_closures(nx, ny, Lx, Ly, RE, order, poisson_order, wall_closure, velocity_order, DT, 0.0, T_FINAL);
         char grid[32];
 
         snprintf(grid, sizeof(grid), "%dx%d", nx, ny);
@@ -119,18 +119,21 @@ int main(int argc, char **argv)
     {
         char title[96];
         snprintf(title, sizeof(title), "Unit square, derivative order %d", order);
-        study(title, order, 1.0, 1.0, 1, 1, max_n, 2, 0);
+        study(title, order, 1.0, 1.0, 1, 1, max_n, 2, 0, 2);
     }
-    study("2 x 1 domain, nx - 1 = 2 (ny - 1), derivative order 6", 6, 2.0, 1.0, 2, 1, max_n, 2, 0);
-    study("Unit square, nx - 1 = 2 (ny - 1) (dx = dy / 2), derivative order 6", 6, 1.0, 1.0, 2, 1, max_n, 2, 0);
+    study("2 x 1 domain, nx - 1 = 2 (ny - 1), derivative order 6", 6, 2.0, 1.0, 2, 1, max_n, 2, 0, 2);
+    study("Unit square, nx - 1 = 2 (ny - 1) (dx = dy / 2), derivative order 6", 6, 1.0, 1.0, 2, 1, max_n, 2, 0, 2);
 
     printf("\nHigher order with walls (issues #26, #29): the compact Poisson operator\n"
            "(--poisson-order 4) and the third-order wall closure from psi\n"
-           "(--wall-closure briley), alone and together.\n");
-    study("Unit square, order 6, compact Poisson operator", 6, 1.0, 1.0, 1, 1, max_n, 4, 0);
-    study("Unit square, order 6, wall closure from psi", 6, 1.0, 1.0, 1, 1, max_n, 2, 1);
-    study("Unit square, order 6, compact Poisson operator and wall closure from psi", 6, 1.0, 1.0, 1, 1, max_n, 4, 1);
-    study("2 x 1 domain, nx - 1 = 2 (ny - 1), order 6, both", 6, 2.0, 1.0, 2, 1, max_n, 4, 1);
+           "(--wall-closure briley), alone and together, and with fourth-order velocity\n"
+           "rows next to the walls (--velocity-order 4).\n");
+    study("Unit square, order 6, compact Poisson operator", 6, 1.0, 1.0, 1, 1, max_n, 4, 0, 2);
+    study("Unit square, order 6, wall closure from psi", 6, 1.0, 1.0, 1, 1, max_n, 2, 1, 2);
+    study("Unit square, order 6, compact Poisson operator and wall closure from psi", 6, 1.0, 1.0, 1, 1, max_n, 4, 1, 2);
+    study("Unit square, order 6, both, and fourth-order velocity rows next to the walls", 6, 1.0, 1.0, 1, 1, max_n, 4,
+          1, 4);
+    study("2 x 1 domain, nx - 1 = 2 (ny - 1), order 6, all three", 6, 2.0, 1.0, 2, 1, max_n, 4, 1, 4);
 
     printf("\nWithout walls: the periodic solution, a sum of three Fourier modes, on a\n"
            "doubly periodic grid; the Poisson operator is DX2 + DY2, of the same order\n"

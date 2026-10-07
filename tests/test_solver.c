@@ -46,6 +46,7 @@ typedef struct
 {
     int nx, ny;
     smtrx DX, DY, DX2, DY2;
+    smtrx DXv, DYv;    // velocity operators (velocity_order 4), else empty
     solver_config cfg; // shared by the CPU and GPU solvers
     rk4_ctx ctx;       // CPU workspace
     mtrx u, v, w;
@@ -58,12 +59,12 @@ typedef struct
 // stay where it is until problem_free().
 // problem_init_ext() also sets the derivative order, Re, the domain size,
 // periodic boundaries (then dx = Lx/nx, and bc is unused), the start time, an
-// optional vorticity source, the Poisson operator order (FFT solver) and the
-// wall-vorticity closure.
+// optional vorticity source, the Poisson operator order (FFT solver), the
+// wall-vorticity closure and the order of the velocity rows next to the walls.
 static void problem_init_ext(problem *p, int nx, int ny, double Lx, double Ly, int periodic, int order,
                              double Re, int time_scheme, int poisson_type, double dt, double poisson_tol,
                              const wall_bc *bc, double t0, void (*vorticity_source)(double, mtrx, void *),
-                             void *source_data, int poisson_order, int wall_closure)
+                             void *source_data, int poisson_order, int wall_closure, int velocity_order)
 {
     double dx = Lx / (periodic ? nx : nx - 1), dy = Ly / (periodic ? ny : ny - 1);
     wall_bc lid = {{0., 0., 0., 1.}, {0., 0., 0., 0.}};
@@ -109,6 +110,20 @@ static void problem_init_ext(problem *p, int nx, int ny, double Lx, double Ly, i
     p->cfg.DY = &p->DY;
     p->cfg.DX2 = &p->DX2;
     p->cfg.DY2 = &p->DY2;
+    p->DXv = (smtrx){0};
+    p->DYv = (smtrx){0};
+    if (velocity_order == 4)
+    {
+        smtrx vx = SDiff1_wall4(nx, order, dx), vy = SDiff1_wall4(ny, order, dy), Ix = seye(nx), Iy = seye(ny);
+        p->DXv = skronecker(Iy, vx);
+        p->DYv = skronecker(vy, Ix);
+        freesm(vx);
+        freesm(vy);
+        freesm(Ix);
+        freesm(Iy);
+    }
+    p->cfg.DXv = velocity_order == 4 ? &p->DXv : NULL;
+    p->cfg.DYv = velocity_order == 4 ? &p->DYv : NULL;
     p->cfg.t0 = t0;
     p->cfg.vorticity_source = vorticity_source;
     p->cfg.source_data = source_data;
@@ -122,7 +137,7 @@ static void problem_init_ext(problem *p, int nx, int ny, double Lx, double Ly, i
 static void problem_init(problem *p, int nx, int ny, int time_scheme, int poisson_type, double dt,
                          double poisson_tol, const wall_bc *bc)
 {
-    problem_init_ext(p, nx, ny, 1.0, 1.0, 0, 6, 100., time_scheme, poisson_type, dt, poisson_tol, bc, 0.0, NULL, NULL, 2, 0);
+    problem_init_ext(p, nx, ny, 1.0, 1.0, 0, 6, 100., time_scheme, poisson_type, dt, poisson_tol, bc, 0.0, NULL, NULL, 2, 0, 2);
 }
 
 static void problem_free(problem *p)
@@ -134,6 +149,11 @@ static void problem_free(problem *p)
     freesm(p->DY);
     freesm(p->DX2);
     freesm(p->DY2);
+    if (p->cfg.DXv)
+    {
+        freesm(p->DXv);
+        freesm(p->DYv);
+    }
     rk4_free(&p->ctx);
 }
 
@@ -475,7 +495,7 @@ static mtrx run_with_source(int n, int scheme, double dt, double T, mms_case *c)
     mtrx w = initm(n, n);
     problem p;
 
-    problem_init_ext(&p, n, n, 1.0, 1.0, 0, 6, c->Re, scheme, 3, dt, 1E-3, &walls, 0.0, mms_source, c, 2, 0);
+    problem_init_ext(&p, n, n, 1.0, 1.0, 0, 6, c->Re, scheme, 3, dt, 1E-3, &walls, 0.0, mms_source, c, 2, 0, 2);
     mms_exact(c, 0.0, &p.w, &p.u, &p.v, NULL);
     for (t = 0; t < steps; t++)
         step(p.w, p.u, p.v, &p.ctx);
@@ -758,6 +778,40 @@ static void test_compact_poisson(void)
     }
 }
 
+// SDiff1_wall4: its rows at and next to both ends differentiate quartics
+// exactly; the other rows are SDiff1's
+static void test_velocity_rows(void)
+{
+    int n = 21, o, i, p;
+    double dx = 0.05, worst = 0.0, inner = 0.0;
+    double f[21], d[21], d0[21];
+
+    printf("Unit: fourth-order velocity rows next to the walls\n");
+    for (o = 4; o <= 6; o += 2)
+    {
+        smtrx A = SDiff1_wall4(n, o, dx), B = SDiff1(n, o, dx);
+        for (p = 0; p <= 4; p++)
+        {
+            for (i = 0; i < n; i++)
+                f[i] = pow(i * dx - 0.3, p);
+            spmv(A, f, d);
+            spmv(B, f, d0);
+            for (i = 0; i < n; i++)
+            {
+                double exact = p == 0 ? 0.0 : p * pow(i * dx - 0.3, p - 1);
+                if (i <= 1 || i >= n - 2)
+                    worst = fmax(worst, fabs(d[i] - exact));
+                else
+                    inner = fmax(inner, fabs(d[i] - d0[i]));
+            }
+        }
+        freesm(A);
+        freesm(B);
+    }
+    check("rows 0, 1, n-2, n-1 exact on polynomials up to degree 4", worst, 1E-10);
+    check("other rows identical to SDiff1", inner, 0.0);
+}
+
 // Raising the wall-bounded order needs both the compact Poisson operator and
 // the third-order wall closure (issues #26, #29): together the manufactured
 // solution converges at about four; the wall closure alone stays at two
@@ -768,8 +822,8 @@ static void test_wall_order_pairing(void)
     double order;
 
     printf("Unit: compact Poisson operator and third-order wall closure, order 6, 33 -> 65\n");
-    a = mms_run_closures(33, 33, 1.0, 1.0, 100.0, 6, 4, 1, 2.5E-3, 0.0, 0.25);
-    b = mms_run_closures(65, 65, 1.0, 1.0, 100.0, 6, 4, 1, 2.5E-3, 0.0, 0.25);
+    a = mms_run_closures(33, 33, 1.0, 1.0, 100.0, 6, 4, 1, 2, 2.5E-3, 0.0, 0.25);
+    b = mms_run_closures(65, 65, 1.0, 1.0, 100.0, 6, 4, 1, 2, 2.5E-3, 0.0, 0.25);
     order = log2(a.w.max / b.w.max);
     snprintf(name, sizeof(name), "both: w order %.2f, 3.7 - order", order);
     check(name, isnan(order) ? INFINITY : 3.7 - order, 0.0);
@@ -777,11 +831,22 @@ static void test_wall_order_pairing(void)
     snprintf(name, sizeof(name), "both: psi order %.2f, 3.7 - order", order);
     check(name, isnan(order) ? INFINITY : 3.7 - order, 0.0);
     check("both: w max error at 65x65", b.w.max, 2E-4);
-    a = mms_run_closures(33, 33, 1.0, 1.0, 100.0, 6, 2, 1, 2.5E-3, 0.0, 0.25);
-    b = mms_run_closures(65, 65, 1.0, 1.0, 100.0, 6, 2, 1, 2.5E-3, 0.0, 0.25);
+    a = mms_run_closures(33, 33, 1.0, 1.0, 100.0, 6, 2, 1, 2, 2.5E-3, 0.0, 0.25);
+    b = mms_run_closures(65, 65, 1.0, 1.0, 100.0, 6, 2, 1, 2, 2.5E-3, 0.0, 0.25);
     order = log2(a.w.max / b.w.max);
     snprintf(name, sizeof(name), "wall closure alone: w order %.2f, |order - 2|", order);
     check(name, isnan(order) ? INFINITY : fabs(order - 2.0), 0.2);
+
+    // With fourth-order velocity rows as well, u and v converge at four too
+    a = mms_run_closures(33, 33, 1.0, 1.0, 100.0, 6, 4, 1, 4, 2.5E-3, 0.0, 0.25);
+    b = mms_run_closures(65, 65, 1.0, 1.0, 100.0, 6, 4, 1, 4, 2.5E-3, 0.0, 0.25);
+    order = log2(a.u.max / b.u.max);
+    snprintf(name, sizeof(name), "all three: u order %.2f, 3.7 - order", order);
+    check(name, isnan(order) ? INFINITY : 3.7 - order, 0.0);
+    order = log2(a.w.max / b.w.max);
+    snprintf(name, sizeof(name), "all three: w order %.2f, 3.7 - order", order);
+    check(name, isnan(order) ? INFINITY : 3.7 - order, 0.0);
+    check("all three: u max error at 65x65", b.u.max, 3E-6);
 }
 
 // Wall velocities go to the right nodes; at the corners the walls x = 0 and
@@ -1626,7 +1691,7 @@ static void test_gpu_source(int nx, int ny, int steps, int time_scheme, const ch
     mms_case c = {1.0, 1.0, 100.0, 1.0 / (nx - 1), 1.0 / (ny - 1), 0};
     wall_bc walls = {{0., 0., 0., 0.}, {0., 0., 0., 0.}};
     problem p;
-    problem_init_ext(&p, nx, ny, 1.0, 1.0, 0, 6, c.Re, time_scheme, 3, 0.002, 1E-10, &walls, 0.3, mms_source, &c, 2, 0);
+    problem_init_ext(&p, nx, ny, 1.0, 1.0, 0, 6, c.Re, time_scheme, 3, 0.002, 1E-10, &walls, 0.3, mms_source, &c, 2, 0, 2);
     gpu_solver *g = gpu_for(&p);
     mtrx u = initm(ny, nx), v = initm(ny, nx), w = initm(ny, nx);
 
@@ -1660,7 +1725,7 @@ static void test_gpu_periodic(int nx, int ny, int steps, int time_scheme, const 
     char name[96];
     mms_case c = {2.0, 1.0, 100.0, 2.0 / nx, 1.0 / ny, 1};
     problem p;
-    problem_init_ext(&p, nx, ny, 2.0, 1.0, 1, 6, c.Re, time_scheme, 3, 0.002, 1E-10, NULL, 0.0, mms_source, &c, 2, 0);
+    problem_init_ext(&p, nx, ny, 2.0, 1.0, 1, 6, c.Re, time_scheme, 3, 0.002, 1E-10, NULL, 0.0, mms_source, &c, 2, 0, 2);
     gpu_solver *g = gpu_for(&p);
     mtrx u = initm(ny, nx), v = initm(ny, nx), w = initm(ny, nx);
 
@@ -1694,11 +1759,12 @@ static void test_gpu_closures(int nx, int ny, int steps, int time_scheme, const 
     int t, N = nx * ny;
     char name[96];
     problem p;
-    problem_init_ext(&p, nx, ny, 1.0, 1.0, 0, 6, 100., time_scheme, 3, 0.002, 1E-10, NULL, 0.0, NULL, NULL, 4, 1);
+    problem_init_ext(&p, nx, ny, 1.0, 1.0, 0, 6, 100., time_scheme, 3, 0.002, 1E-10, NULL, 0.0, NULL, NULL, 4, 1, 4);
     gpu_solver *g = gpu_for(&p);
     mtrx u = initm(ny, nx), v = initm(ny, nx), w = initm(ny, nx), f = initm(ny, nx), psi = initm(ny, nx);
 
-    printf("GPU: %d steps, compact Poisson + wall closure from psi, %s, %dx%d grid\n", steps, label, nx, ny);
+    printf("GPU: %d steps, compact Poisson + wall closure from psi + fourth-order velocity rows, %s, %dx%d grid\n",
+           steps, label, nx, ny);
     gpu_set_fields(g, &p.u, &p.v, &p.w);
     for (t = 0; t < steps; t++)
     {
@@ -1868,6 +1934,7 @@ int main(int argc, char **argv)
     test_mms_spatial_order();
     test_order_ablation();
     test_compact_poisson();
+    test_velocity_rows();
     test_wall_order_pairing();
     test_periodic_operators();
     test_periodic_poisson(32, 24, 6);

@@ -121,8 +121,8 @@ static void velocity_from_vorticity(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx)
     }
 
     // Recover u = dpsi/dy, v = -dpsi/dx
-    spmv(*ctx->cfg.DY, ctx->psi.M, u.M);
-    spmv(*ctx->cfg.DX, ctx->psi.M, v.M);
+    spmv(ctx->cfg.DYv ? *ctx->cfg.DYv : *ctx->cfg.DY, ctx->psi.M, u.M);
+    spmv(ctx->cfg.DXv ? *ctx->cfg.DXv : *ctx->cfg.DX, ctx->psi.M, v.M);
     negcpy(v, v);
 }
 
