@@ -50,6 +50,10 @@ TEST_BIN=test_cnavier
 CONV_BIN=convergence_study
 ABL_BIN=ablation_study
 
+# Each object also records the headers it includes (obj/*.d), so that editing
+# a header rebuilds the objects that use it
+DEP_FLAGS = -MMD -MP
+
 # Records the build flags so that switching OPENMP/CUDA rebuilds every object
 CONFIG=$(OBJ_DIR)/config
 
@@ -59,13 +63,13 @@ $(BIN_FILE): $(OBJ_FILES)
 	$(CC) $(CC_FLAGS) $^ -I$(HDR_DIR) -o $@ $(CC_LIBS)
 
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.c $(CONFIG)
-	$(CC) $(CC_FLAGS) -c $< -I$(HDR_DIR) -o $@ $(LFLAGS)
+	$(CC) $(CC_FLAGS) $(DEP_FLAGS) -c $< -I$(HDR_DIR) -o $@ $(LFLAGS)
 
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.cu $(CONFIG)
-	$(NVCC) $(NVCC_FLAGS) $(NVCC_WERROR) -c $< -I$(HDR_DIR) -o $@
+	$(NVCC) $(NVCC_FLAGS) $(NVCC_WERROR) -MD -MF $(@:.o=.d) -c $< -I$(HDR_DIR) -o $@
 
 $(OBJ_DIR)/%.o: $(TEST_DIR)/%.c $(CONFIG)
-	$(CC) $(CC_FLAGS) -c $< -I$(HDR_DIR) -o $@
+	$(CC) $(CC_FLAGS) $(DEP_FLAGS) -c $< -I$(HDR_DIR) -o $@
 
 $(OBJ_DIR):
 	mkdir $@
@@ -160,3 +164,5 @@ clean:
 FORCE:
 
 .PHONY: all test convergence ablation clean FORCE format format-check cppcheck tidy test-asan valgrind test-cli regression
+
+-include $(wildcard $(OBJ_DIR)/*.d)
