@@ -29,7 +29,7 @@ python3 "$here/check_centerline.py" reference output "$here/reference" 1e-5
 
 # The full default run (t = 30, steady) against the reference data of Ghia
 # et al. (1982), stored in tests/reference. The current code is within
-# 0.0024 (u) and 0.0074 (v).
+# 0.0023 (u) and 0.0073 (v).
 echo "Regression: steady default case against Ghia et al. (1982)"
 "$bin" --output-interval 0 > run_full.txt
 python3 "$here/check_centerline.py" ghia output "$here/reference" 0.004 0.010
