@@ -155,7 +155,7 @@ int main(int argc, char *argv[])
     double mem_needed = (double)nx * ny * (26.0 * sizeof(double)
                       + 4.0 * (7.0 * (sizeof(double) + sizeof(int)) + sizeof(int)));
     double mem_avail  = available_memory();
-    if (mem_avail > 0. && mem_needed > mem_avail)
+    if (mem_avail >= 0. && mem_needed > mem_avail)
     {
         printf("** Error: a %d x %d grid needs about %.1f GB of memory; about %.1f GB is available **\n",
                nx, ny, mem_needed / 1E9, mem_avail / 1E9);

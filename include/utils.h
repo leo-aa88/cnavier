@@ -9,8 +9,8 @@ double randdouble(double min, double max); // generates random double number bet
 void printvtk(mtrx A, char *title);        // prints matrix A to a vtk file
 
 // Memory the process can allocate now, in bytes: the kernel's MemAvailable,
-// or the room left under a cgroup memory limit if that is smaller. -1 if it
-// cannot be determined.
+// or the room left under a cgroup memory limit if that is smaller. 0 means
+// none (a cgroup at or above its limit); -1 means it cannot be determined.
 double available_memory(void);
 
 // Write centerline velocity profiles to CSV for validation against Ghia et al. (1982).

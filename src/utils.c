@@ -28,13 +28,15 @@ static double read_number(const char *path, const char *key)
 }
 
 // Room left under the memory limit of cgroup directory `dir`, in bytes.
-// Returns 0 if the cgroup has no limit. Clean page cache charged to the
-// cgroup counts as free, since the kernel drops inactive file pages before it
-// fails an allocation (the accounting `docker stats` uses).
+// Returns 0 if the cgroup has no limit. Page cache on the file LRU lists
+// (active_file + inactive_file) counts as free: the kernel reclaims both
+// before it fails an allocation. Shared memory and tmpfs are charged as file
+// memory too, but they sit on the anon lists and are not reclaimable without
+// swap; the two LRU counters leave them out, so they stay counted as used.
 static int cgroup_room(const char *dir, int v2, double *room)
 {
     char path[4300];
-    double limit, used, cache;
+    double limit, used, active, inactive;
 
     snprintf(path, sizeof(path), "%s/%s", dir, v2 ? "memory.max" : "memory.limit_in_bytes");
     limit = read_number(path, ""); // v2 "max" reads as -1, i.e. no limit
@@ -42,9 +44,11 @@ static int cgroup_room(const char *dir, int v2, double *room)
     snprintf(path, sizeof(path), "%s/%s", dir, v2 ? "memory.current" : "memory.usage_in_bytes");
     used = read_number(path, "");
     snprintf(path, sizeof(path), "%s/memory.stat", dir);
-    cache = read_number(path, v2 ? "inactive_file " : "total_inactive_file ");
+    active   = read_number(path, v2 ? "active_file " : "total_active_file ");
+    inactive = read_number(path, v2 ? "inactive_file " : "total_inactive_file ");
     if (used < 0) used = 0.0;
-    if (cache > 0 && cache < used) used -= cache;
+    if (active > 0 && active < used) used -= active;
+    if (inactive > 0 && inactive < used) used -= inactive;
     *room = limit > used ? limit - used : 0.0;
     return 1;
 }
