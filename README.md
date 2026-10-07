@@ -224,6 +224,8 @@ A few numerical parameters can be overridden without recompiling; anything not g
 | `--tf TF` | Final time |
 | `--output-interval N` | Write VTK every N iterations (`0` disables VTK output) |
 | `--re RE` | Reynolds number |
+| `--poisson-order N` | `2` (five-point, default) or `4` (compact nine-point) Poisson operator of the FFT solver with walls (see [Higher order with walls](#higher-order-with-walls)) |
+| `--wall-closure NAME` | Wall vorticity: `velocity` (`dv/dx − du/dy`, default) or `briley` (third order, from the stream function) |
 | `--case NAME` | `cavity` (default): the lid-driven cavity. On a doubly periodic unit square: `taylor-green`, a decaying vortex compared with the exact solution at the end, or `shear-layer`, a double shear layer that rolls up (see [Periodic boundaries](#periodic-boundaries)) |
 | `--cpu` | CUDA builds only: run on the CPU instead of the GPU |
 | `--help` | Show the option list |
@@ -286,6 +288,7 @@ builds and runs `test_cnavier`:
 - **Poisson solvers**: the FFT solver against an exact eigenmode, at sizes that exercise every batching case of the transform; FFT, SOR and Gauss-Seidel giving the same answer once converged; residuals of the iterative solvers; SOR iteration counts on anisotropic grids.
 - **Time stepping**: short cavity runs with both schemes on square and non-square grids (finite, divergence-free); the stability limit (0.95× runs, 1.05× diverges) and the suggested `dt`; the observed order in `dt` on all nodes, walls included: Euler first order, RK4 fourth order, with RK4's error at the same step about a million times smaller than Euler's. Both orders also hold with a time-dependent vorticity source, which checks that each RK4 stage evaluates the source at its own time; a run started at t0 > 0 checks that the source is evaluated at that run's times.
 - **Spatial accuracy**: a manufactured solution (see [Spatial convergence](#spatial-convergence)) on 17², 33² and 65² grids: ψ, `u` and `v` converge at second order and ω at least at second order, and the errors themselves are within fixed bounds. On a periodic grid, a second manufactured solution converges at the nominal order 2, 4 and 6 (also on a 2×1 domain).
+- **Higher order with walls**: the compact Poisson operator converges at least at fourth order (on a test with a non-zero Laplacian on the walls); with the third-order wall closure the manufactured solution converges at fourth order, and the wall closure alone stays at two.
 - **Periodic boundaries**: the periodic operators differentiate at their nominal order and annihilate constants; the periodic Poisson solver solves `(DX2 + DY2) ψ = f` to round-off on odd and even grid sizes, with zero-mean ψ.
 - **Backends**: driving the solver through `backend.c` gives exactly what calling it directly gives, and every solver ignores changes to the caller's configuration after it is created.
 - **OpenMP** (with `OPENMP=1`): results on 1 and on 4 threads are bitwise identical above the size where loops go parallel.
@@ -294,7 +297,7 @@ builds and runs `test_cnavier`:
 make CUDA=1 test
 ```
 
-additionally checks the GPU backend against the CPU: SpMV for all four operators, each Poisson solver, the continuity diagnostic, and full timesteps for the Euler/RK4 and FFT/SOR/Gauss-Seidel combinations on square and non-square grids, with and without a vorticity source, and on periodic grids. These comparisons are what keeps the GPU code in step with the CPU code, so run them on a machine with a GPU after changing either.
+additionally checks the GPU backend against the CPU: SpMV for all four operators, each Poisson solver, the continuity diagnostic, and full timesteps for the Euler/RK4 and FFT/SOR/Gauss-Seidel combinations on square and non-square grids, with and without a vorticity source, on periodic grids, and with the compact Poisson operator and the wall closure from ψ. These comparisons are what keeps the GPU code in step with the CPU code, so run them on a machine with a GPU after changing either.
 
 ```bash
 make OPENMP=1 CUDA=1 test
@@ -372,6 +375,28 @@ finds what holds the order to two. A copy of the RK4 step (bitwise identical to 
 - **The Poisson operator and the wall-vorticity closure each limit the order to two on their own.** Improving only one of them would not raise the global order.
 - **Their errors partly cancel:** replacing only ψ by the exact solution makes the error ten times larger. This fits the known observation that a locally low-order wall formula can sit in a globally second-order method.
 - **With both replaced, the order is four, not six,** for derivative orders 4 and 6. That is consistent with the derivative operators' rows next to the walls, which are of second and fourth order.
+
+### Higher order with walls
+
+The ablation pointed at two parts, and two options replace them:
+
+- `--poisson-order 4`: the compact nine-point ("Mehrstellen") Poisson operator, fourth order, solved by the same sine transform at the same cost. Its right-hand side needs ω next to the walls, which it extrapolates from the interior, so the solve still reads only the interior.
+- `--wall-closure briley`: the wall vorticity from the stream function with Briley's third-order formula, `ω₀ = (85ψ₀ − 108ψ₁ + 27ψ₂ − 4ψ₃)/(18h²) + 11U/(3h)`, `U` the wall's tangential velocity. Thom's formula is its first-order relative.
+
+Derivative order 6, error of ω at 257² and the observed order from 129²:
+
+| Poisson operator, wall closure | ω error | order of ω | order of ψ | order of `u` |
+|---|---|---|---|---|
+| five-point, velocity-based (default) | 1.19e-4 | 2.37 | 2.01 | 2.00 |
+| five-point, Briley | 9.65e-5 | 2.05 | 2.00 | 2.00 |
+| compact, velocity-based | 7.52e-5 | 3.01 | 2.99 | 2.79 |
+| compact, Briley | **3.16e-7** | **4.20** | 4.21 | 3.00 |
+
+- **Together they make the method fourth order** for ω (4.00 on the interior) and ψ, with 380 times less error than the default at 257². The velocity converges at three, limited by the first-derivative rows next to the walls.
+- **The wall closure alone changes nothing; the compact operator alone gives three.** The ablation's exact-ψ variant had suggested two: replacing ψ by the exact solution also cut the coupling between ψ and the wall formula, which the real operator keeps.
+- Both options keep the stability limit (3000 steps at 0.95× run bounded, RK4 and Euler), and the GPU matches the CPU.
+
+**The cavity converges faster too.** Its lid corners are singular, so the manufactured solution's order does not carry over, but measured against the 257² solution with both options (default case, t = 30, centerline velocities at the Ghia points), the default is off by 3.2e-3 at 64² and 5.6e-4 at 129², and both options together by 4.8e-4 and 1.3e-5. The two 257² solutions agree to 1.0e-4. Against Ghia et al. the 64² solution with both options looks worse (0.0055/0.0090 vs 0.0023/0.0073), because the default's small distance there is partly error cancellation and Ghia's data are themselves second order. The defaults are unchanged; both options are opt-in.
 
 **Without walls the stencils reach their nominal order.** `make convergence` also runs a periodic manufactured solution (three Fourier modes of different wavenumbers) on a doubly periodic grid, where every row of the operators is the centered stencil and the Poisson operator `DX2 + DY2` has the same order. Maximum error of ω, observed order in parentheses:
 

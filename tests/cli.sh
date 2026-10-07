@@ -59,6 +59,9 @@ expect nonzero --re nan
 expect nonzero --case nonsense
 expect nonzero --case ""
 expect nonzero --case taylor-green --dt 0.02
+expect nonzero --poisson-order 3
+expect nonzero --poisson-order 4x
+expect nonzero --wall-closure thom
 expect nonzero --bogus
 expect nonzero stray-argument
 
@@ -68,6 +71,7 @@ expect 0 --tf 0.005 --output-interval 0
 expect 0 --nx 33 --ny 17 --tf 0.01 --output-interval 0
 expect 0 --case taylor-green --nx 32 --ny 24 --tf 0.01 --output-interval 0
 expect 0 --case shear-layer --n 33 --re 1000 --tf 0.01 --output-interval 0
+expect 0 --poisson-order 4 --wall-closure briley --nx 33 --ny 17 --tf 0.01 --output-interval 0
 
 echo
 echo "$count checks, $failed failed"

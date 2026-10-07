@@ -59,6 +59,12 @@ typedef struct
 mms_errors mms_run(int nx, int ny, double Lx, double Ly, double Re, int order, int time_scheme,
                    int poisson_type, double dt, double t0, double T);
 
+// mms_run() with RK4 and the FFT solver, with a choice of Poisson operator
+// (poisson_order 2 or 4) and wall-vorticity closure (0: D_x v - D_y u, 1:
+// third order from psi)
+mms_errors mms_run_closures(int nx, int ny, double Lx, double Ly, double Re, int order, int poisson_order,
+                            int wall_closure, double dt, double t0, double T);
+
 // mms_run() on a doubly periodic nx x ny grid (dx = Lx/nx) with the periodic
 // solution, RK4 or Euler, and the periodic FFT Poisson solver
 mms_errors mms_run_periodic(int nx, int ny, double Lx, double Ly, double Re, int order, int time_scheme,

@@ -152,6 +152,30 @@ __global__ void vorticity_bc_kernel(csr_dev DX, csr_dev DY, const double *u, con
         w[k] = csr_row(DX, v, k) - csr_row(DY, u, k);
 }
 
+// Third-order wall vorticity from psi (wall_closure 1), as
+// set_wall_vorticity_psi() in fluiddyn.c: corners take the bottom/top value
+__device__ inline double briley(double p0, double p1, double p2, double p3, double U, double h)
+{
+    return (85.0 * p0 - 108.0 * p1 + 27.0 * p2 - 4.0 * p3) / (18.0 * h * h) + 11.0 * U / (3.0 * h);
+}
+
+__global__ void vorticity_bc_psi_kernel(const double *psi, double *w, wall_bc bc, int nx, int ny,
+                                        double dx, double dy)
+{
+    int k = blockIdx.x * blockDim.x + threadIdx.x;
+    if (k >= nx * ny) return;
+    int i = k / nx, j = k % nx;
+
+    if (i == 0)
+        w[k] = briley(psi[j], psi[nx + j], psi[2 * nx + j], psi[3 * nx + j], bc.u[2], dy);
+    else if (i == ny - 1)
+        w[k] = briley(psi[k], psi[k - nx], psi[k - 2 * nx], psi[k - 3 * nx], -bc.u[3], dy);
+    else if (j == 0)
+        w[k] = briley(psi[k], psi[k + 1], psi[k + 2], psi[k + 3], -bc.v[0], dx);
+    else if (j == nx - 1)
+        w[k] = briley(psi[k], psi[k - 1], psi[k - 2], psi[k - 3], bc.v[1], dx);
+}
+
 // out = -u*(dw/dx) - v*(dw/dy) + (1/Re)*(d2w/dx2 + d2w/dy2)
 __global__ void rhs_kernel(csr_dev DX, csr_dev DY, csr_dev DX2, csr_dev DY2,
                            const double *w, const double *u, const double *v,
@@ -284,7 +308,7 @@ __device__ inline double dst_mode(const cufftDoubleComplex *spec_cols, int i, in
 // set to 0.
 __global__ void spectral_divide_kernel(const cufftDoubleComplex *spec, double *out,
                                        const double *lambda_i, const double *lambda_j,
-                                       int nx, int ny)
+                                       double cross, int nx, int ny)
 {
     int k = blockIdx.x * blockDim.x + threadIdx.x;
     if (k >= nx * ny) return;
@@ -293,7 +317,8 @@ __global__ void spectral_divide_kernel(const cufftDoubleComplex *spec, double *o
     if (i == 0 || i == ny - 1 || j == 0 || j == nx - 1)
         out[k] = 0.0;
     else
-        out[k] = dst_mode(spec, i, j, ny) / (lambda_i[i - 1] + lambda_j[j - 1]);
+        out[k] = dst_mode(spec, i, j, ny) /
+                 (lambda_i[i - 1] + lambda_j[j - 1] + cross * lambda_i[i - 1] * lambda_j[j - 1]);
 }
 
 // Scale each sine mode. Wall nodes are set to 0.
@@ -468,15 +493,53 @@ static void dst2d(gpu_solver *g, const double *src)
     CUFFT_CHECK(cufftExecD2Z(g->plan_cols, g->ext, g->spec));
 }
 
+// w at interior node (i, j), or at a wall node the quadratic extrapolation of
+// the first three interior nodes along the wall normal, as
+// f_or_extrapolated() in poisson.c
+__device__ inline double w_or_extrapolated(const double *w, int i, int j, int nx, int ny)
+{
+    if (j == 0) return 3.0 * w[i * nx + 1] - 3.0 * w[i * nx + 2] + w[i * nx + 3];
+    if (j == nx - 1) return 3.0 * w[i * nx + nx - 2] - 3.0 * w[i * nx + nx - 3] + w[i * nx + nx - 4];
+    if (i == 0) return 3.0 * w[nx + j] - 3.0 * w[2 * nx + j] + w[3 * nx + j];
+    if (i == ny - 1) return 3.0 * w[(ny - 2) * nx + j] - 3.0 * w[(ny - 3) * nx + j] + w[(ny - 4) * nx + j];
+    return w[i * nx + j];
+}
+
+// Right-hand side of the compact operator (poisson_order 4) on the interior:
+// w + (w_E + w_W + w_N + w_S - 4 w)/12
+__global__ void compact_rhs_kernel(const double *w, double *out, int nx, int ny)
+{
+    int k = blockIdx.x * blockDim.x + threadIdx.x;
+    if (k >= nx * ny) return;
+    int i = k / nx, j = k % nx;
+
+    if (i == 0 || i == ny - 1 || j == 0 || j == nx - 1)
+        out[k] = 0.0;
+    else
+        out[k] = w[k] + (w_or_extrapolated(w, i, j - 1, nx, ny) + w_or_extrapolated(w, i, j + 1, nx, ny) +
+                         w_or_extrapolated(w, i - 1, j, nx, ny) + w_or_extrapolated(w, i + 1, j, nx, ny) -
+                         4.0 * w[k]) /
+                            12.0;
+}
+
 // Direct solve: DST-I, divide by the eigenvalues, DST-I again, normalise.
 // The sign of the right-hand side (-w) is folded into the final scale.
 static void poisson_fft(gpu_solver *g, const double *w)
 {
     int nx = g->nx, ny = g->ny, n = g->n;
     double inv_norm = 1.0 / (4.0 * (double)(nx - 1) * (double)(ny - 1));
+    double cross = 0.0;
 
+    if (g->cfg.poisson_order == 4)
+    {
+        // The corrected right-hand side goes to scratch; dst2d() has read it
+        // before spectral_divide_kernel writes scratch again
+        cross = (g->cfg.dx * g->cfg.dx + g->cfg.dy * g->cfg.dy) / 12.0;
+        LAUNCH(compact_rhs_kernel, n, w, g->scratch, nx, ny);
+        w = g->scratch;
+    }
     dst2d(g, w);
-    LAUNCH(spectral_divide_kernel, n, g->spec, g->scratch, g->lambda_i, g->lambda_j, nx, ny);
+    LAUNCH(spectral_divide_kernel, n, g->spec, g->scratch, g->lambda_i, g->lambda_j, cross, nx, ny);
     dst2d(g, g->scratch);
     LAUNCH(spectral_scale_kernel, n, g->spec, g->psi, -inv_norm, nx, ny);
 }
@@ -542,6 +605,15 @@ static void add_vorticity_source(gpu_solver *g, double t, double *out)
     LAUNCH(axpy_kernel, g->n, out, 1.0, g->source, out, g->n);
 }
 
+// Wall vorticity of w from u, v (wall_closure 0) or from psi (wall_closure 1)
+static void wall_vorticity(gpu_solver *g, const double *u, const double *v, double *w)
+{
+    if (g->cfg.wall_closure == 1)
+        LAUNCH(vorticity_bc_psi_kernel, g->n, g->psi, w, g->cfg.bc, g->nx, g->ny, g->cfg.dx, g->cfg.dy);
+    else
+        LAUNCH(vorticity_bc_kernel, g->n, g->DX, g->DY, u, v, w, g->nx, g->ny);
+}
+
 // Evaluate dw/dt at time t into out and update u, v consistent with w
 static void dwdt(gpu_solver *g, double *w, double *out, double t)
 {
@@ -551,7 +623,7 @@ static void dwdt(gpu_solver *g, double *w, double *out, double t)
     if (!g->cfg.periodic)
     {
         LAUNCH(wall_bc_kernel, g->n, g->u, g->v, g->cfg.bc, g->nx, g->ny);
-        LAUNCH(vorticity_bc_kernel, g->n, g->DX, g->DY, g->u, g->v, w, g->nx, g->ny);
+        wall_vorticity(g, g->u, g->v, w);
     }
     LAUNCH(rhs_kernel, g->n, g->DX, g->DY, g->DX2, g->DY2, w, g->u, g->v, g->cfg.Re, out, g->n);
     add_vorticity_source(g, t, out);
@@ -614,6 +686,11 @@ gpu_solver *gpu_init(const solver_config *cfg)
     g->partial = dev_alloc(RED_BLOCKS);
     CUDA_CHECK(cudaMalloc((void **)&g->rb, sizeof(struct rb_state)));
 
+    if (cfg->poisson_order == 4 && cfg->poisson_type != 3 && !cfg->periodic)
+    {
+        printf("** Error: the fourth-order Poisson operator needs the FFT solver (poisson_type 3) **\n");
+        exit(1);
+    }
     if (cfg->periodic)
     {
         int kx = nx / 2 + 1;
@@ -734,11 +811,14 @@ void gpu_step(gpu_solver *g)
     int n = g->n;
     double dt = g->cfg.dt, t = g->cfg.t0 + (double)g->steps * dt;
 
-    // Boundary conditions (walls only)
+    // Boundary conditions (walls only). The formula from psi needs psi,
+    // which a first step does not have yet.
+    if (!g->cfg.periodic && g->cfg.wall_closure == 1 && g->steps == 0)
+        velocity_from_vorticity(g, g->w);
     if (!g->cfg.periodic)
     {
         LAUNCH(wall_bc_kernel, n, g->u, g->v, g->cfg.bc, g->nx, g->ny);
-        LAUNCH(vorticity_bc_kernel, n, g->DX, g->DY, g->u, g->v, g->w, g->nx, g->ny);
+        wall_vorticity(g, g->u, g->v, g->w);
     }
 
     if (g->cfg.time_scheme == 1)
@@ -773,7 +853,7 @@ void gpu_step(gpu_solver *g)
         CUDA_CHECK(cudaMemcpy(g->k1, g->u, n * sizeof(double), cudaMemcpyDeviceToDevice));
         CUDA_CHECK(cudaMemcpy(g->k2, g->v, n * sizeof(double), cudaMemcpyDeviceToDevice));
         LAUNCH(wall_bc_kernel, n, g->k1, g->k2, g->cfg.bc, g->nx, g->ny);
-        LAUNCH(vorticity_bc_kernel, n, g->DX, g->DY, g->k1, g->k2, g->w, g->nx, g->ny);
+        wall_vorticity(g, g->k1, g->k2, g->w);
     }
     g->steps++;
 }

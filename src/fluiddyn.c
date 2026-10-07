@@ -50,6 +50,16 @@ rk4_ctx rk4_alloc(const solver_config *cfg)
     ctx.k4 = initm(ny, nx);
     ctx.w_tmp = initm(ny, nx);
     ctx.rhs = initm(ny, nx);
+    if ((cfg->poisson_order != 2 && cfg->poisson_order != 4) || (cfg->wall_closure != 0 && cfg->wall_closure != 1))
+    {
+        printf("** Error: poisson_order must be 2 or 4 and wall_closure 0 or 1 **\n");
+        exit(1);
+    }
+    if (cfg->poisson_order == 4 && cfg->poisson_type != 3 && !cfg->periodic)
+    {
+        printf("** Error: the fourth-order Poisson operator needs the FFT solver (poisson_type 3) **\n");
+        exit(1);
+    }
     if (cfg->periodic && cfg->poisson_type != 3)
     {
         printf("** Error: periodic boundaries need the FFT Poisson solver (poisson_type 3) **\n");
@@ -97,7 +107,7 @@ static void velocity_from_vorticity(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx)
         poisson_SOR(ctx->rhs, ctx->psi, ctx->psi_scratch, ctx->cfg.dx, ctx->cfg.dy,
                     ctx->cfg.poisson_max_it, ctx->cfg.poisson_tol, ctx->cfg.beta);
     else if (ctx->cfg.poisson_type == 3 && ctx->fft)
-        poisson_FFT(ctx->fft, ctx->rhs, ctx->psi, ctx->cfg.dx, ctx->cfg.dy);
+        poisson_FFT_order(ctx->fft, ctx->rhs, ctx->psi, ctx->cfg.dx, ctx->cfg.dy, ctx->cfg.poisson_order);
     else if (ctx->cfg.poisson_type == 3)
     {
         printf("** Error: the workspace has no FFT plans; it was not allocated by rk4_alloc() "
@@ -135,11 +145,53 @@ static double csr_row(const smtrx *A, const double *x, int r)
     return sum;
 }
 
-// Wall vorticity from the velocity: w = dv/dx - du/dy on the boundary nodes
+// Third-order wall vorticity from the stream function (Briley 1971). With
+// psi = 0 along a wall, w = -d2psi/ds2 there, s the distance from the wall;
+// from psi_0..psi_3 at s = 0, h, 2h, 3h and the wall-tangential velocity
+// U = dpsi/ds(0):
+//   w = (85 psi_0 - 108 psi_1 + 27 psi_2 - 4 psi_3) / (18 h^2) + 11 U / (3 h)
+static double briley(double p0, double p1, double p2, double p3, double U, double h)
+{
+    return (85.0 * p0 - 108.0 * p1 + 27.0 * p2 - 4.0 * p3) / (18.0 * h * h) + 11.0 * U / (3.0 * h);
+}
+
+// Wall vorticity from psi (wall_closure 1). dpsi/ds is u at the bottom wall,
+// -u at the top, -v at the left and v at the right. Corners take the bottom
+// or top value, as in the velocity-based formula.
+static void set_wall_vorticity_psi(mtrx w, const rk4_ctx *ctx)
+{
+    int i, j, nx = ctx->cfg.nx, ny = ctx->cfg.ny;
+    mtrx p = ctx->psi;
+    const wall_bc *bc = &ctx->cfg.bc;
+    double dx = ctx->cfg.dx, dy = ctx->cfg.dy;
+
+    for (j = 0; j < nx; j++)
+    {
+        MAt(w, 0, j) = briley(MAt(p, 0, j), MAt(p, 1, j), MAt(p, 2, j), MAt(p, 3, j), bc->u[2], dy);
+        MAt(w, ny - 1, j) = briley(MAt(p, ny - 1, j), MAt(p, ny - 2, j), MAt(p, ny - 3, j), MAt(p, ny - 4, j),
+                                   -bc->u[3], dy);
+    }
+    for (i = 1; i < ny - 1; i++)
+    {
+        MAt(w, i, 0) = briley(MAt(p, i, 0), MAt(p, i, 1), MAt(p, i, 2), MAt(p, i, 3), -bc->v[0], dx);
+        MAt(w, i, nx - 1) = briley(MAt(p, i, nx - 1), MAt(p, i, nx - 2), MAt(p, i, nx - 3), MAt(p, i, nx - 4),
+                                   bc->v[1], dx);
+    }
+}
+
+// Wall vorticity: w = dv/dx - du/dy on the boundary nodes (wall_closure 0),
+// or the third-order formula from psi (wall_closure 1), which reads ctx->psi
+// and ignores u and v
 static void set_wall_vorticity(mtrx w, mtrx u, mtrx v, const rk4_ctx *ctx)
 {
     int i, j, nx = ctx->cfg.nx, ny = ctx->cfg.ny;
     const smtrx *DX = ctx->cfg.DX, *DY = ctx->cfg.DY;
+
+    if (ctx->cfg.wall_closure == 1)
+    {
+        set_wall_vorticity_psi(w, ctx);
+        return;
+    }
 
     for (j = 0; j < nx; j++)
     {
@@ -347,7 +399,10 @@ void step(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx)
     double dt = ctx->cfg.dt;
     const wall_bc *bc = &ctx->cfg.bc;
 
-    // Vorticity BCs: w = dv/dx - du/dy evaluated at boundaries (walls only)
+    // Vorticity BCs: w = dv/dx - du/dy evaluated at boundaries (walls only).
+    // The formula from psi needs psi, which a first step does not have yet.
+    if (!ctx->cfg.periodic && ctx->cfg.wall_closure == 1 && ctx->steps == 0)
+        velocity_from_vorticity(w, u, v, ctx);
     if (!ctx->cfg.periodic)
     {
         apply_wall_bc(u, v, bc);
