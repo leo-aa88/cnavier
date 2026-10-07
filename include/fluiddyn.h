@@ -36,6 +36,8 @@ typedef struct
     int time_scheme;                  // 1=Euler, 2=RK4
     int poisson_type;                 // 1=Gauss-Seidel, 2=SOR, 3=FFT
     int poisson_max_it;               // iteration limit of Gauss-Seidel/SOR
+    int poisson_order;                // FFT solver with walls: 2 (5-point) or 4 (compact 9-point)
+    int wall_closure;                 // wall vorticity: 0 = D_x v - D_y u, 1 = third-order formula from psi
     double poisson_tol, beta;         // their tolerance and SOR parameter
     int periodic;                     // 0: four walls with velocities bc; 1: doubly periodic
     wall_bc bc;                       // wall velocities (walls only)

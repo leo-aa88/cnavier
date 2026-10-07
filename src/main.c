@@ -93,6 +93,10 @@ static void usage(const char *prog)
     printf("  --tf TF              final time\n");
     printf("  --output-interval N  write VTK every N iterations (0 = never)\n");
     printf("  --re RE              Reynolds number\n");
+    printf("  --poisson-order N    2 (5-point, default) or 4 (compact 9-point) Poisson\n"
+           "                       operator of the FFT solver with walls\n");
+    printf("  --wall-closure NAME  wall vorticity: velocity (dv/dx - du/dy, default) or\n"
+           "                       briley (third order, from the stream function)\n");
     printf("  --case NAME          cavity (default; lid-driven, four walls), or on a\n"
            "                       doubly periodic unit square: taylor-green (decaying\n"
            "                       vortex, compared with the exact solution at the end)\n"
@@ -127,6 +131,8 @@ int main(int argc, char *argv[])
     int time_scheme = 2;  // 1=Euler  2=RK4
     int use_gpu = 1;      // only meaningful when built with CUDA=1
     enum flow_case flow = CASE_CAVITY;
+    int poisson_order = 2; // 2 = 5-point, 4 = compact 9-point (FFT solver, walls)
+    int wall_closure = 0;  // 0 = dv/dx - du/dy, 1 = Briley's formula from psi
 
     // Command-line overrides
     static struct option long_opts[] = {
@@ -138,6 +144,8 @@ int main(int argc, char *argv[])
         {"output-interval", required_argument, 0, 'o'},
         {"re", required_argument, 0, 'r'},
         {"case", required_argument, 0, 'k'},
+        {"poisson-order", required_argument, 0, 'p'},
+        {"wall-closure", required_argument, 0, 'w'},
         {"cpu", no_argument, 0, 'c'},
         {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}};
@@ -176,6 +184,17 @@ int main(int argc, char *argv[])
                 flow = CASE_TAYLOR_GREEN;
             else if (strcmp(optarg, "shear-layer") == 0)
                 flow = CASE_SHEAR_LAYER;
+            else
+                ok = 0;
+            break;
+        case 'p':
+            ok = parse_int(optarg, &poisson_order) && (poisson_order == 2 || poisson_order == 4);
+            break;
+        case 'w':
+            if (strcmp(optarg, "velocity") == 0)
+                wall_closure = 0;
+            else if (strcmp(optarg, "briley") == 0)
+                wall_closure = 1;
             else
                 ok = 0;
             break;
@@ -248,6 +267,11 @@ int main(int argc, char *argv[])
     if (periodic && poisson_type != 3)
     {
         printf("** Error: the periodic cases need the FFT Poisson solver (poisson_type = 3) **\n");
+        return 1;
+    }
+    if (poisson_order == 4 && poisson_type != 3)
+    {
+        printf("** Error: --poisson-order 4 needs the FFT Poisson solver (poisson_type = 3) **\n");
         return 1;
     }
 
@@ -340,6 +364,8 @@ int main(int argc, char *argv[])
     cfg.time_scheme = time_scheme;
     cfg.poisson_type = poisson_type;
     cfg.poisson_max_it = poisson_max_it;
+    cfg.poisson_order = poisson_order;
+    cfg.wall_closure = wall_closure;
     cfg.poisson_tol = poisson_tol;
     cfg.beta = beta;
     cfg.periodic = periodic;

@@ -140,7 +140,8 @@ static mms_norm norm_of(mtrx a, mtrx b, int part)
 }
 
 static mms_errors run(int nx, int ny, double Lx, double Ly, double Re, int order, int time_scheme,
-                      int poisson_type, double dt, double t0, double T, int periodic)
+                      int poisson_type, int poisson_order, int wall_closure, double dt, double t0, double T,
+                      int periodic)
 {
     mms_case c = {Lx, Ly, Re, Lx / (periodic ? nx : nx - 1), Ly / (periodic ? ny : ny - 1), periodic};
     wall_bc walls = {{0., 0., 0., 0.}, {0., 0., 0., 0.}};
@@ -174,6 +175,8 @@ static mms_errors run(int nx, int ny, double Lx, double Ly, double Re, int order
     cfg.time_scheme = time_scheme;
     cfg.poisson_type = poisson_type;
     cfg.poisson_max_it = 1000000;
+    cfg.poisson_order = poisson_order;
+    cfg.wall_closure = wall_closure;
     cfg.poisson_tol = 1E-13;
     cfg.beta = sor_beta(nx, ny, c.dx, c.dy);
     cfg.periodic = periodic;
@@ -221,13 +224,19 @@ static mms_errors run(int nx, int ny, double Lx, double Ly, double Re, int order
 mms_errors mms_run(int nx, int ny, double Lx, double Ly, double Re, int order, int time_scheme,
                    int poisson_type, double dt, double t0, double T)
 {
-    return run(nx, ny, Lx, Ly, Re, order, time_scheme, poisson_type, dt, t0, T, 0);
+    return run(nx, ny, Lx, Ly, Re, order, time_scheme, poisson_type, 2, 0, dt, t0, T, 0);
+}
+
+mms_errors mms_run_closures(int nx, int ny, double Lx, double Ly, double Re, int order, int poisson_order,
+                            int wall_closure, double dt, double t0, double T)
+{
+    return run(nx, ny, Lx, Ly, Re, order, 2, 3, poisson_order, wall_closure, dt, t0, T, 0);
 }
 
 mms_errors mms_run_periodic(int nx, int ny, double Lx, double Ly, double Re, int order, int time_scheme,
                             double dt, double t0, double T)
 {
-    return run(nx, ny, Lx, Ly, Re, order, time_scheme, 3, dt, t0, T, 1);
+    return run(nx, ny, Lx, Ly, Re, order, time_scheme, 3, 2, 0, dt, t0, T, 1);
 }
 
 // ---------------------------------------------------------------------------

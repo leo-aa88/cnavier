@@ -267,10 +267,33 @@ void fft_cleanup(fft_solver *s)
 
 void poisson_FFT(fft_solver *s, mtrx f, mtrx u, double dx, double dy)
 {
+    poisson_FFT_order(s, f, u, dx, dy, 2);
+}
+
+// f at interior node (i, j), or, for a wall node, the cubic extrapolation of
+// the interior along the wall normal (f is not used on the walls, so the
+// solve still depends on the interior of f only)
+static double f_or_extrapolated(mtrx f, int i, int j)
+{
+    int ny = f.m, nx = f.n;
+    if (j == 0) return 3.0 * MAt(f, i, 1) - 3.0 * MAt(f, i, 2) + MAt(f, i, 3);
+    if (j == nx - 1) return 3.0 * MAt(f, i, nx - 2) - 3.0 * MAt(f, i, nx - 3) + MAt(f, i, nx - 4);
+    if (i == 0) return 3.0 * MAt(f, 1, j) - 3.0 * MAt(f, 2, j) + MAt(f, 3, j);
+    if (i == ny - 1) return 3.0 * MAt(f, ny - 2, j) - 3.0 * MAt(f, ny - 3, j) + MAt(f, ny - 4, j);
+    return MAt(f, i, j);
+}
+
+void poisson_FFT_order(fft_solver *s, mtrx f, mtrx u, double dx, double dy, int order)
+{
     int i;
     int nx = s->nx, ny = s->ny;
     double *fft_buf = s->buf;
     int rows = ny - 2, cols = nx - 2; // interior: row index i is y, column j is x
+    // Order 4: the compact 9-point operator
+    //   [dxx + dyy + (dx^2 + dy^2)/12 dxx dyy] u = [1 + (dx^2 dxx + dy^2 dyy)/12] f
+    // with dxx, dyy the second differences. Its right-hand side is
+    // f + (f_E + f_W + f_N + f_S - 4 f)/12, for any dx, dy.
+    double cross = order == 4 ? (dx * dx + dy * dy) / 12.0 : 0.0;
 
     // Copy the interior right-hand side into the work buffer
 #ifdef _OPENMP
@@ -280,7 +303,14 @@ void poisson_FFT(fft_solver *s, mtrx f, mtrx u, double dx, double dy)
     {
         int j;
         for (j = 0; j < cols; j++)
-            fft_buf[i * cols + j] = MAt(f, i + 1, j + 1);
+        {
+            double c = MAt(f, i + 1, j + 1);
+            if (order == 4)
+                c += (f_or_extrapolated(f, i + 1, j) + f_or_extrapolated(f, i + 1, j + 2) +
+                      f_or_extrapolated(f, i, j + 1) + f_or_extrapolated(f, i + 2, j + 1) - 4.0 * c) /
+                     12.0;
+            fft_buf[i * cols + j] = c;
+        }
     }
 
     // Forward DST-I
@@ -300,7 +330,7 @@ void poisson_FFT(fft_solver *s, mtrx f, mtrx u, double dx, double dy)
         for (j = 0; j < cols; j++)
         {
             double lambda_j = (2.0 * cos(PI * (j + 1) / (double)(cols + 1)) - 2.0) / (dx * dx);
-            fft_buf[i * cols + j] /= (lambda_i + lambda_j);
+            fft_buf[i * cols + j] /= (lambda_i + lambda_j + cross * lambda_i * lambda_j);
         }
     }
 

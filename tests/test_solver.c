@@ -57,12 +57,13 @@ typedef struct
 // workspace takes its copy, and the configuration points into *p, so p must
 // stay where it is until problem_free().
 // problem_init_ext() also sets the derivative order, Re, the domain size,
-// periodic boundaries (then dx = Lx/nx, and bc is unused), the start time and
-// an optional vorticity source.
+// periodic boundaries (then dx = Lx/nx, and bc is unused), the start time, an
+// optional vorticity source, the Poisson operator order (FFT solver) and the
+// wall-vorticity closure.
 static void problem_init_ext(problem *p, int nx, int ny, double Lx, double Ly, int periodic, int order,
                              double Re, int time_scheme, int poisson_type, double dt, double poisson_tol,
                              const wall_bc *bc, double t0, void (*vorticity_source)(double, mtrx, void *),
-                             void *source_data)
+                             void *source_data, int poisson_order, int wall_closure)
 {
     double dx = Lx / (periodic ? nx : nx - 1), dy = Ly / (periodic ? ny : ny - 1);
     wall_bc lid = {{0., 0., 0., 1.}, {0., 0., 0., 0.}};
@@ -98,6 +99,8 @@ static void problem_init_ext(problem *p, int nx, int ny, double Lx, double Ly, i
     p->cfg.time_scheme = time_scheme;
     p->cfg.poisson_type = poisson_type;
     p->cfg.poisson_max_it = 200000;
+    p->cfg.poisson_order = poisson_order;
+    p->cfg.wall_closure = wall_closure;
     p->cfg.poisson_tol = poisson_tol;
     p->cfg.beta = sor_beta(nx, ny, dx, dy);
     p->cfg.periodic = periodic;
@@ -119,7 +122,7 @@ static void problem_init_ext(problem *p, int nx, int ny, double Lx, double Ly, i
 static void problem_init(problem *p, int nx, int ny, int time_scheme, int poisson_type, double dt,
                          double poisson_tol, const wall_bc *bc)
 {
-    problem_init_ext(p, nx, ny, 1.0, 1.0, 0, 6, 100., time_scheme, poisson_type, dt, poisson_tol, bc, 0.0, NULL, NULL);
+    problem_init_ext(p, nx, ny, 1.0, 1.0, 0, 6, 100., time_scheme, poisson_type, dt, poisson_tol, bc, 0.0, NULL, NULL, 2, 0);
 }
 
 static void problem_free(problem *p)
@@ -472,7 +475,7 @@ static mtrx run_with_source(int n, int scheme, double dt, double T, mms_case *c)
     mtrx w = initm(n, n);
     problem p;
 
-    problem_init_ext(&p, n, n, 1.0, 1.0, 0, 6, c->Re, scheme, 3, dt, 1E-3, &walls, 0.0, mms_source, c);
+    problem_init_ext(&p, n, n, 1.0, 1.0, 0, 6, c->Re, scheme, 3, dt, 1E-3, &walls, 0.0, mms_source, c, 2, 0);
     mms_exact(c, 0.0, &p.w, &p.u, &p.v, NULL);
     for (t = 0; t < steps; t++)
         step(p.w, p.u, p.v, &p.ctx);
@@ -705,6 +708,80 @@ static void test_periodic_mms_order(void)
     double pw = log2(a.w.max / b.w.max);
     snprintf(name, sizeof(name), "2x1 domain, 48x32 -> 96x64, order 6: w order %.2f", pw);
     check(name, isnan(pw) ? INFINITY : fabs(pw - 6.0), 0.3);
+}
+
+// The compact Poisson operator (poisson_order 4) is at least fourth order, the
+// 5-point one second order, on psi = sin(pi x) sin(pi y) e^(x + 2y). Its Laplacian is
+// not zero on the walls, so the extrapolated wall values of the compact
+// right-hand side are exercised.
+static double compact_poisson_error(int nx, int ny, int order)
+{
+    int i, j;
+    double dx = 1.0 / (nx - 1), dy = 1.0 / (ny - 1), err = 0.0;
+    mtrx f = initm(ny, nx), u = initm(ny, nx);
+    fft_solver *fs = fft_setup(nx, ny);
+
+    for (i = 0; i < ny; i++)
+        for (j = 0; j < nx; j++)
+        {
+            double x = j * dx, y = i * dy;
+            double S = sin(PI * x) * exp(x), Sxx = ((1.0 - PI * PI) * sin(PI * x) + 2.0 * PI * cos(PI * x)) * exp(x);
+            double T = sin(PI * y) * exp(2.0 * y), Tyy = ((4.0 - PI * PI) * sin(PI * y) + 4.0 * PI * cos(PI * y)) * exp(2.0 * y);
+            MAt(f, i, j) = Sxx * T + S * Tyy;
+        }
+    poisson_FFT_order(fs, f, u, dx, dy, order);
+    for (i = 0; i < ny; i++)
+        for (j = 0; j < nx; j++)
+            err = fmax(err, fabs(MAt(u, i, j) - sin(PI * j * dx) * exp(j * dx) * sin(PI * i * dy) * exp(2.0 * i * dy)));
+    fft_cleanup(fs);
+    freem(&f);
+    freem(&u);
+    return err;
+}
+
+static void test_compact_poisson(void)
+{
+    int order;
+    char name[96];
+
+    printf("Unit: FFT Poisson solver, 5-point and compact operators\n");
+    for (order = 2; order <= 4; order += 2)
+    {
+        double sq = log2(compact_poisson_error(33, 33, order) / compact_poisson_error(65, 65, order));
+        double rect = log2(compact_poisson_error(33, 17, order) / compact_poisson_error(65, 33, order));
+        // The compact operator converges at about five here (fourth order is
+        // its guaranteed rate), so it is checked from below
+        snprintf(name, sizeof(name), "poisson_order %d: order %.2f (33 -> 65 squared)", order, sq);
+        check(name, order == 2 ? fabs(sq - 2.0) : 3.8 - sq, order == 2 ? 0.2 : 0.0);
+        snprintf(name, sizeof(name), "poisson_order %d: order %.2f (33x17 -> 65x33)", order, rect);
+        check(name, order == 2 ? fabs(rect - 2.0) : 3.8 - rect, order == 2 ? 0.2 : 0.0);
+    }
+}
+
+// Raising the wall-bounded order needs both the compact Poisson operator and
+// the third-order wall closure (issues #26, #29): together the manufactured
+// solution converges at about four; the wall closure alone stays at two
+static void test_wall_order_pairing(void)
+{
+    char name[96];
+    mms_errors a, b;
+    double order;
+
+    printf("Unit: compact Poisson operator and third-order wall closure, order 6, 33 -> 65\n");
+    a = mms_run_closures(33, 33, 1.0, 1.0, 100.0, 6, 4, 1, 2.5E-3, 0.0, 0.25);
+    b = mms_run_closures(65, 65, 1.0, 1.0, 100.0, 6, 4, 1, 2.5E-3, 0.0, 0.25);
+    order = log2(a.w.max / b.w.max);
+    snprintf(name, sizeof(name), "both: w order %.2f, 3.7 - order", order);
+    check(name, isnan(order) ? INFINITY : 3.7 - order, 0.0);
+    order = log2(a.psi.max / b.psi.max);
+    snprintf(name, sizeof(name), "both: psi order %.2f, 3.7 - order", order);
+    check(name, isnan(order) ? INFINITY : 3.7 - order, 0.0);
+    check("both: w max error at 65x65", b.w.max, 2E-4);
+    a = mms_run_closures(33, 33, 1.0, 1.0, 100.0, 6, 2, 1, 2.5E-3, 0.0, 0.25);
+    b = mms_run_closures(65, 65, 1.0, 1.0, 100.0, 6, 2, 1, 2.5E-3, 0.0, 0.25);
+    order = log2(a.w.max / b.w.max);
+    snprintf(name, sizeof(name), "wall closure alone: w order %.2f, |order - 2|", order);
+    check(name, isnan(order) ? INFINITY : fabs(order - 2.0), 0.2);
 }
 
 // Wall velocities go to the right nodes; at the corners the walls x = 0 and
@@ -1549,7 +1626,7 @@ static void test_gpu_source(int nx, int ny, int steps, int time_scheme, const ch
     mms_case c = {1.0, 1.0, 100.0, 1.0 / (nx - 1), 1.0 / (ny - 1), 0};
     wall_bc walls = {{0., 0., 0., 0.}, {0., 0., 0., 0.}};
     problem p;
-    problem_init_ext(&p, nx, ny, 1.0, 1.0, 0, 6, c.Re, time_scheme, 3, 0.002, 1E-10, &walls, 0.3, mms_source, &c);
+    problem_init_ext(&p, nx, ny, 1.0, 1.0, 0, 6, c.Re, time_scheme, 3, 0.002, 1E-10, &walls, 0.3, mms_source, &c, 2, 0);
     gpu_solver *g = gpu_for(&p);
     mtrx u = initm(ny, nx), v = initm(ny, nx), w = initm(ny, nx);
 
@@ -1583,7 +1660,7 @@ static void test_gpu_periodic(int nx, int ny, int steps, int time_scheme, const 
     char name[96];
     mms_case c = {2.0, 1.0, 100.0, 2.0 / nx, 1.0 / ny, 1};
     problem p;
-    problem_init_ext(&p, nx, ny, 2.0, 1.0, 1, 6, c.Re, time_scheme, 3, 0.002, 1E-10, NULL, 0.0, mms_source, &c);
+    problem_init_ext(&p, nx, ny, 2.0, 1.0, 1, 6, c.Re, time_scheme, 3, 0.002, 1E-10, NULL, 0.0, mms_source, &c, 2, 0);
     gpu_solver *g = gpu_for(&p);
     mtrx u = initm(ny, nx), v = initm(ny, nx), w = initm(ny, nx);
 
@@ -1605,6 +1682,48 @@ static void test_gpu_periodic(int nx, int ny, int steps, int time_scheme, const 
     freem(&u);
     freem(&v);
     freem(&w);
+    gpu_free(g);
+    problem_free(&p);
+}
+
+// The compact Poisson operator and the wall closure from psi on the GPU:
+// a lid-driven cavity run must match the CPU, and the compact Poisson solve
+// on its own too
+static void test_gpu_closures(int nx, int ny, int steps, int time_scheme, const char *label)
+{
+    int t, N = nx * ny;
+    char name[96];
+    problem p;
+    problem_init_ext(&p, nx, ny, 1.0, 1.0, 0, 6, 100., time_scheme, 3, 0.002, 1E-10, NULL, 0.0, NULL, NULL, 4, 1);
+    gpu_solver *g = gpu_for(&p);
+    mtrx u = initm(ny, nx), v = initm(ny, nx), w = initm(ny, nx), f = initm(ny, nx), psi = initm(ny, nx);
+
+    printf("GPU: %d steps, compact Poisson + wall closure from psi, %s, %dx%d grid\n", steps, label, nx, ny);
+    gpu_set_fields(g, &p.u, &p.v, &p.w);
+    for (t = 0; t < steps; t++)
+    {
+        step(p.w, p.u, p.v, &p.ctx);
+        gpu_step(g);
+    }
+    gpu_get_fields(g, &u, &v, &w);
+    snprintf(name, sizeof(name), "%s, compact + psi closure: w vs CPU", label);
+    check(name, rel_diff(w.M, p.w.M, N), 1E-11);
+    snprintf(name, sizeof(name), "%s, compact + psi closure: u, v vs CPU", label);
+    check(name, rel_diff(u.M, p.u.M, N) + rel_diff(v.M, p.v.M, N), 1E-11);
+
+    // The Poisson solve alone, on the final w: the GPU takes w, the CPU -w
+    mtrxcpy(f, p.w);
+    invsig(f);
+    poisson_FFT_order(p.ctx.fft, f, psi, p.cfg.dx, p.cfg.dy, 4);
+    gpu_poisson(g, p.w.M, u.M);
+    snprintf(name, sizeof(name), "%s, compact Poisson: psi vs CPU", label);
+    check(name, rel_diff(u.M, psi.M, N), 1E-12);
+
+    freem(&u);
+    freem(&v);
+    freem(&w);
+    freem(&f);
+    freem(&psi);
     gpu_free(g);
     problem_free(&p);
 }
@@ -1697,6 +1816,8 @@ static void run_gpu_tests(void)
     GPU_TEST(test_gpu_step(24, 40, 50, 0.002, 1, 3, 1E-10, NULL, "Euler + FFT", 1E-11));
     GPU_TEST(test_gpu_source(33, 33, 50, 2, "RK4 + FFT"));
     GPU_TEST(test_gpu_periodic(48, 33, 50, 2, "RK4"));
+    GPU_TEST(test_gpu_closures(40, 25, 30, 2, "RK4"));
+    GPU_TEST(test_gpu_closures(32, 32, 30, 1, "Euler"));
     GPU_TEST(test_gpu_periodic(32, 32, 50, 1, "Euler"));
     GPU_TEST(test_gpu_source(40, 24, 50, 1, "Euler + FFT"));
     GPU_TEST(test_gpu_step(40, 24, 20, 0.002, 2, 3, 1E-10, &four_walls,
@@ -1746,6 +1867,8 @@ int main(int argc, char **argv)
     test_source_temporal_order();
     test_mms_spatial_order();
     test_order_ablation();
+    test_compact_poisson();
+    test_wall_order_pairing();
     test_periodic_operators();
     test_periodic_poisson(32, 24, 6);
     test_periodic_poisson(15, 21, 4);

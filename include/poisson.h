@@ -37,6 +37,13 @@ void fft_cleanup(fft_solver *s);
 // Result written into pre-allocated matrix u. No scratch buffer needed.
 void poisson_FFT(fft_solver *s, mtrx f, mtrx u, double dx, double dy);
 
+// The same with a choice of operator: order 2 is the 5-point Laplacian (what
+// poisson_FFT() solves), order 4 the compact 9-point ("Mehrstellen")
+// operator with its corrected right-hand side. Order 4 needs f next to the
+// walls; it extrapolates it from the interior, so f is still read on the
+// interior only. Needs nx, ny >= 5.
+void poisson_FFT_order(fft_solver *s, mtrx f, mtrx u, double dx, double dy, int order);
+
 // Periodic Poisson solver: (DX2 + DY2) u = f on a doubly periodic nx x ny
 // grid, with the solver's own second-derivative operators (built with
 // SDiff2_periodic), by a 2D real FFT. u has zero mean; the mean of f is
