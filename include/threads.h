@@ -4,7 +4,8 @@
 #define THREADS_H_INCLUDED
 
 // Number of distinct physical cores among the CPUs the calling thread may run
-// on, from Linux sysfs. 0 if it cannot be determined, or without OpenMP.
+// on, from Linux sysfs. 0 if it cannot be determined, without OpenMP, or on
+// systems other than Linux.
 int physical_cores(void);
 
 // Unless OMP_NUM_THREADS or an OpenMP thread placement is set, use one thread

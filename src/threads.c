@@ -1,13 +1,16 @@
+#ifdef __linux__
 #define _GNU_SOURCE // sched_getaffinity
 #include <sched.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "threads.h"
-
 #ifdef _OPENMP
 #include <omp.h>
+#endif
 
+#if defined(_OPENMP) && defined(__linux__)
 // Number of distinct physical cores among the CPUs this process may run on.
 // CPUs that are hardware threads of one core share the same sysfs list of
 // sibling CPUs (topology/core_cpus_list, thread_siblings_list on kernels
@@ -52,6 +55,12 @@ int physical_cores(void)
     return count;
 }
 
+#else
+// Elsewhere the topology is not read, and the OpenMP default applies
+int physical_cores(void) { return 0; }
+#endif
+
+#ifdef _OPENMP
 // Unless OMP_NUM_THREADS says otherwise, use one thread per physical core the
 // process may run on, instead of the OpenMP default of one per logical CPU.
 // The sparse products and transforms are limited by memory bandwidth, so a
@@ -70,6 +79,5 @@ void default_threads(void)
     if (cores > 0 && cores < omp_get_max_threads()) omp_set_num_threads(cores);
 }
 #else
-int physical_cores(void) { return 0; }
 void default_threads(void) {}
 #endif

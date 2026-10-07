@@ -575,6 +575,17 @@ static void test_openmp_default_threads(void)
     char name[96];
 
     printf("OpenMP: default thread count (%d CPUs, %d physical cores)\n", procs, cores);
+    // The children inherit this thread's CPU mask, which the runtime has
+    // already narrowed to one place if a placement is set here. The core count
+    // and the child processes need Linux.
+    if (omp_get_proc_bind() != omp_proc_bind_false || cores == 0 || child_threads("") < 0)
+    {
+        printf("  skipped: %s\n", omp_get_proc_bind() != omp_proc_bind_false
+                                      ? "this process has a thread placement (OMP_PROC_BIND, OMP_PLACES "
+                                        "or GOMP_CPU_AFFINITY)"
+                                      : "needs Linux sysfs and /proc/self/exe");
+        return;
+    }
     snprintf(name, sizeof(name), "no OpenMP settings: %d threads", expect);
     check(name, child_threads("") != expect, 0.0);
     snprintf(name, sizeof(name), "OMP_PROC_BIND=close: all %d CPUs", procs);
