@@ -61,11 +61,28 @@ struct spectra
     int *bin;        // shell of each of the ny*kx modes
     double *weight;  // 1 or 2: modes kx and -kx in the half spectrum
     double *lap;     // eigenvalue of DX2 + DY2 of each mode
+    double *ratio;   // A/Q of each mode: |symbol of DX|^2 + |symbol of DY|^2 over -lap
     double *in, *nl; // real field, nonlinear term
     double *wx, *wy; // derivatives of w
     fftw_complex *uh, *vh, *wh, *nh;
     fftw_plan plan; // r2c of `in` into a spectrum
 };
+
+// |symbol|^2 of a circulant first-derivative operator at wavenumber k: the
+// entries of its first row, offset counted in units of `step` columns
+static double symbol_sq(const smtrx *A, int k, int n, int step)
+{
+    int e;
+    double re = 0.0, im = 0.0;
+    for (e = A->row_ptr[0]; e < A->row_ptr[1]; e++)
+    {
+        int offset = A->col_idx[e] / step;
+        double th = 2.0 * PI * (double)k * (double)offset / (double)n;
+        re += A->values[e] * cos(th);
+        im += A->values[e] * sin(th);
+    }
+    return re * re + im * im;
+}
 
 spectra *spectra_setup(const solver_config *cfg)
 {
@@ -87,6 +104,7 @@ spectra *spectra_setup(const solver_config *cfg)
     s->bin = (int *)malloc((size_t)s->kx * ny * sizeof(int));
     s->weight = (double *)malloc((size_t)s->kx * ny * sizeof(double));
     s->lap = (double *)malloc((size_t)s->kx * ny * sizeof(double));
+    s->ratio = (double *)malloc((size_t)s->kx * ny * sizeof(double));
     s->in = (double *)fftw_malloc((size_t)nx * ny * sizeof(double));
     s->nl = (double *)malloc((size_t)nx * ny * sizeof(double));
     s->wx = (double *)malloc((size_t)nx * ny * sizeof(double));
@@ -97,7 +115,7 @@ spectra *spectra_setup(const solver_config *cfg)
     s->nh = (fftw_complex *)fftw_malloc((size_t)s->kx * ny * sizeof(fftw_complex));
     lx = (double *)malloc((size_t)s->kx * sizeof(double));
     ly = (double *)malloc((size_t)ny * sizeof(double));
-    if (!s->bin || !s->weight || !s->lap || !s->in || !s->nl || !s->wx || !s->wy || !s->uh || !s->vh || !s->wh ||
+    if (!s->bin || !s->weight || !s->lap || !s->ratio || !s->in || !s->nl || !s->wx || !s->wy || !s->uh || !s->vh || !s->wh ||
         !s->nh || !lx || !ly)
     {
         printf("** Error: insufficient memory **\n");
@@ -115,6 +133,10 @@ spectra *spectra_setup(const solver_config *cfg)
             // each pair, except j = 0 and, for even nx, j = nx/2
             s->weight[idx] = (j == 0 || (nx % 2 == 0 && j == nx / 2)) ? 1.0 : 2.0;
             s->lap[idx] = lx[j] + ly[i];
+            s->ratio[idx] = idx == 0 ? 0.0
+                                     : (symbol_sq(cfg->DXv ? cfg->DXv : cfg->DX, j, nx, 1) +
+                                        symbol_sq(cfg->DYv ? cfg->DYv : cfg->DY, i, ny, nx)) /
+                                           -s->lap[idx];
             if (k > kmax) kmax = k;
         }
     s->bins = (int)floor(kmax / s->dk + 0.5) + 1;
@@ -187,7 +209,10 @@ void spectra_compute(spectra *s, mtrx u, mtrx v, mtrx w, double *E, double *Z, d
         if (E)
             E[bb] += 0.5 * c * (s->uh[k][0] * s->uh[k][0] + s->uh[k][1] * s->uh[k][1] + s->vh[k][0] * s->vh[k][0] + s->vh[k][1] * s->vh[k][1]);
         if (Z) Z[bb] += 0.5 * c * (wr * wr + wi * wi);
-        TE[bb] += c * (pr * s->nh[k][0] + pi * s->nh[k][1]);
+        // The energy of a mode is 1/2 A |psi^|^2 with A from the first-
+        // derivative operators that give u and v, and w^ = Q psi^ with Q from
+        // the Laplacian, so the nonlinear term changes it at (A/Q) Re(psi^* N^)
+        TE[bb] += c * s->ratio[k] * (pr * s->nh[k][0] + pi * s->nh[k][1]);
         TZ[bb] += c * (wr * s->nh[k][0] + wi * s->nh[k][1]);
     }
     // Fluxes: what the nonlinear term removes from all bins up to k
@@ -241,6 +266,7 @@ void spectra_free(spectra *s)
     free(s->bin);
     free(s->weight);
     free(s->lap);
+    free(s->ratio);
     fftw_free(s->in);
     free(s->nl);
     free(s->wx);

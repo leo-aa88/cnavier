@@ -937,10 +937,91 @@ static void budget_run(int n, double out[4])
     problem_free(&p);
 }
 
+// The spectral fluxes are those of the discrete equations, exactly: the net
+// nonlinear transfer summed over all shells equals the rate at which the
+// solver's nonlinear term changes E = 1/2 <u^2 + v^2> and Z = 1/2 <w^2>,
+// computed in physical space with the solver's own operators, to round-off.
+// On coarse grids, where the first-derivative symbols differ from the
+// Laplacian's, this needs the A/Q weight in the energy transfer.
+static void flux_consistency(int nx, int ny, int order, double out[2])
+{
+    int k, B, N = nx * ny;
+    double rE = 0.0, rZ = 0.0, mE = 0.0, mZ = 0.0;
+    problem p;
+    problem_init_ext(&p, nx, ny, 1.0, 1.0, 1, order, 100., 2, 3, 1E-3, 1E-10, NULL, 0.0, NULL, NULL, 2, 0, 2);
+    periodic_solver *ps = periodic_setup(nx, ny, &p.DX2, &p.DY2);
+    mtrx f = initm(ny, nx), psi = initm(ny, nx), nl = initm(ny, nx), un = initm(ny, nx), vn = initm(ny, nx);
+    double *a = (double *)malloc(N * sizeof(double)), *b = (double *)malloc(N * sizeof(double));
+    spectra *sp = spectra_setup(&p.cfg);
+    double *PE, *PZ;
+
+    // A pseudo-random w, with energy at every wavenumber (a few smooth modes
+    // would not exchange energy at all: their products fall outside the
+    // field's modes); psi, u and v as the solver makes them
+    fill_pseudo_random(p.w.M, N, 7u);
+    negcpy(f, p.w);
+    poisson_periodic(ps, f, psi);
+    spmv(p.DY, psi.M, p.u.M);
+    spmv(p.DX, psi.M, p.v.M);
+    negcpy(p.v, p.v);
+    // The nonlinear term, and the velocity change it causes
+    spmv(p.DX, p.w.M, a);
+    spmv(p.DY, p.w.M, b);
+    for (k = 0; k < N; k++)
+        nl.M[k] = -(p.u.M[k] * a[k] + p.v.M[k] * b[k]);
+    negcpy(f, nl);
+    poisson_periodic(ps, f, psi);
+    spmv(p.DY, psi.M, un.M);
+    spmv(p.DX, psi.M, vn.M);
+    negcpy(vn, vn);
+    for (k = 0; k < N; k++)
+    {
+        rE += (p.u.M[k] * un.M[k] + p.v.M[k] * vn.M[k]) / N;
+        rZ += p.w.M[k] * nl.M[k] / N;
+    }
+    B = spectra_bins(sp);
+    PE = (double *)calloc(B, sizeof(double));
+    PZ = (double *)calloc(B, sizeof(double));
+    spectra_compute(sp, p.u, p.v, p.w, NULL, NULL, PE, PZ);
+    for (k = 0; k < B; k++)
+    {
+        mE = fmax(mE, fabs(PE[k]));
+        mZ = fmax(mZ, fabs(PZ[k]));
+    }
+    // The flux through the last shell is minus the net transfer
+    out[0] = fabs(rE + PE[B - 1]) / mE;
+    out[1] = fabs(rZ + PZ[B - 1]) / mZ;
+
+    free(a);
+    free(b);
+    free(PE);
+    free(PZ);
+    freem(&f);
+    freem(&psi);
+    freem(&nl);
+    freem(&un);
+    freem(&vn);
+    spectra_free(sp);
+    periodic_cleanup(ps);
+    problem_free(&p);
+}
+
 static void test_budgets(void)
 {
     double a[4], b[4], o;
     char name[96];
+
+    printf("Diagnostics: net spectral transfer = the nonlinear rate of change of E and Z\n");
+    for (int o = 2; o <= 6; o += 4)
+    {
+        double r[2];
+        flux_consistency(16, 16, o, r);
+        snprintf(name, sizeof(name), "order %d, 16x16: energy %.1e, enstrophy %.1e", o, r[0], r[1]);
+        check(name, r[0] + r[1], 1E-12);
+        flux_consistency(24, 20, o, r);
+        snprintf(name, sizeof(name), "order %d, 24x20: energy %.1e, enstrophy %.1e", o, r[0], r[1]);
+        check(name, r[0] + r[1], 1E-12);
+    }
 
     printf("Diagnostics: spectra and budgets, unforced periodic flow, order 6, 32x32 -> 64x64\n");
     budget_run(32, a);

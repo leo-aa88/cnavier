@@ -94,6 +94,8 @@ static void usage(const char *prog)
     printf("  --tf TF              final time\n");
     printf("  --output-interval N  write VTK every N iterations (0 = never)\n");
     printf("  --re RE              Reynolds number\n");
+    printf("  --integrals-interval N  write E, Z, P to output/integrals.csv every N steps\n"
+           "                       (default 1; 0 = never)\n");
     printf("  --poisson-order N    2 (5-point, default) or 4 (compact 9-point) Poisson\n"
            "                       operator of the FFT solver with walls\n");
     printf("  --wall-closure NAME  wall vorticity: velocity (dv/dx - du/dy, default) or\n"
@@ -134,9 +136,10 @@ int main(int argc, char *argv[])
     int time_scheme = 2;  // 1=Euler  2=RK4
     int use_gpu = 1;      // only meaningful when built with CUDA=1
     enum flow_case flow = CASE_CAVITY;
-    int poisson_order = 2;  // 2 = 5-point, 4 = compact 9-point (FFT solver, walls)
-    int wall_closure = 0;   // 0 = dv/dx - du/dy, 1 = Briley's formula from psi
-    int velocity_order = 2; // 4 = fourth-order rows next to the walls for u, v
+    int poisson_order = 2;      // 2 = 5-point, 4 = compact 9-point (FFT solver, walls)
+    int wall_closure = 0;       // 0 = dv/dx - du/dy, 1 = Briley's formula from psi
+    int velocity_order = 2;     // 4 = fourth-order rows next to the walls for u, v
+    int integrals_interval = 1; // steps between lines of output/integrals.csv, 0 = none
 
     // Command-line overrides
     static struct option long_opts[] = {
@@ -151,6 +154,7 @@ int main(int argc, char *argv[])
         {"poisson-order", required_argument, 0, 'p'},
         {"wall-closure", required_argument, 0, 'w'},
         {"velocity-order", required_argument, 0, 'u'},
+        {"integrals-interval", required_argument, 0, 'i'},
         {"cpu", no_argument, 0, 'c'},
         {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}};
@@ -205,6 +209,9 @@ int main(int argc, char *argv[])
             break;
         case 'u':
             ok = parse_int(optarg, &velocity_order) && (velocity_order == 2 || velocity_order == 4);
+            break;
+        case 'i':
+            ok = parse_int(optarg, &integrals_interval) && integrals_interval >= 0;
             break;
         case 'c':
             use_gpu = 0;
@@ -437,16 +444,20 @@ int main(int argc, char *argv[])
     printf("Backend: %s\n", backend_name(solver));
     if (backend_device(solver)) printf("CUDA device: %s\n", backend_device(solver));
 
-    // Energy, enstrophy and palinstrophy after every step, and on periodic
-    // grids the spectra with every VTK frame
-    FILE *integrals = fopen("./output/integrals.csv", "w");
-    if (!integrals)
+    // Energy, enstrophy and palinstrophy every integrals_interval steps, and
+    // on periodic grids the spectra with every VTK frame
+    FILE *integrals = NULL;
+    flow_integrals fi;
+    if (integrals_interval > 0)
     {
-        printf("\nError while opening file\n");
-        exit(1);
+        if (!(integrals = fopen("./output/integrals.csv", "w")))
+        {
+            printf("\nError while opening file\n");
+            exit(1);
+        }
+        fi = backend_integrals(solver);
+        fprintf(integrals, "step,t,E,Z,P\n0,0,%.17g,%.17g,%.17g\n", fi.E, fi.Z, fi.P);
     }
-    flow_integrals fi = backend_integrals(solver);
-    fprintf(integrals, "step,t,E,Z,P\n0,0,%.17g,%.17g,%.17g\n", fi.E, fi.Z, fi.P);
     spectra *spec = periodic && output_interval > 0 ? spectra_setup(&cfg) : NULL;
 
     struct timespec t_start, t_end;
@@ -467,8 +478,11 @@ int main(int argc, char *argv[])
                t, (double)t * dt, it_max > 0 ? (double)100 * t / it_max : 100.);
         printf("Continuity max: %E | min: %E\n", cmax, cmin);
 
-        fi = backend_integrals(solver);
-        fprintf(integrals, "%d,%.17g,%.17g,%.17g,%.17g\n", t + 1, (double)(t + 1) * dt, fi.E, fi.Z, fi.P);
+        if (integrals && (t + 1) % integrals_interval == 0)
+        {
+            fi = backend_integrals(solver);
+            fprintf(integrals, "%d,%.17g,%.17g,%.17g,%.17g\n", t + 1, (double)(t + 1) * dt, fi.E, fi.Z, fi.P);
+        }
 
         if (output_interval > 0 && t % output_interval == 0)
         {
@@ -481,7 +495,7 @@ int main(int argc, char *argv[])
     clock_gettime(CLOCK_MONOTONIC, &t_end);
     double elapsed = (double)(t_end.tv_sec - t_start.tv_sec) + 1E-9 * (double)(t_end.tv_nsec - t_start.tv_nsec);
 
-    fclose(integrals);
+    if (integrals) fclose(integrals);
     spectra_free(spec);
     backend_fields(solver, &u, &v, &w);
 
