@@ -52,7 +52,7 @@ double backend_host_memory(int nx, int ny, int prefer_gpu)
 static void require_memory(double bytes, const char *what)
 {
     double avail = available_memory();
-    if (avail > 0 && bytes > avail)
+    if (avail >= 0 && bytes > avail) // -1: unknown
     {
         printf("** Error: the %s needs about %.1f GB more memory; about %.1f GB is available **\n",
                what, bytes / 1E9, avail / 1E9);
