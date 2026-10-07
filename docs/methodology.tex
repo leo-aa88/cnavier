@@ -294,7 +294,7 @@ Requested order & Location & First derivative & Second derivative \\
 \end{tabular}
 \end{table}
 
-Therefore, statements such as ``sixth-order spatial discretization'' should be read as \emph{sixth-order centered interior stencils}, not as a demonstrated sixth-order global convergence rate.  The global rate depends on the boundary closure, the Poisson discretization, the solution regularity, and the grid convention discussed above.  Measured against a manufactured solution, it is second order for every derivative order (\cref{sec:mms}).
+Therefore, statements such as ``sixth-order spatial discretization'' should be read as \emph{sixth-order centered interior stencils}, not as a demonstrated sixth-order global convergence rate.  The global rate depends on the boundary closure, the Poisson discretization, the solution regularity, and the grid convention discussed above.  Measured against a smooth manufactured solution with stationary no-slip walls, it is second order for every derivative order (\cref{sec:mms}).
 
 \subsection{Two-dimensional operators by Kronecker product}
 
@@ -784,13 +784,13 @@ The cavity cannot measure the spatial order of the method: the lid is discontinu
 \qquad g(t)=0.2+0.1\sin(2\pi t).
 \label{eq:mms}
 \end{equation}
-It has $\psi=0$ and $u=v=0$ on every wall, so it uses the solver's ordinary stationary no-slip walls and the $\psi=0$ Poisson condition without any change.  It is made an exact solution by an optional body force in the vorticity equation,
+It has $\psi=0$ and $u=v=0$ on every wall, so it uses the solver's ordinary stationary no-slip walls and the $\psi=0$ Poisson condition without any change.  It is made an exact solution by an optional source term $f$ in the vorticity equation (the curl of a body force, were it written in the momentum equation),
 \begin{equation}
 \frac{\partial\omega}{\partial t}=-u\frac{\partial\omega}{\partial x}-v\frac{\partial\omega}{\partial y}+\frac{1}{\Rey}\nabla^2\omega+f,
 \qquad
 f=\frac{\partial\omega_e}{\partial t}+u_e\frac{\partial\omega_e}{\partial x}+v_e\frac{\partial\omega_e}{\partial y}-\frac{1}{\Rey}\nabla^2\omega_e,
 \end{equation}
-where the subscript $e$ denotes the exact fields from \cref{eq:mms}, all in closed form.  The force is the \code{forcing} callback of \code{solver_config}; it is unset in normal runs.  The solver evaluates it at the time of each right-hand-side evaluation, so at $t$, $t+\dt/2$, $t+\dt/2$ and $t+\dt$ in RK4, and the CUDA backend fills it on the host and copies it to the device.
+where the subscript $e$ denotes the exact fields from \cref{eq:mms}, all in closed form.  The source is the \code{vorticity_source} callback of \code{solver_config}; it is unset in normal runs.  The solver evaluates it at the time of each right-hand-side evaluation, so at $t$, $t+\dt/2$, $t+\dt/2$ and $t+\dt$ in RK4, with $t=t_0+n\,\dt$ after $n$ steps of a run that starts at \code{t0}, and the CUDA backend fills it on the host and copies it to the device.
 
 Each run starts from the exact state at $t=0$, uses RK4 and the FFT solver at $\Rey=100$, and is compared with the exact solution at $t=0.25$.  The time step is at most $2.5\times10^{-3}$ and at most half the viscous stability limit; a run with a ten to thirty times smaller step gives the same errors to all digits shown, so the time error is negligible.  The observed order between two grids is
 \begin{equation}
@@ -812,13 +812,45 @@ $513^2$ & $3.78\times10^{-6}$ (2.01) & $1.17\times10^{-5}$ (2.00) & $2.58\times1
 \end{center}
 (maximum errors over the nodes, observed order in parentheses).  The findings:
 \begin{itemize}[leftmargin=2em]
-  \item The complete method is second order in space.  $\psi$, $u$ and $v$ converge at $2.0$ on every grid.  $\omega$ converges faster on the coarse grids and approaches second order under refinement; its largest error is at the walls.
-  \item Orders 4 and 6 give the same errors to three digits, so the sixth-order rows of the deep interior do not affect the result.  The error is set by what all orders share: the five-point Poisson operator (\cref{eq:5point}) and the low-order rows next to the walls (\cref{tab:closure}).
+  \item For this smooth solution with stationary no-slip walls, the complete method converges at second order in space with every derivative order.  $\psi$, $u$ and $v$ converge at $2.0$ on every grid.  $\omega$ converges faster on the coarse grids and approaches second order under refinement; its largest error is at the walls.
+  \item Orders 4 and 6 give the same errors to three digits, so the sixth-order rows of the deep interior do not affect the result.  The order is held back by something all derivative orders share: the five-point Poisson operator (\cref{eq:5point}) and the low-order rows next to the walls (\cref{tab:closure}).  \Cref{sec:ablation} separates the two.
   \item Compared with order 2, orders 4 and 6 reduce the vorticity error by about $2.6\times$ at $513^2$ ($6.9\times10^{-5}$ to $2.6\times10^{-5}$, walls included) and leave the velocity error essentially unchanged ($1.02\times10^{-5}$ for $u$ with order 2, $1.17\times10^{-5}$ with order 6).
   \item A $2\times1$ domain and a unit-square grid with $\dx=\dy/2$ show the same orders.
 \end{itemize}
 
-\code{make test} runs a short version: on $17^2$, $33^2$ and $65^2$ it requires the observed orders of $\psi$, $u$ and $v$ between $33^2$ and $65^2$ to be within $0.15$ of 2 and that of $\omega$ to be at least $1.9$, and it bounds the errors at $65^2$.  It also checks that Euler and RK4 keep their first and fourth order in time with the time-dependent force, which fails if an RK4 stage evaluates the force at the wrong time.  \code{make convergence} runs the full study up to $257^2$ for orders 2, 4 and 6 and the two rectangular cases.
+\code{make test} runs a short version: on $17^2$, $33^2$ and $65^2$ it requires the observed orders of $\psi$, $u$ and $v$ between $33^2$ and $65^2$ to be within $0.15$ of 2 and that of $\omega$ to be at least $1.9$, and it bounds the errors at $65^2$.  It also checks that Euler and RK4 keep their first and fourth order in time with the time-dependent source, which fails if an RK4 stage evaluates the source at the wrong time, and that a run started at $t_0=0.4$ is as accurate as one started at $t=0$.  \code{make convergence} runs the full study up to $257^2$ for orders 2, 4 and 6 and the two rectangular cases.
+
+\subsection{What limits the spatial order: an ablation}
+\label{sec:ablation}
+
+To find which part of the discretization holds the order to two, a copy of the RK4 step (with nothing replaced, it computes exactly what \code{step()} computes, bit for bit) replaces parts of the method with the exact solution at each stage's time:
+\begin{itemize}[leftmargin=2em]
+  \item \emph{exact wall $\omega$}: the wall vorticity is exact; the Poisson solve and the velocity $u=D_y\psi$, $v=-D_x\psi$ are as usual;
+  \item \emph{exact $\psi$}: $\psi$ is exact, so the Poisson operator plays no part; $u$, $v$ and the wall vorticity $D_xv-D_yu$ are computed from it;
+  \item \emph{exact $u$, $v$}: the velocity is exact at every node; the wall vorticity is computed from it.
+\end{itemize}
+Combinations replace several parts.  With exact $u$, $v$ and exact wall $\omega$, only the transport derivatives of $\omega$ remain.  For derivative order 6, maximum error of $\omega$ over all nodes at $257^2$, with the observed order from $129^2$:
+\begin{center}
+\begin{tabular}{lccc}
+\toprule
+Replaced by the exact solution & $\omega$ error & order of $\omega$ & order of $u$ \\
+\midrule
+nothing (the solver) & $1.2\times10^{-4}$ & 2.37 & 2.00 \\
+wall $\omega$ & $5.1\times10^{-5}$ & 2.00 & 2.00 \\
+$\psi$ & $1.2\times10^{-3}$ & 2.00 & 3.00 \\
+$\psi$ and wall $\omega$ & $2.8\times10^{-7}$ & 4.02 & 3.00 \\
+$u$, $v$ & $5.9\times10^{-4}$ & 2.00 & -- \\
+$u$, $v$ and wall $\omega$ & $2.7\times10^{-7}$ & 3.89 & -- \\
+\bottomrule
+\end{tabular}
+\end{center}
+Order 4 gives the same orders (measured up to $129^2$); order 2 gives 2.00 in every variant.
+\begin{itemize}[leftmargin=2em]
+  \item \textbf{Both the Poisson operator and the wall-vorticity closure limit the order to two, each on its own.}  With the exact wall vorticity, the five-point Poisson operator still gives second order; with the exact $\psi$, the wall closure still gives second order.  A higher-order Poisson operator alone (or a higher-order wall closure alone) would therefore not raise the global order.
+  \item \textbf{The two errors partly cancel.}  Replacing only $\psi$ by the exact solution makes the vorticity error ten times \emph{larger} ($1.2\times10^{-3}$ against $1.2\times10^{-4}$), although the solver's error contains the wall closure's error as well as the Poisson operator's: in the coupled scheme the two partly cancel.  This is consistent with the observation that a locally low-order wall formula such as Thom's can be part of a globally second-order method.
+  \item \textbf{With both replaced, the order rises to four, not six.}  The remaining limit is in the derivative operators themselves: their rows next to the walls are of second and fourth order (\cref{tab:closure}).  With the exact velocity and wall vorticity, only those operators are left, and $\omega$ converges at $3.9$, approaching four.  Sixth order would need sixth-order rows next to the walls as well, or no walls (periodic boundaries).
+\end{itemize}
+\code{make ablation} prints this study for orders 2, 4 and 6 up to $129^2$; \code{make test} checks three of its results on $33^2$ and $65^2$ (orders $2$, $2$ and $4$ for exact wall $\omega$, exact $\psi$, and both).
 
 \subsection{Physical validation against Ghia et al.}
 \label{sec:ghia}
@@ -966,7 +998,7 @@ The following points are important when interpreting results scientifically.
 
 \subsection{Mixed formal spatial order}
 
-The transport derivatives may be sixth-order in the deep interior, but the boundary closures are lower order and the Poisson solve is based on a second-order discrete Laplacian.  Measured against a manufactured solution, the complete algorithm is second order in space for every derivative order, and orders 4 and 6 give the same errors (\cref{sec:mms}).  Higher-order results would need a higher-order Poisson operator and wall closure together.
+The transport derivatives may be sixth-order in the deep interior, but the boundary closures are lower order and the Poisson solve is based on a second-order discrete Laplacian.  Measured against a smooth manufactured solution with stationary no-slip walls, the complete algorithm converges at second order in space for every derivative order, and orders 4 and 6 give the same errors (\cref{sec:mms}).  This is evidence for one solution family, not a proof for every flow.  The ablation of \cref{sec:ablation} shows that the Poisson operator and the wall-vorticity closure each limit the order to two on their own, so higher-order results need both improved, and beyond fourth order also the derivative rows next to the walls.
 
 \subsection{Poisson operator differs from transport Laplacian}
 

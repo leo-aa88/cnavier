@@ -51,7 +51,7 @@ rk4_ctx rk4_alloc(const solver_config *cfg)
     ctx.w_tmp = initm(ny, nx);
     ctx.rhs = initm(ny, nx);
     ctx.fft = cfg->poisson_type == 3 ? fft_setup(nx, ny) : NULL;
-    ctx.force = cfg->forcing ? initm(ny, nx) : (mtrx){0};
+    ctx.source = cfg->vorticity_source ? initm(ny, nx) : (mtrx){0};
     ctx.steps = 0;
     return ctx;
 }
@@ -72,7 +72,7 @@ void rk4_free(rk4_ctx *ctx)
     freem(&ctx->rhs);
     fft_cleanup(ctx->fft);
     ctx->fft = NULL;
-    if (ctx->force.M) freem(&ctx->force);
+    if (ctx->source.M) freem(&ctx->source);
 }
 
 // Solve nabla^2 psi = -w and recover u = dpsi/dy, v = -dpsi/dx.
@@ -145,12 +145,12 @@ static void set_wall_vorticity(mtrx w, mtrx u, mtrx v, const rk4_ctx *ctx)
     }
 }
 
-// The body force at time t into ctx->force; NULL without cfg.forcing
-static const double *body_force(double t, rk4_ctx *ctx)
+// The vorticity source at time t into ctx->source; NULL without cfg.vorticity_source
+static const double *vorticity_source_at(double t, rk4_ctx *ctx)
 {
-    if (!ctx->cfg.forcing) return NULL;
-    ctx->cfg.forcing(t, ctx->force, ctx->cfg.forcing_data);
-    return ctx->force.M;
+    if (!ctx->cfg.vorticity_source) return NULL;
+    ctx->cfg.vorticity_source(t, ctx->source, ctx->cfg.source_data);
+    return ctx->source.M;
 }
 
 // out = -u*(dw/dx) - v*(dw/dy) + (1/Re)*(d2w/dx2 + d2w/dy2) + f(t). Also sets
@@ -181,7 +181,7 @@ void dwdt(mtrx w, mtrx u, mtrx v, mtrx out, double t, rk4_ctx *ctx)
             MAt(out, i, j) = -MAt(u, i, j) * MAt(ctx->dwdx, i, j) - MAt(v, i, j) * MAt(ctx->dwdy, i, j) + (1.0 / ctx->cfg.Re) * (MAt(ctx->d2wdx2, i, j) + MAt(ctx->d2wdy2, i, j));
     }
 
-    const double *f = body_force(t, ctx);
+    const double *f = vorticity_source_at(t, ctx);
     if (f)
         for (i = 0; i < nx * ny; i++)
             out.M[i] += f[i];
@@ -193,7 +193,7 @@ void dwdt(mtrx w, mtrx u, mtrx v, mtrx out, double t, rk4_ctx *ctx)
 // the transport RHS at the walls); step() replaces them.
 void rk4(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx)
 {
-    double dt = ctx->cfg.dt, t = (double)ctx->steps * dt;
+    double dt = ctx->cfg.dt, t = ctx->cfg.t0 + (double)ctx->steps * dt;
     int i;
     int ny = ctx->cfg.ny, nx = ctx->cfg.nx;
 
@@ -345,7 +345,7 @@ void step(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx)
         derivatives(w, ctx);
 
         euler(w, ctx->dwdx, ctx->dwdy, ctx->d2wdx2, ctx->d2wdy2, u, v,
-              body_force((double)ctx->steps * dt, ctx), ctx->cfg.Re, dt);
+              vorticity_source_at(ctx->cfg.t0 + (double)ctx->steps * dt, ctx), ctx->cfg.Re, dt);
         velocity_from_vorticity(w, u, v, ctx);
     }
     else

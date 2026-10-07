@@ -6,7 +6,7 @@
 #include "linearalg.h"
 #include <fftw3.h>
 
-#define PI 3.14159265359
+#define PI 3.14159265358979323846
 
 double error(mtrx u1, mtrx u2);
 

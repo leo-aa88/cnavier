@@ -48,6 +48,7 @@ endif
 BIN_FILE=cnavier
 TEST_BIN=test_cnavier
 CONV_BIN=convergence_study
+ABL_BIN=ablation_study
 
 # Records the build flags so that switching OPENMP/CUDA rebuilds every object
 CONFIG=$(OBJ_DIR)/config
@@ -86,6 +87,13 @@ $(CONV_BIN): $(OBJ_DIR)/convergence.o $(OBJ_DIR)/mms.o $(filter-out $(OBJ_DIR)/m
 
 convergence: $(OBJ_DIR) $(CONV_BIN)
 	./$(CONV_BIN)
+
+# Which part of the discretization limits the spatial order (issue #25)
+$(ABL_BIN): $(OBJ_DIR)/ablation.o $(OBJ_DIR)/mms.o $(filter-out $(OBJ_DIR)/main.o, $(OBJ_FILES))
+	$(CC) $(CC_FLAGS) $^ -I$(HDR_DIR) -o $@ $(CC_LIBS)
+
+ablation: $(OBJ_DIR) $(ABL_BIN)
+	./$(ABL_BIN)
 
 # ---------------------------------------------------------------------------
 # Checks. CI runs each of these as one step (.github/workflows/ci.yml).
@@ -147,8 +155,8 @@ regression: $(OBJ_DIR) $(BIN_FILE)
 	$(TEST_DIR)/regression.sh $(CURDIR)/$(BIN_FILE)
 
 clean:
-	rm -rf $(BIN_FILE) $(TEST_BIN) $(CONV_BIN) $(OBJ_DIR) $(TBN_DIR) output/*.vtk
+	rm -rf $(BIN_FILE) $(TEST_BIN) $(CONV_BIN) $(ABL_BIN) $(OBJ_DIR) $(TBN_DIR) output/*.vtk
 
 FORCE:
 
-.PHONY: all test convergence clean FORCE format format-check cppcheck tidy test-asan valgrind test-cli regression
+.PHONY: all test convergence ablation clean FORCE format format-check cppcheck tidy test-asan valgrind test-cli regression
