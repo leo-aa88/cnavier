@@ -270,9 +270,10 @@ void poisson_FFT(fft_solver *s, mtrx f, mtrx u, double dx, double dy)
     poisson_FFT_order(s, f, u, dx, dy, 2);
 }
 
-// f at interior node (i, j), or, for a wall node, the cubic extrapolation of
-// the interior along the wall normal (f is not used on the walls, so the
-// solve still depends on the interior of f only)
+// f at interior node (i, j), or, for a wall node, the quadratic through the
+// first three interior nodes along the wall normal, evaluated at the wall:
+// 3 f_1 - 3 f_2 + f_3 = f_0 + O(h^3). f is not used on the walls, so the
+// solve still depends on the interior of f only.
 static double f_or_extrapolated(mtrx f, int i, int j)
 {
     int ny = f.m, nx = f.n;

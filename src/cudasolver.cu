@@ -493,8 +493,9 @@ static void dst2d(gpu_solver *g, const double *src)
     CUFFT_CHECK(cufftExecD2Z(g->plan_cols, g->ext, g->spec));
 }
 
-// w at interior node (i, j), or at a wall node the cubic extrapolation of the
-// interior along the wall normal, as f_or_extrapolated() in poisson.c
+// w at interior node (i, j), or at a wall node the quadratic extrapolation of
+// the first three interior nodes along the wall normal, as
+// f_or_extrapolated() in poisson.c
 __device__ inline double w_or_extrapolated(const double *w, int i, int j, int nx, int ny)
 {
     if (j == 0) return 3.0 * w[i * nx + 1] - 3.0 * w[i * nx + 2] + w[i * nx + 3];
