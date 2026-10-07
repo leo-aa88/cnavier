@@ -294,7 +294,7 @@ Requested order & Location & First derivative & Second derivative \\
 \end{tabular}
 \end{table}
 
-Therefore, statements such as ``sixth-order spatial discretization'' should be read as \emph{sixth-order centered interior stencils}, not as a demonstrated sixth-order global convergence rate.  The global rate depends on the boundary closure, the Poisson discretization, the solution regularity, and the grid convention discussed above.
+Therefore, statements such as ``sixth-order spatial discretization'' should be read as \emph{sixth-order centered interior stencils}, not as a demonstrated sixth-order global convergence rate.  The global rate depends on the boundary closure, the Poisson discretization, the solution regularity, and the grid convention discussed above.  Measured against a manufactured solution, it is second order for every derivative order (\cref{sec:mms}).
 
 \subsection{Two-dimensional operators by Kronecker product}
 
@@ -775,6 +775,51 @@ Typical comparison thresholds in the tests are $10^{-12}$ for CSR and FFT buildi
 
 A CUDA test build with no usable GPU returns exit status 77 rather than reporting a false pass.
 
+\subsection{Spatial convergence against a manufactured solution}
+\label{sec:mms}
+
+The cavity cannot measure the spatial order of the method: the lid is discontinuous at the top corners, the vorticity is singular there, and refinement on the cavity measures the singularity.  The Ghia data are themselves a second-order solution on a $129\times129$ grid.  The order is therefore measured against a manufactured solution,
+\begin{equation}
+\psi(x,y,t)=g(t)\,\sin^2\!\left(\frac{\pi x}{L_x}\right)\sin^2\!\left(\frac{\pi y}{L_y}\right),
+\qquad g(t)=0.2+0.1\sin(2\pi t).
+\label{eq:mms}
+\end{equation}
+It has $\psi=0$ and $u=v=0$ on every wall, so it uses the solver's ordinary stationary no-slip walls and the $\psi=0$ Poisson condition without any change.  It is made an exact solution by an optional body force in the vorticity equation,
+\begin{equation}
+\frac{\partial\omega}{\partial t}=-u\frac{\partial\omega}{\partial x}-v\frac{\partial\omega}{\partial y}+\frac{1}{\Rey}\nabla^2\omega+f,
+\qquad
+f=\frac{\partial\omega_e}{\partial t}+u_e\frac{\partial\omega_e}{\partial x}+v_e\frac{\partial\omega_e}{\partial y}-\frac{1}{\Rey}\nabla^2\omega_e,
+\end{equation}
+where the subscript $e$ denotes the exact fields from \cref{eq:mms}, all in closed form.  The force is the \code{forcing} callback of \code{solver_config}; it is unset in normal runs.  The solver evaluates it at the time of each right-hand-side evaluation, so at $t$, $t+\dt/2$, $t+\dt/2$ and $t+\dt$ in RK4, and the CUDA backend fills it on the host and copies it to the device.
+
+Each run starts from the exact state at $t=0$, uses RK4 and the FFT solver at $\Rey=100$, and is compared with the exact solution at $t=0.25$.  The time step is at most $2.5\times10^{-3}$ and at most half the viscous stability limit; a run with a ten to thirty times smaller step gives the same errors to all digits shown, so the time error is negligible.  The observed order between two grids is
+\begin{equation}
+p_{\mathrm{obs}}=\log_2\frac{\|e_h\|_\infty}{\|e_{h/2}\|_\infty}.
+\end{equation}
+For derivative order 6 on the unit square:
+\begin{center}
+\begin{tabular}{lcccc}
+\toprule
+Grid & $\psi$ & $u$ & $\omega$, walls included & $\omega$, interior \\
+\midrule
+$33^2$ & $1.02\times10^{-3}$ & $2.97\times10^{-3}$ & $2.89\times10^{-2}$ & $2.01\times10^{-2}$ \\
+$65^2$ & $2.49\times10^{-4}$ (2.03) & $7.44\times10^{-4}$ (2.00) & $3.84\times10^{-3}$ (2.91) & $3.26\times10^{-3}$ (2.62) \\
+$129^2$ & $6.12\times10^{-5}$ (2.02) & $1.86\times10^{-4}$ (2.00) & $6.19\times10^{-4}$ (2.63) & $5.50\times10^{-4}$ (2.57) \\
+$257^2$ & $1.52\times10^{-5}$ (2.01) & $4.67\times10^{-5}$ (2.00) & $1.19\times10^{-4}$ (2.37) & $1.11\times10^{-4}$ (2.31) \\
+$513^2$ & $3.78\times10^{-6}$ (2.01) & $1.17\times10^{-5}$ (2.00) & $2.58\times10^{-5}$ (2.21) & $2.47\times10^{-5}$ (2.16) \\
+\bottomrule
+\end{tabular}
+\end{center}
+(maximum errors over the nodes, observed order in parentheses).  The findings:
+\begin{itemize}[leftmargin=2em]
+  \item The complete method is second order in space.  $\psi$, $u$ and $v$ converge at $2.0$ on every grid.  $\omega$ converges faster on the coarse grids and approaches second order under refinement; its largest error is at the walls.
+  \item Orders 4 and 6 give the same errors to three digits, so the sixth-order rows of the deep interior do not affect the result.  The error is set by what all orders share: the five-point Poisson operator (\cref{eq:5point}) and the low-order rows next to the walls (\cref{tab:closure}).
+  \item Compared with order 2, orders 4 and 6 reduce the vorticity error by about $2.6\times$ at $513^2$ ($6.9\times10^{-5}$ to $2.6\times10^{-5}$, walls included) and leave the velocity error essentially unchanged ($1.02\times10^{-5}$ for $u$ with order 2, $1.17\times10^{-5}$ with order 6).
+  \item A $2\times1$ domain and a unit-square grid with $\dx=\dy/2$ show the same orders.
+\end{itemize}
+
+\code{make test} runs a short version: on $17^2$, $33^2$ and $65^2$ it requires the observed orders of $\psi$, $u$ and $v$ between $33^2$ and $65^2$ to be within $0.15$ of 2 and that of $\omega$ to be at least $1.9$, and it bounds the errors at $65^2$.  It also checks that Euler and RK4 keep their first and fourth order in time with the time-dependent force, which fails if an RK4 stage evaluates the force at the wrong time.  \code{make convergence} runs the full study up to $257^2$ for orders 2, 4 and 6 and the two rectangular cases.
+
 \subsection{Physical validation against Ghia et al.}
 \label{sec:ghia}
 
@@ -806,16 +851,7 @@ $257\times257$, nodal convention & 0.0050 & 0.0025 & 0.0091 & 0.0051 \\
 
 The solution has converged at these resolutions: at the Ghia points the $129\times129$ and $257\times257$ profiles differ by at most $4.5\times10^{-4}$ ($u$) and $3.5\times10^{-4}$ ($v$), an order of magnitude less than either differs from the reference.  The remaining discrepancy is therefore not grid error of this code; it is of the order of the accuracy of the reference data themselves, which were computed on a $129\times129$ grid with a second-order scheme.  The errors grow slightly from $64\times64$ to $129\times129$: the smaller error of the coarse grid comes partly from its discretisation error cancelling against the difference to the reference, so $64\times64$ should not be read as the most accurate grid.  The $257\times257$ run used $\dt=3\times10^{-4}$.
 
-\code{make regression} automates this comparison for the default case: the steady centerline profiles must be within $0.004$ ($u$) and $0.010$ ($v$) of the reference values, which are stored with the tests rather than taken from the program's output, and any value that is not a finite number fails.  Grid-convergence rates are not automated.
-
-\subsection{Recommended extension: formal grid-convergence study}
-
-A publishable or thesis-grade validation should add at least three systematically refined meshes and estimate the observed order
-\begin{equation}
-p_{\mathrm{obs}}
-=\frac{\log\left(\|e_h\|/\|e_{h/r}\|\right)}{\log r},
-\end{equation}
-where $r$ is the refinement ratio.  Because of the lower-order wall closure and second-order streamfunction Poisson operator, one should not assume in advance that \code{order=6} will produce sixth-order global convergence.
+\code{make regression} automates this comparison for the default case: the steady centerline profiles must be within $0.004$ ($u$) and $0.010$ ($v$) of the reference values, which are stored with the tests rather than taken from the program's output, and any value that is not a finite number fails.  Grid-convergence rates are not measured on the cavity, for the reason given in \cref{sec:mms}, but on a manufactured solution.
 
 % =============================================================================
 \section{Performance Characteristics}
@@ -858,6 +894,7 @@ The Makefile records the active compiler flags so that changing OpenMP/CUDA mode
 make test
 make CUDA=1 test
 make OPENMP=1 CUDA=1 test
+make OPENMP=1 convergence   # spatial convergence study, about 1.5 minutes
 \end{lstlisting}
 
 The test program returns 0 when all executed checks pass, 1 when any check fails, and 77 when a CUDA test build cannot execute its GPU checks because no usable device is present.
@@ -929,7 +966,7 @@ The following points are important when interpreting results scientifically.
 
 \subsection{Mixed formal spatial order}
 
-The transport derivatives may be sixth-order in the deep interior, but the boundary closures are lower order and the Poisson solve is based on a second-order discrete Laplacian.  Consequently, the complete algorithm has not been demonstrated to be globally sixth-order in space.  A formal convergence study is required to establish its observed order.
+The transport derivatives may be sixth-order in the deep interior, but the boundary closures are lower order and the Poisson solve is based on a second-order discrete Laplacian.  Measured against a manufactured solution, the complete algorithm is second order in space for every derivative order, and orders 4 and 6 give the same errors (\cref{sec:mms}).  Higher-order results would need a higher-order Poisson operator and wall closure together.
 
 \subsection{Poisson operator differs from transport Laplacian}
 
@@ -984,7 +1021,6 @@ The current architecture makes several research-oriented extensions relatively n
   \item adaptive timestep selection from advective and diffusive spectral bounds;
   \item automated steady-state residual monitoring;
   \item automated Ghia interpolation and error norms in the test suite;
-  \item manufactured-solution verification of the full vorticity--streamfunction system;
   \item grid-convergence-index (GCI) reporting;
   \item alternative convection schemes, such as upwind-biased, compact, WENO, or skew-symmetric energy-conserving formulations;
   \item multigrid for the Poisson equation when boundary conditions or geometries no longer permit a separable sine transform;
