@@ -13,12 +13,12 @@ extern "C" {
 // Opaque solver state: all fields, operators and workspace live on the device.
 typedef struct gpu_solver gpu_solver;
 
-// Upload the operators and settings held by ctx and allocate the device workspace.
-// Fields start at zero.
+// Upload the operators and settings of the run described by cfg and allocate
+// the device workspace. Fields start at zero.
 // Returns NULL if no CUDA device can be initialised, so the caller can fall
 // back to the CPU path. Any failure after that point (out of device memory,
 // an unknown Poisson solver type) is fatal: it prints an error and exits.
-gpu_solver *gpu_init(const rk4_ctx *ctx, double dt, int time_scheme, const wall_bc *bc);
+gpu_solver *gpu_init(const solver_config *cfg);
 void gpu_free(gpu_solver *g);
 
 // Name of the device used by gpu_init

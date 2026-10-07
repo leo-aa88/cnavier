@@ -61,12 +61,8 @@ typedef struct
 
 struct gpu_solver
 {
-    int    nx, ny, n;
-    double dt, Re, dx, dy;
-    int    time_scheme;
-    int    poisson_type, poisson_max_it;
-    double poisson_tol, beta;
-    wall_bc bc;
+    solver_config cfg; // copy taken by gpu_init(); later changes to the caller's have no effect
+    int    nx, ny, n;  // cfg.nx, cfg.ny and their product, for brevity
 
     csr_dev DX, DY, DX2, DY2;
 
@@ -355,19 +351,19 @@ static void poisson_redblack(gpu_solver *g, const double *w)
 {
     int k, n = g->n;
     double e;
-    double dx2 = g->dx * g->dx, dy2 = g->dy * g->dy;
-    double beta = (g->poisson_type == 2) ? g->beta : 1.0;
-    const char *name = (g->poisson_type == 2) ? "Poisson SOR" : "Poisson";
+    double dx2 = g->cfg.dx * g->cfg.dx, dy2 = g->cfg.dy * g->cfg.dy;
+    double beta = (g->cfg.poisson_type == 2) ? g->cfg.beta : 1.0;
+    const char *name = (g->cfg.poisson_type == 2) ? "Poisson SOR" : "Poisson";
 
     CUDA_CHECK(cudaMemset(g->psi,     0, n * sizeof(double)));
     CUDA_CHECK(cudaMemset(g->scratch, 0, n * sizeof(double)));
 
-    for (k = 0; k < g->poisson_max_it; k++)
+    for (k = 0; k < g->cfg.poisson_max_it; k++)
     {
         LAUNCH(redblack_kernel, n, g->psi, w, g->scratch, g->nx, g->ny, dx2, dy2, beta, 0);
         LAUNCH(redblack_kernel, n, g->psi, w, g->scratch, g->nx, g->ny, dx2, dy2, beta, 1);
         e = reduce(g, g->scratch, n, RED_SUM);
-        if (e < g->poisson_tol)
+        if (e < g->cfg.poisson_tol)
         {
             printf("%s solved in %d iterations - RSS error: %E\n", name, k, e);
             return;
@@ -399,7 +395,7 @@ static void poisson_fft(gpu_solver *g, const double *w)
 // Solve nabla^2 psi = -w
 static void solve_poisson(gpu_solver *g, const double *w)
 {
-    if (g->poisson_type == 3)
+    if (g->cfg.poisson_type == 3)
         poisson_fft(g, w);
     else
         poisson_redblack(g, w);
@@ -416,17 +412,17 @@ static void velocity_from_vorticity(gpu_solver *g, const double *w)
 static void dwdt(gpu_solver *g, const double *w, double *out)
 {
     velocity_from_vorticity(g, w);
-    LAUNCH(rhs_kernel, g->n, g->DX, g->DY, g->DX2, g->DY2, w, g->u, g->v, g->Re, out, g->n);
+    LAUNCH(rhs_kernel, g->n, g->DX, g->DY, g->DX2, g->DY2, w, g->u, g->v, g->cfg.Re, out, g->n);
 }
 
 // ---------------------------------------------------------------------------
 // Public interface
 // ---------------------------------------------------------------------------
 
-gpu_solver *gpu_init(const rk4_ctx *ctx, double dt, int time_scheme, const wall_bc *bc)
+gpu_solver *gpu_init(const solver_config *cfg)
 {
     int i, count = 0;
-    int nx = ctx->nx, ny = ctx->ny, n = nx * ny;
+    int nx = cfg->nx, ny = cfg->ny, n = nx * ny;
 
     // Probe for a device. cudaFree(0) forces the context to be created, so a
     // device that is present but cannot be used is also reported here.
@@ -435,7 +431,7 @@ gpu_solver *gpu_init(const rk4_ctx *ctx, double dt, int time_scheme, const wall_
     if (cudaSetDevice(0) != cudaSuccess || cudaFree(0) != cudaSuccess)
         return NULL;
 
-    if (ctx->poisson_type < 1 || ctx->poisson_type > 3)
+    if (cfg->poisson_type < 1 || cfg->poisson_type > 3)
     {
         printf("** Error: valid Poisson solver types are 1, 2 or 3 **\n");
         exit(1);
@@ -449,17 +445,12 @@ gpu_solver *gpu_init(const rk4_ctx *ctx, double dt, int time_scheme, const wall_
     }
 
     g->nx = nx; g->ny = ny; g->n = n;
-    g->dt = dt; g->Re = ctx->Re; g->dx = ctx->dx; g->dy = ctx->dy;
-    g->time_scheme = time_scheme;
-    g->poisson_type = ctx->poisson_type;
-    g->poisson_max_it = ctx->poisson_max_it; g->poisson_tol = ctx->poisson_tol;
-    g->beta = ctx->beta;
-    g->bc = *bc;
+    g->cfg = *cfg;
 
-    g->DX  = csr_upload(ctx->DX);
-    g->DY  = csr_upload(ctx->DY);
-    g->DX2 = csr_upload(ctx->DX2);
-    g->DY2 = csr_upload(ctx->DY2);
+    g->DX  = csr_upload(cfg->DX);
+    g->DY  = csr_upload(cfg->DY);
+    g->DX2 = csr_upload(cfg->DX2);
+    g->DY2 = csr_upload(cfg->DY2);
 
     g->u  = dev_alloc(n); g->v  = dev_alloc(n);
     g->w  = dev_alloc(n); g->psi = dev_alloc(n);
@@ -469,7 +460,7 @@ gpu_solver *gpu_init(const rk4_ctx *ctx, double dt, int time_scheme, const wall_
     g->scratch = dev_alloc(n);
     g->partial = dev_alloc(RED_BLOCKS);
 
-    if (g->poisson_type == 3)
+    if (g->cfg.poisson_type == 3)
     {
         int mx = 2 * (ny - 1), my = 2 * (nx - 1); // odd extension of the interior, rows x columns
         double *lambda = (double *)malloc((size_t)(nx > ny ? nx : ny) * sizeof(double));
@@ -491,10 +482,10 @@ gpu_solver *gpu_init(const rk4_ctx *ctx, double dt, int time_scheme, const wall_
         g->lambda_i = dev_alloc(ny - 2);
         g->lambda_j = dev_alloc(nx - 2);
         for (i = 0; i < ny - 2; i++)
-            lambda[i] = (2.0 * cos(PI * (i + 1) / (double)(ny - 1)) - 2.0) / (g->dy * g->dy);
+            lambda[i] = (2.0 * cos(PI * (i + 1) / (double)(ny - 1)) - 2.0) / (g->cfg.dy * g->cfg.dy);
         CUDA_CHECK(cudaMemcpy(g->lambda_i, lambda, (ny - 2) * sizeof(double), cudaMemcpyHostToDevice));
         for (i = 0; i < nx - 2; i++)
-            lambda[i] = (2.0 * cos(PI * (i + 1) / (double)(nx - 1)) - 2.0) / (g->dx * g->dx);
+            lambda[i] = (2.0 * cos(PI * (i + 1) / (double)(nx - 1)) - 2.0) / (g->cfg.dx * g->cfg.dx);
         CUDA_CHECK(cudaMemcpy(g->lambda_j, lambda, (nx - 2) * sizeof(double), cudaMemcpyHostToDevice));
         free(lambda);
     }
@@ -511,7 +502,7 @@ void gpu_free(gpu_solver *g)
     cudaFree(g->w_tmp);
     cudaFree(g->scratch);
     cudaFree(g->partial);
-    if (g->poisson_type == 3)
+    if (g->cfg.poisson_type == 3)
     {
         cufftDestroy(g->plan);
         cudaFree(g->ext);
@@ -534,16 +525,16 @@ const char *gpu_device_name(void)
 void gpu_step(gpu_solver *g)
 {
     int n = g->n;
-    double dt = g->dt;
+    double dt = g->cfg.dt;
 
     // Boundary conditions
-    LAUNCH(wall_bc_kernel, n, g->u, g->v, g->bc, g->nx, g->ny);
+    LAUNCH(wall_bc_kernel, n, g->u, g->v, g->cfg.bc, g->nx, g->ny);
     LAUNCH(vorticity_bc_kernel, n, g->DX, g->DY, g->u, g->v, g->w, g->nx, g->ny);
 
-    if (g->time_scheme == 1)
+    if (g->cfg.time_scheme == 1)
     {
         // Euler: single RHS evaluation, then one Poisson solve
-        LAUNCH(rhs_kernel, n, g->DX, g->DY, g->DX2, g->DY2, g->w, g->u, g->v, g->Re, g->k1, n);
+        LAUNCH(rhs_kernel, n, g->DX, g->DY, g->DX2, g->DY2, g->w, g->u, g->v, g->cfg.Re, g->k1, n);
         LAUNCH(axpy_kernel, n, g->w, dt, g->k1, g->w, n);
         velocity_from_vorticity(g, g->w);
     }

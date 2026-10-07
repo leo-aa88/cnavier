@@ -12,9 +12,7 @@
 #include "poisson.h"
 #include "fluiddyn.h"
 #include "threads.h"
-#ifdef USE_CUDA
-#include "cudasolver.h"
-#endif
+#include "backend.h"
 #ifdef _OPENMP
 #include <omp.h>
 #endif
@@ -157,15 +155,16 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    // Host memory estimate: 21 arrays of nx*ny doubles (fields, derivatives,
-    // RK4 stages, Poisson right-hand side, FFT buffer) and four CSR operators
-    // with at most 7 non-zeros per row, compared with the memory available
-    // now. A run that would not fit stops here with a message instead of being
-    // killed by the kernel once the pages are touched. Other processes can
-    // still take memory after this check, so it is a guard against the clear
-    // cases only.
-    double mem_needed = (double)nx * ny * (21.0 * sizeof(double)
-                      + 4.0 * (7.0 * (sizeof(double) + sizeof(int)) + sizeof(int)));
+    // Host memory estimate: four CSR operators with at most 7 non-zeros per
+    // row, plus the arrays of the backend asked for (the CPU workspace, or on
+    // the GPU only host copies of the fields), compared with the memory
+    // available now. A run that would not fit stops here with a message
+    // instead of being killed by the kernel once the pages are touched. Other
+    // processes can still take memory after this check, so it is a guard
+    // against the clear cases only; backend_create() checks again for the
+    // backend it actually uses.
+    double mem_needed = (double)nx * ny * 4.0 * (7.0 * (sizeof(double) + sizeof(int)) + sizeof(int))
+                      + backend_host_memory(nx, ny, use_gpu);
     double mem_avail  = available_memory();
     if (mem_avail >= 0. && mem_needed > mem_avail)
     {
@@ -244,56 +243,33 @@ int main(int argc, char *argv[])
     freesm(sd_x); freesm(sd_y); freesm(sd_x2); freesm(sd_y2);
     freesm(sIx);  freesm(sIy);
 
-    // Solver workspace (allocated once, reused every timestep)
-    rk4_ctx ctx = rk4_alloc(nx, ny);
-    ctx.DX = &DX; ctx.DY = &DY; ctx.DX2 = &DX2; ctx.DY2 = &DY2;
-    ctx.Re = Re; ctx.dx = dx; ctx.dy = dy;
-    ctx.poisson_type = poisson_type;
-    ctx.poisson_max_it = poisson_max_it; ctx.poisson_tol = poisson_tol;
-    ctx.beta = beta;
+    // Everything that defines the run, for whichever backend runs it
+    solver_config cfg;
+    cfg.nx = nx; cfg.ny = ny; cfg.dx = dx; cfg.dy = dy;
+    cfg.Re = Re; cfg.dt = dt; cfg.time_scheme = time_scheme;
+    cfg.poisson_type = poisson_type; cfg.poisson_max_it = poisson_max_it;
+    cfg.poisson_tol = poisson_tol; cfg.beta = beta;
+    cfg.bc = bc;
+    cfg.DX = &DX; cfg.DY = &DY; cfg.DX2 = &DX2; cfg.DY2 = &DY2;
 
     int it_max = (int)((tf / dt) - 1);
 
-    // Dense field matrices
-    mtrx u   = initm(ny, nx);
-    mtrx v   = initm(ny, nx);
-    mtrx w   = initm(ny, nx);
+    // Backend selection: GPU when built with CUDA=1 and a device is usable
+    backend *solver = backend_create(&cfg, use_gpu);
 
-    // Continuity check workspace — pre-allocated once, reused every iteration
-    mtrx dudx   = initm(ny, nx);
-    mtrx dvdy   = initm(ny, nx);
-    mtrx check_continuity = initm(ny, nx);
-
-    // Initial condition. Fields are ny rows (y) of nx values (x).
+    // Initial condition, on the solver's host fields. Fields are ny rows (y)
+    // of nx values (x).
+    mtrx *u, *v, *w;
+    backend_fields(solver, &u, &v, &w);
     for (i = 1; i < ny - 1; i++)
         for (j = 1; j < nx - 1; j++)
         {
-            MAt(u, i, j) = ui;
-            MAt(v, i, j) = vi;
+            MAt(*u, i, j) = ui;
+            MAt(*v, i, j) = vi;
         }
-
-    // Backend selection: GPU when built with CUDA=1 and a device is usable
-    int on_gpu = 0;
-#ifdef USE_CUDA
-    gpu_solver *gpu = NULL;
-    if (use_gpu)
-    {
-        gpu = gpu_init(&ctx, dt, time_scheme, &bc);
-        if (gpu)
-            gpu_set_fields(gpu, &u, &v, &w);
-        else
-            printf("No usable CUDA device - falling back to the CPU\n");
-    }
-    on_gpu = (gpu != NULL);
-#else
-    (void)use_gpu;
-#endif
-    printf("Backend: %s\n", on_gpu ? "CUDA" : "CPU");
-#ifdef USE_CUDA
-    if (on_gpu) printf("CUDA device: %s\n", gpu_device_name());
-#endif
-
-    if (!on_gpu && poisson_type == 3) fft_setup(nx, ny);
+    backend_set_fields(solver, u, v, w);
+    printf("Backend: %s\n", backend_name(solver));
+    if (backend_device(solver)) printf("CUDA device: %s\n", backend_device(solver));
 
     struct timespec t_start, t_end;
     clock_gettime(CLOCK_MONOTONIC, &t_start);
@@ -303,30 +279,11 @@ int main(int argc, char *argv[])
     {
         double cmax, cmin;
 
-#ifdef USE_CUDA
-        if (on_gpu)
-        {
-            gpu_step(gpu);
-            gpu_continuity(gpu, &cmax, &cmin);
-        }
-        else
-#endif
-        {
-            // Boundary conditions, time advancement + Poisson solve
-            step(w, u, v, dt, time_scheme, &bc, &ctx);
+        // Boundary conditions, time advancement + Poisson solve
+        backend_step(solver);
 
-            // Continuity check: du/dx + dv/dy ~ 0
-            spmv(DX, u.M, dudx.M);
-            spmv(DY, v.M, dvdy.M);
-
-            // reuse check_continuity storage
-            for (i = 0; i < ny; i++)
-                for (j = 0; j < nx; j++)
-                    MAt(check_continuity, i, j) = MAt(dudx, i, j) + MAt(dvdy, i, j);
-
-            cmax = maxel(check_continuity);
-            cmin = minel(check_continuity);
-        }
+        // Continuity check: du/dx + dv/dy ~ 0
+        backend_continuity(solver, &cmax, &cmin);
 
         printf("Iteration: %d | Time: %.4lf | Progress: %.2lf%%\n",
                t, (double)t * dt, it_max > 0 ? (double)100 * t / it_max : 100.);
@@ -334,10 +291,8 @@ int main(int argc, char *argv[])
 
         if (output_interval > 0 && t % output_interval == 0)
         {
-#ifdef USE_CUDA
-            if (on_gpu) gpu_get_fields(gpu, NULL, NULL, &w);
-#endif
-            printvtk(w, "vorticity", dx, dy);
+            backend_fields(solver, NULL, NULL, &w);
+            printvtk(*w, "vorticity", dx, dy);
         }
     }
 
@@ -345,37 +300,22 @@ int main(int argc, char *argv[])
     double elapsed = (double)(t_end.tv_sec - t_start.tv_sec)
                    + 1E-9 * (double)(t_end.tv_nsec - t_start.tv_nsec);
 
-#ifdef USE_CUDA
-    if (on_gpu) gpu_get_fields(gpu, &u, &v, &w);
-#endif
+    backend_fields(solver, &u, &v, &w);
 
-    // Re-apply wall BCs before sampling centerline
-    apply_wall_bc(u, v, &bc);
+    // Re-apply wall BCs before sampling centerline. This writes to the read
+    // view without backend_set_fields(), which is fine only because the
+    // solver is not stepped again.
+    apply_wall_bc(*u, *v, &bc);
 
     // Write centerline profiles and compare against Ghia et al. (1982)
-    print_centerline(u, v, nx, ny, dx, dy);
-
-    // Free dense fields
-    freem(&u);
-    freem(&v);
-    freem(&w);
-
-    // Free continuity workspace
-    freem(&dudx);   freem(&dvdy);
-    freem(&check_continuity);
-
-
-    // Free sparse operators
-    freesm(DX); freesm(DY); freesm(DX2); freesm(DY2);
-
-    rk4_free(&ctx);
-    if (!on_gpu && poisson_type == 3) fft_cleanup();
-#ifdef USE_CUDA
-    if (on_gpu) gpu_free(gpu);
-#endif
+    print_centerline(*u, *v, nx, ny, dx, dy);
 
     printf("Wall-clock time: %.3lf s total | %.4lf ms per step (%d steps, %s)\n",
-           elapsed, 1E3 * elapsed / (it_max + 1), it_max + 1, on_gpu ? "CUDA" : "CPU");
+           elapsed, 1E3 * elapsed / (it_max + 1), it_max + 1, backend_name(solver));
+
+    backend_free(solver);
+    freesm(DX); freesm(DY); freesm(DX2); freesm(DY2);
+
     printf("Simulation complete!\n");
     return 0;
 }

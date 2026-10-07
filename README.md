@@ -292,17 +292,19 @@ cnavier/
 ├── .github/workflows/
 │   └── ci.yml          # CPU tests, CUDA compile check
 ├── src/
-│   ├── main.c          # Simulation loop and configuration
+│   ├── main.c          # Configuration, command line, time loop and output
+│   ├── backend.c       # One interface over the CPU and CUDA solvers
 │   ├── linearalg.c     # Dense and sparse (CSR) linear algebra
 │   ├── finitediff.c    # Finite difference operators (dense + sparse)
-│   ├── fluiddyn.c      # Timestep, Euler/RK4 time integration, vorticity, continuity
+│   ├── fluiddyn.c      # CPU timestep: Euler/RK4, wall and vorticity BCs, stability limit
 │   ├── poisson.c       # Gauss-Seidel, SOR, and FFT Poisson solvers
 │   ├── cudasolver.cu   # CUDA backend (built only with CUDA=1)
 │   └── utils.c         # VTK output, random utilities
 ├── include/
 │   ├── linearalg.h
 │   ├── finitediff.h
-│   ├── fluiddyn.h
+│   ├── fluiddyn.h      # solver_config (shared by both backends) and the CPU solver
+│   ├── backend.h
 │   ├── poisson.h
 │   ├── cudasolver.h
 │   └── utils.h

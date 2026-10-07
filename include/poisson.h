@@ -25,14 +25,17 @@ int poisson_SOR(mtrx f, mtrx u, mtrx u0, double dx, double dy, int itmax, double
 
 // FFT-based direct Poisson solver (exact, O(n² log n), no iteration needed).
 // Uses a DST-I (sine transform) of the interior nodes, so u = 0 on the wall
-// nodes, as in the iterative solvers. Result written into pre-allocated
-// matrix u. No scratch buffer needed.
-void poisson_FFT(mtrx f, mtrx u, double dx, double dy);
+// nodes, as in the iterative solvers. Fields are ny rows of nx values.
+//
+// fft_setup() plans the transforms for an nx*ny grid; the plans and buffer
+// belong to the returned solver, so several can exist at once. Free each with
+// fft_cleanup().
+typedef struct fft_solver fft_solver;
+fft_solver *fft_setup(int nx, int ny);
+void fft_cleanup(fft_solver *s);
 
-// Call once at program start to pre-plan FFTW transforms for an nx*ny grid.
-// Call fft_cleanup() at program end.
-void fft_setup(int nx, int ny);
-void fft_cleanup(void);
+// Result written into pre-allocated matrix u. No scratch buffer needed.
+void poisson_FFT(fft_solver *s, mtrx f, mtrx u, double dx, double dy);
 
 #endif // POISSON_H_INCLUDED
 

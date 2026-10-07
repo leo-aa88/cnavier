@@ -79,7 +79,8 @@ The solver is designed primarily as an educational and experimental code rather 
 The main numerical components are:
 
 \begin{itemize}[leftmargin=2em]
-  \item \code{src/main.c}: run configuration, operator construction, backend selection, time loop, diagnostics, and output;
+  \item \code{src/main.c}: run configuration, command line, operator construction, time loop, diagnostics, and output;
+  \item \code{src/backend.c}: one interface over the CPU and CUDA solvers, and the choice between them;
   \item \code{src/finitediff.c}: one-dimensional first- and second-derivative finite-difference matrices and CSR conversion;
   \item \code{src/linearalg.c}: dense storage utilities, CSR sparse matrices, sparse matrix--vector multiplication, and Kronecker products;
   \item \code{src/fluiddyn.c}: wall conditions, vorticity transport, Euler and RK4 integration, streamfunction-to-velocity recovery, and full timesteps;
@@ -633,6 +634,10 @@ The main dense field arrays are contiguous.  Reusable flat buffers and RK4 work 
 % =============================================================================
 \section{Parallel Implementations}
 % =============================================================================
+
+\subsection{Backend structure}
+
+A run is described by one \code{solver\_config} (\code{fluiddyn.h}): grid size and spacing, Reynolds number, timestep, time scheme, Poisson solver settings, wall velocities and the four derivative operators.  Both backends are initialised from it, and each keeps its own copy, taken at that moment: the CPU solver in its workspace (\code{rk4\_ctx}, which also holds the work arrays and FFT plans) and the GPU solver (\code{gpu\_init}), which uploads the operators and fields to the device.  Changing the caller's \code{solver\_config} afterwards affects neither, and a test checks that both ignore such a change alike.  \code{backend.c} chooses between them once, at startup, and exposes the same operations for both (one timestep, the divergence diagnostic, the host fields), so the time loop in \code{main.c} does not depend on where it runs.  On the CPU the host fields are the solver's own arrays; on the GPU they are copies filled from the device when asked for.  A GPU run allocates no CPU solver workspace, and the memory check counts only what the chosen backend allocates.
 
 \subsection{OpenMP}
 
