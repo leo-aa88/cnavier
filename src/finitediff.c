@@ -344,3 +344,43 @@ smtrx SDiff2_periodic(int n, int o, double dx)
 {
     return periodic_op(n, o, dx * dx, d2_coef);
 }
+
+// SDiff1 with fourth-order one-sided rows at the ends and next to them (orders
+// 4 and 6; order 2 is returned unchanged). The deeper rows are SDiff1's: the
+// next one is already fourth-order centered.
+//   row 0:   (-25 f0 + 48 f1 - 36 f2 + 16 f3 - 3 f4) / (12 dx)
+//   row 1:   (-3 f0 - 10 f1 + 18 f2 - 6 f3 + f4) / (12 dx)
+// and the mirror images, with the opposite sign, at the other end
+smtrx SDiff1_wall4(int n, int o, double dx)
+{
+    static const double row0[5] = {-25., 48., -36., 16., -3.}, row1[5] = {-3., -10., 18., -6., 1.};
+    op_builder D = {0};
+    int k;
+
+    build_diff1(&D, n, o, dx);
+    if (o >= 4)
+    {
+        if (n < 10)
+        {
+            printf("** Error: the fourth-order wall rows need at least 10 points **\n");
+            exit(1);
+        }
+        // A later write to the same position replaces the earlier one, so
+        // first zero every entry of the four rows, then write the new ones
+        for (k = 0; k < 7; k++)
+        {
+            op_set(&D, 0, k, 0.0);
+            op_set(&D, 1, k, 0.0);
+            op_set(&D, n - 1, n - 1 - k, 0.0);
+            op_set(&D, n - 2, n - 1 - k, 0.0);
+        }
+        for (k = 0; k < 5; k++)
+        {
+            op_set(&D, 0, k, row0[k] / (12.0 * dx));
+            op_set(&D, 1, k, row1[k] / (12.0 * dx));
+            op_set(&D, n - 1, n - 1 - k, -row0[k] / (12.0 * dx));
+            op_set(&D, n - 2, n - 1 - k, -row1[k] / (12.0 * dx));
+        }
+    }
+    return op_to_csr(&D, n);
+}

@@ -43,6 +43,11 @@ typedef struct
     wall_bc bc;                       // wall velocities (walls only)
     const smtrx *DX, *DY, *DX2, *DY2; // sparse derivative operators
 
+    // Operators for the velocity, u = DYv psi and v = -DXv psi, and for the
+    // continuity check; NULL to use DX and DY. Built with SDiff1_wall4 they
+    // give the velocity fourth-order rows next to the walls.
+    const smtrx *DXv, *DYv;
+
     // Optional source term f in the vorticity equation,
     // dw/dt = -u.grad(w) + (1/Re) lap(w) + f (the curl of a body force in the
     // momentum equation), used to verify the solver against a manufactured

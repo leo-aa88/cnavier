@@ -97,6 +97,8 @@ static void usage(const char *prog)
            "                       operator of the FFT solver with walls\n");
     printf("  --wall-closure NAME  wall vorticity: velocity (dv/dx - du/dy, default) or\n"
            "                       briley (third order, from the stream function)\n");
+    printf("  --velocity-order N   2 (default) or 4: order of the derivative rows next to\n"
+           "                       the walls that give u, v from the stream function\n");
     printf("  --case NAME          cavity (default; lid-driven, four walls), or on a\n"
            "                       doubly periodic unit square: taylor-green (decaying\n"
            "                       vortex, compared with the exact solution at the end)\n"
@@ -131,8 +133,9 @@ int main(int argc, char *argv[])
     int time_scheme = 2;  // 1=Euler  2=RK4
     int use_gpu = 1;      // only meaningful when built with CUDA=1
     enum flow_case flow = CASE_CAVITY;
-    int poisson_order = 2; // 2 = 5-point, 4 = compact 9-point (FFT solver, walls)
-    int wall_closure = 0;  // 0 = dv/dx - du/dy, 1 = Briley's formula from psi
+    int poisson_order = 2;  // 2 = 5-point, 4 = compact 9-point (FFT solver, walls)
+    int wall_closure = 0;   // 0 = dv/dx - du/dy, 1 = Briley's formula from psi
+    int velocity_order = 2; // 4 = fourth-order rows next to the walls for u, v
 
     // Command-line overrides
     static struct option long_opts[] = {
@@ -146,6 +149,7 @@ int main(int argc, char *argv[])
         {"case", required_argument, 0, 'k'},
         {"poisson-order", required_argument, 0, 'p'},
         {"wall-closure", required_argument, 0, 'w'},
+        {"velocity-order", required_argument, 0, 'u'},
         {"cpu", no_argument, 0, 'c'},
         {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}};
@@ -197,6 +201,9 @@ int main(int argc, char *argv[])
                 wall_closure = 1;
             else
                 ok = 0;
+            break;
+        case 'u':
+            ok = parse_int(optarg, &velocity_order) && (velocity_order == 2 || velocity_order == 4);
             break;
         case 'c':
             use_gpu = 0;
@@ -254,7 +261,7 @@ int main(int argc, char *argv[])
     // processes can still take memory after this check, so it is a guard
     // against the clear cases only; backend_create() checks again for the
     // backend it actually uses.
-    double mem_needed = (double)nx * ny * 4.0 * (7.0 * (sizeof(double) + sizeof(int)) + sizeof(int)) + backend_host_memory(nx, ny, use_gpu);
+    double mem_needed = (double)nx * ny * (velocity_order == 4 ? 6.0 : 4.0) * (7.0 * (sizeof(double) + sizeof(int)) + sizeof(int)) + backend_host_memory(nx, ny, use_gpu);
     double mem_avail = available_memory();
     if (mem_avail >= 0. && mem_needed > mem_avail)
     {
@@ -267,6 +274,17 @@ int main(int argc, char *argv[])
     if (periodic && poisson_type != 3)
     {
         printf("** Error: the periodic cases need the FFT Poisson solver (poisson_type = 3) **\n");
+        return 1;
+    }
+    if (periodic && (poisson_order != 2 || wall_closure != 0 || velocity_order != 2))
+    {
+        printf("** Error: --poisson-order, --wall-closure and --velocity-order apply to walls; "
+               "the periodic cases have none **\n");
+        return 1;
+    }
+    if (velocity_order == 4 && (nx < 10 || ny < 10))
+    {
+        printf("** Error: --velocity-order 4 needs at least 10 grid points in x and y **\n");
         return 1;
     }
     if (poisson_order == 4 && poisson_type != 3)
@@ -345,6 +363,15 @@ int main(int argc, char *argv[])
     smtrx DY = skronecker(sd_y, sIx);
     smtrx DX2 = skronecker(sIy, sd_x2);
     smtrx DY2 = skronecker(sd_y2, sIx);
+    smtrx DXv = {0}, DYv = {0};
+    if (velocity_order == 4)
+    {
+        smtrx vx = SDiff1_wall4(nx, order, dx), vy = SDiff1_wall4(ny, order, dy);
+        DXv = skronecker(sIy, vx);
+        DYv = skronecker(vy, sIx);
+        freesm(vx);
+        freesm(vy);
+    }
 
     freesm(sd_x);
     freesm(sd_y);
@@ -374,6 +401,8 @@ int main(int argc, char *argv[])
     cfg.DY = &DY;
     cfg.DX2 = &DX2;
     cfg.DY2 = &DY2;
+    cfg.DXv = velocity_order == 4 ? &DXv : NULL;
+    cfg.DYv = velocity_order == 4 ? &DYv : NULL;
     cfg.t0 = 0.0;
     cfg.vorticity_source = NULL;
     cfg.source_data = NULL;
@@ -470,6 +499,11 @@ int main(int argc, char *argv[])
     freesm(DY);
     freesm(DX2);
     freesm(DY2);
+    if (velocity_order == 4)
+    {
+        freesm(DXv);
+        freesm(DYv);
+    }
 
     printf("Simulation complete!\n");
     return 0;

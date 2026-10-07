@@ -70,6 +70,7 @@ struct gpu_solver
     int nx, ny, n;     // cfg.nx, cfg.ny and their product, for brevity
 
     csr_dev DX, DY, DX2, DY2;
+    csr_dev DXv, DYv; // velocity operators: cfg.DXv, cfg.DYv, or copies of DX, DY
 
     double *u, *v, *w, *psi;
     double *k1, *k2, *k3, *k4; // RK4 stage increments
@@ -592,7 +593,7 @@ static void solve_poisson(gpu_solver *g, const double *w)
 static void velocity_from_vorticity(gpu_solver *g, const double *w)
 {
     solve_poisson(g, w);
-    LAUNCH(velocity_kernel, g->n, g->DX, g->DY, g->psi, g->u, g->v, g->n);
+    LAUNCH(velocity_kernel, g->n, g->DXv, g->DYv, g->psi, g->u, g->v, g->n);
 }
 
 // out += f(t), the vorticity source, when cfg.vorticity_source is set. The source is a host
@@ -667,6 +668,8 @@ gpu_solver *gpu_init(const solver_config *cfg)
     g->DY = csr_upload(cfg->DY);
     g->DX2 = csr_upload(cfg->DX2);
     g->DY2 = csr_upload(cfg->DY2);
+    g->DXv = cfg->DXv ? csr_upload(cfg->DXv) : g->DX;
+    g->DYv = cfg->DYv ? csr_upload(cfg->DYv) : g->DY;
 
     g->u = dev_alloc(n);
     g->v = dev_alloc(n);
@@ -760,6 +763,8 @@ void gpu_free(gpu_solver *g)
     csr_free(g->DY);
     csr_free(g->DX2);
     csr_free(g->DY2);
+    if (g->cfg.DXv) csr_free(g->DXv);
+    if (g->cfg.DYv) csr_free(g->DYv);
     cudaFree(g->u);
     cudaFree(g->v);
     cudaFree(g->w);
@@ -860,7 +865,7 @@ void gpu_step(gpu_solver *g)
 
 void gpu_continuity(gpu_solver *g, double *cmax, double *cmin)
 {
-    LAUNCH(continuity_kernel, g->n, g->DX, g->DY, g->u, g->v, g->scratch, g->n);
+    LAUNCH(continuity_kernel, g->n, g->DXv, g->DYv, g->u, g->v, g->scratch, g->n);
     *cmax = reduce(g, g->scratch, g->n, RED_MAX);
     *cmin = reduce(g, g->scratch, g->n, RED_MIN);
 }

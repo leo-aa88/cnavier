@@ -158,8 +158,8 @@ void backend_continuity(backend *b, double *cmax, double *cmin)
         return;
     }
 #endif
-    spmv(*b->cfg.DX, b->u.M, b->dudx.M);
-    spmv(*b->cfg.DY, b->v.M, b->dvdy.M);
+    spmv(b->cfg.DXv ? *b->cfg.DXv : *b->cfg.DX, b->u.M, b->dudx.M);
+    spmv(b->cfg.DYv ? *b->cfg.DYv : *b->cfg.DY, b->v.M, b->dvdy.M);
     *cmax = -__DBL_MAX__;
     *cmin = __DBL_MAX__;
     for (k = 0; k < n; k++)
