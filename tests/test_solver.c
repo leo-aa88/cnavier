@@ -22,7 +22,8 @@
 
 static int n_checks = 0;
 static int n_failed = 0;
-static int n_skipped = 0; // GPU tests that could not run
+static int n_skipped = 0;       // GPU tests that could not run
+static int n_skipped_other = 0; // other checks this machine cannot run
 
 // Pass when value <= limit (a NaN value fails)
 static void check(const char *name, double value, double limit)
@@ -544,20 +545,27 @@ static void test_openmp_thread_count(int scheme, int poisson_type, const char *l
     check(name, diff, 0.0);
 }
 
+// Path of this executable, or "" where /proc/self/exe does not exist
+static const char *self_path(void)
+{
+    static char self[4096];
+    ssize_t len = readlink("/proc/self/exe", self, sizeof(self) - 1);
+    self[len > 0 ? len : 0] = '\0';
+    return self;
+}
+
 // The thread count default_threads() picks, in a fresh process started with
-// the given environment (OpenMP reads its variables at start-up)
+// the given environment (OpenMP reads its variables at start-up). -1 if the
+// child fails.
 static int child_threads(const char *env)
 {
-    char self[4096], cmd[4400];
+    char cmd[4400];
     int threads = -1;
-    ssize_t len = readlink("/proc/self/exe", self, sizeof(self) - 1);
     FILE *f;
 
-    if (len <= 0) return -1;
-    self[len] = '\0';
     snprintf(cmd, sizeof(cmd),
              "env -u OMP_NUM_THREADS -u OMP_PROC_BIND -u OMP_PLACES -u GOMP_CPU_AFFINITY %s '%s' --default-threads",
-             env, self);
+             env, self_path());
     if (!(f = popen(cmd, "r"))) return -1;
     if (fscanf(f, "%d", &threads) != 1) threads = -1;
     pclose(f);
@@ -578,12 +586,14 @@ static void test_openmp_default_threads(void)
     // The children inherit this thread's CPU mask, which the runtime has
     // already narrowed to one place if a placement is set here. The core count
     // and the child processes need Linux.
-    if (omp_get_proc_bind() != omp_proc_bind_false || cores == 0 || child_threads("") < 0)
+    // Only these reasons skip the checks; a child that fails is a failure.
+    if (omp_get_proc_bind() != omp_proc_bind_false || cores == 0 || self_path()[0] == '\0')
     {
-        printf("  skipped: %s\n", omp_get_proc_bind() != omp_proc_bind_false
+        printf("  SKIPPED: %s\n", omp_get_proc_bind() != omp_proc_bind_false
                                       ? "this process has a thread placement (OMP_PROC_BIND, OMP_PLACES "
                                         "or GOMP_CPU_AFFINITY)"
                                       : "needs Linux sysfs and /proc/self/exe");
+        n_skipped_other += 4;
         return;
     }
     snprintf(name, sizeof(name), "no OpenMP settings: %d threads", expect);
@@ -844,6 +854,7 @@ int main(int argc, char **argv)
 #endif
 
     printf("\n%d checks, %d failed", n_checks, n_failed);
+    if (n_skipped_other) printf(", %d OpenMP thread-count checks SKIPPED (see above)", n_skipped_other);
 #ifdef USE_CUDA
     if (n_skipped)
         printf(", %d GPU tests SKIPPED (no usable CUDA device)", n_skipped);
