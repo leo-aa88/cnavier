@@ -670,11 +670,9 @@ All solver arithmetic is double precision.
 
 \subsection{GPU sine transform through odd extension}
 
-cuFFT does not expose a native DST-I.  The CUDA backend therefore constructs the odd extension of the $(n_x-2)\times(n_y-2)$ interior of a field on a
-\begin{equation}
-2(n_y-1)\times 2(n_x-1)
-\end{equation}
-grid.  A real-to-complex FFT of this odd extension contains the sine-transform modes required for the Dirichlet Poisson problem.  The code extracts those modes, divides by the same eigenvalues as \cref{eq:dst-eigenvalue}, applies the construction again, and scales by the DST normalization.
+cuFFT does not expose a native DST-I.  The CUDA backend uses the identity that the DST-I of $x_1,\dots,x_m$ is $-\operatorname{Im}$ of the real FFT of the odd extension $(0,x_1,\dots,x_m,0,-x_m,\dots,-x_1)$ of length $2(m+1)$.  The two-dimensional transform is done in two passes of batched one-dimensional transforms, as on the CPU: the odd extensions of the $n_y-2$ interior rows (length $2(n_x-1)$) are transformed together, the sine modes are read off and extended along the columns (length $2(n_y-1)$), and those are transformed together.  The code then divides by the same eigenvalues as \cref{eq:dst-eigenvalue}, applies the transform again, and scales by the DST normalization.  An earlier version transformed one two-dimensional odd extension of size $2(n_y-1)\times 2(n_x-1)$, four times the grid; the batched passes are about $1.3$ times faster from $129\times129$ upwards.
+
+The red--black Gauss--Seidel and SOR solvers evaluate their stopping rule on the device: each sweep's sum of $|\Delta\psi|$ is reduced and compared with the tolerance by a kernel, sweeps after the one that meets it do nothing, and the host reads the outcome once every 32 sweeps.  The iteration count and the result are the same as with a check after every sweep.
 
 This makes the GPU FFT algorithm mathematically equivalent to the CPU FFTW DST-I solver, up to floating-point round-off and the details of the FFT implementations.
 

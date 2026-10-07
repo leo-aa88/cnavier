@@ -21,6 +21,7 @@ extern "C" {
 
 #define BLOCK      256 // threads per block (power of two, required by reduce_kernel)
 #define RED_BLOCKS 256 // max blocks used by a reduction
+#define RB_BATCH   32  // red-black sweeps queued between looks at the convergence state
 
 #define CUDA_CHECK(call)                                                   \
     do {                                                                   \
@@ -72,10 +73,15 @@ struct gpu_solver
     double *scratch;           // continuity field / Poisson work array
     double *partial;           // per-block results of a reduction
 
+    // Convergence state of the iterative Poisson solvers, kept on the device
+    // so that a batch of sweeps runs without waiting for the host
+    struct rb_state *rb;
+
     // FFT Poisson solver (poisson_type 3)
-    cufftHandle         plan;  // real-to-complex FFT of the odd extension
-    double             *ext;   // odd extension of the interior, 2(ny-1) rows x 2(nx-1)
-    cufftDoubleComplex *spec;  // its spectrum, 2(ny-1) rows x nx
+    cufftHandle         plan_rows; // batched real FFTs of the odd extensions of the rows
+    cufftHandle         plan_cols; // ... and of the columns
+    double             *ext;       // odd extensions, (ny-2) x 2(nx-1) or (nx-2) x 2(ny-1)
+    cufftDoubleComplex *spec;      // their spectra, (ny-2) x nx or (nx-2) x ny
     double *lambda_i, *lambda_j; // eigenvalues of the 1D second differences
 };
 
@@ -104,7 +110,7 @@ __global__ void spmv_kernel(csr_dev A, const double *x, double *y, int n)
 __global__ void wall_bc_kernel(double *u, double *v, wall_bc bc, int nx, int ny)
 {
     int k = blockIdx.x * blockDim.x + threadIdx.x;
-    if (k >= ny * nx) return;
+    if (k >= nx * ny) return;
     int i = k / nx, j = k % nx;
     int wall;
 
@@ -123,7 +129,7 @@ __global__ void vorticity_bc_kernel(csr_dev DX, csr_dev DY, const double *u, con
                                     double *w, int nx, int ny)
 {
     int k = blockIdx.x * blockDim.x + threadIdx.x;
-    if (k >= ny * nx) return;
+    if (k >= nx * ny) return;
     int i = k / nx, j = k % nx;
 
     if (i == 0 || i == ny - 1 || j == 0 || j == nx - 1)
@@ -180,14 +186,23 @@ __global__ void rk4_combine_kernel(double *w, double c, const double *k1, const 
         w[k] += c * (k1[k] + 2.0 * k2[k] + 2.0 * k3[k] + k4[k]);
 }
 
+// Device-side state of a red-black solve
+struct rb_state
+{
+    int    done;  // set once the stopping rule is met; later sweeps do nothing
+    int    iter;  // sweep at which it was met
+    double err;   // sum of |change| in that sweep
+};
+
 // One colour of a red-black sweep for nabla^2 psi = -w; beta = 1 is Gauss-Seidel.
 // Points of one colour only read the other colour, so the update is safe in
 // parallel. delta receives |change| at every updated point.
 __global__ void redblack_kernel(double *psi, const double *w, double *delta, int nx, int ny,
-                                double dx2, double dy2, double beta, int colour)
+                                double dx2, double dy2, double beta, int colour,
+                                const struct rb_state *rb)
 {
     int k = blockIdx.x * blockDim.x + threadIdx.x;
-    if (k >= ny * nx) return;
+    if (k >= nx * ny || rb->done) return;
     int i = k / nx, j = k % nx;
 
     if (i < 1 || i >= ny - 1 || j < 1 || j >= nx - 1 || ((i + j) & 1) != colour)
@@ -203,65 +218,81 @@ __global__ void redblack_kernel(double *psi, const double *w, double *delta, int
     delta[k] = fabs(upd - old);
 }
 
-// Odd extension of the interior of a field of ny rows (y) and nx columns (x)
-// to 2(ny-1) x 2(nx-1). The
-// wall nodes become the zeros of the extension, and the real FFT of the
-// extension is, up to a constant factor, the 2D DST-I of the interior — the
-// transform FFTW calls RODFT00, which cuFFT does not provide.
-__global__ void odd_extend_kernel(const double *src, double *ext, int nx, int ny)
-{
-    int mx = 2 * (ny - 1), my = 2 * (nx - 1);
-    int k = blockIdx.x * blockDim.x + threadIdx.x;
-    if (k >= mx * my) return;
-    int p = k / my, q = k % my;
+// The 2D DST-I of the interior — the transform FFTW calls RODFT00, which cuFFT
+// does not provide — is done as two batches of 1D transforms, first along the
+// rows (x), then along the columns (y). The DST-I of x[1..m] is -Im of the
+// real FFT of its odd extension [0, x1..xm, 0, -xm..-x1] of length 2(m+1).
 
-    if (p == 0 || p == ny - 1 || q == 0 || q == nx - 1)
+// Odd extension of every interior row: row r is the extension of
+// src(r+1, 1..nx-2), of length 2(nx-1)
+__global__ void extend_rows_kernel(const double *src, double *ext, int nx, int ny)
+{
+    int len = 2 * (nx - 1);
+    int k = blockIdx.x * blockDim.x + threadIdx.x;
+    if (k >= (ny - 2) * len) return;
+    int r = k / len, q = k % len;
+
+    if (q == 0 || q == nx - 1)
+        ext[k] = 0.0;
+    else
+        ext[k] = q < nx - 1 ? src[(r + 1) * nx + q] : -src[(r + 1) * nx + (len - q)];
+}
+
+// Odd extension of every column of the row transforms: column c is the
+// extension of the DST along x of rows 0..ny-3 at mode c, of length 2(ny-1).
+// Mode c of row r is -Im(spec_rows[r][c + 1]).
+__global__ void extend_cols_kernel(const cufftDoubleComplex *spec_rows, double *ext, int nx, int ny)
+{
+    int len = 2 * (ny - 1);
+    int k = blockIdx.x * blockDim.x + threadIdx.x;
+    if (k >= (nx - 2) * len) return;
+    int c = k / len, p = k % len;
+
+    if (p == 0 || p == ny - 1)
     {
         ext[k] = 0.0;
         return;
     }
-    int i = (p < ny) ? p : mx - p;
-    int j = (q < nx) ? q : my - q;
-    double sign = ((p < ny) == (q < nx)) ? 1.0 : -1.0;
-    ext[k] = sign * src[i * nx + j];
+    int r = p < ny - 1 ? p - 1 : len - p - 1;
+    double mode = -spec_rows[r * nx + c + 1].y;
+    ext[k] = p < ny - 1 ? mode : -mode;
 }
 
-// Interior node (i, j) corresponds to sine mode (i-1, j-1), which sits at
-// row i, column j of the spectrum of the odd extension.
-__device__ inline int spec_index(int i, int j, int nx)
+// Interior node (i, j) corresponds to sine mode (i-1, j-1): mode i-1 of the
+// column transform of column j-1. The column spectra have ny entries each.
+__device__ inline double dst_mode(const cufftDoubleComplex *spec_cols, int i, int j, int ny)
 {
-    return i * nx + j; // the D2Z output has 2(nx-1)/2 + 1 = nx columns
+    return -spec_cols[(j - 1) * ny + i].y;
 }
 
-// Pick the sine modes out of the spectrum of the odd extension and divide
-// each one by its eigenvalue of the 2D Laplacian. Wall nodes are set to 0.
+// Divide each sine mode by its eigenvalue of the 2D Laplacian. Wall nodes are
+// set to 0.
 __global__ void spectral_divide_kernel(const cufftDoubleComplex *spec, double *out,
                                        const double *lambda_i, const double *lambda_j,
                                        int nx, int ny)
 {
     int k = blockIdx.x * blockDim.x + threadIdx.x;
-    if (k >= ny * nx) return;
+    if (k >= nx * ny) return;
     int i = k / nx, j = k % nx;
 
     if (i == 0 || i == ny - 1 || j == 0 || j == nx - 1)
         out[k] = 0.0;
     else
-        out[k] = spec[spec_index(i, j, nx)].x / (lambda_i[i - 1] + lambda_j[j - 1]);
+        out[k] = dst_mode(spec, i, j, ny) / (lambda_i[i - 1] + lambda_j[j - 1]);
 }
 
-// Pick the sine modes out of the spectrum of the odd extension and scale them.
-// Wall nodes are set to 0.
+// Scale each sine mode. Wall nodes are set to 0.
 __global__ void spectral_scale_kernel(const cufftDoubleComplex *spec, double *out,
                                       double scale, int nx, int ny)
 {
     int k = blockIdx.x * blockDim.x + threadIdx.x;
-    if (k >= ny * nx) return;
+    if (k >= nx * ny) return;
     int i = k / nx, j = k % nx;
 
     if (i == 0 || i == ny - 1 || j == 0 || j == nx - 1)
         out[k] = 0.0;
     else
-        out[k] = spec[spec_index(i, j, nx)].x * scale;
+        out[k] = dst_mode(spec, i, j, ny) * scale;
 }
 
 enum { RED_SUM, RED_MAX, RED_MIN };
@@ -295,6 +326,24 @@ __global__ void reduce_kernel(const double *x, int n, int op, double *partial)
     }
     if (threadIdx.x == 0)
         partial[blockIdx.x] = s[0];
+}
+
+// Finish the sum of |change| for sweep `iter` and apply the stopping rule of
+// the CPU solvers. The block results are added in order by one thread, as
+// reduce() does on the host, so the sum and the stopping sweep are the same.
+__global__ void rb_check_kernel(const double *partial, int blocks, double tol, int iter,
+                                struct rb_state *rb)
+{
+    if (blockIdx.x != 0 || threadIdx.x != 0 || rb->done) return;
+    double acc = red_identity(RED_SUM);
+    for (int b = 0; b < blocks; b++)
+        acc = red_combine(acc, partial[b], RED_SUM);
+    if (acc < tol)
+    {
+        rb->done = 1;
+        rb->iter = iter;
+        rb->err  = acc;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -350,22 +399,37 @@ static double reduce(gpu_solver *g, const double *x, int n, int op)
 static void poisson_redblack(gpu_solver *g, const double *w)
 {
     int k, n = g->n;
-    double e;
     double dx2 = g->cfg.dx * g->cfg.dx, dy2 = g->cfg.dy * g->cfg.dy;
     double beta = (g->cfg.poisson_type == 2) ? g->cfg.beta : 1.0;
     const char *name = (g->cfg.poisson_type == 2) ? "Poisson SOR" : "Poisson";
 
+    struct rb_state state;
+    int blocks = (n + BLOCK - 1) / BLOCK;
+    if (blocks > RED_BLOCKS) blocks = RED_BLOCKS;
+
     CUDA_CHECK(cudaMemset(g->psi,     0, n * sizeof(double)));
     CUDA_CHECK(cudaMemset(g->scratch, 0, n * sizeof(double)));
+    CUDA_CHECK(cudaMemset(g->rb,      0, sizeof(struct rb_state)));
 
-    for (k = 0; k < g->cfg.poisson_max_it; k++)
+    // Sweeps are queued in batches and the host looks at the result once per
+    // batch. Sweeps after the one that meets the stopping rule return at
+    // once, so the answer is the same as checking after every sweep.
+    for (k = 0; k < g->cfg.poisson_max_it; k += RB_BATCH)
     {
-        LAUNCH(redblack_kernel, n, g->psi, w, g->scratch, g->nx, g->ny, dx2, dy2, beta, 0);
-        LAUNCH(redblack_kernel, n, g->psi, w, g->scratch, g->nx, g->ny, dx2, dy2, beta, 1);
-        e = reduce(g, g->scratch, n, RED_SUM);
-        if (e < g->cfg.poisson_tol)
+        int s, last = k + RB_BATCH < g->cfg.poisson_max_it ? k + RB_BATCH : g->cfg.poisson_max_it;
+        for (s = k; s < last; s++)
         {
-            printf("%s solved in %d iterations - RSS error: %E\n", name, k, e);
+            LAUNCH(redblack_kernel, n, g->psi, w, g->scratch, g->nx, g->ny, dx2, dy2, beta, 0, g->rb);
+            LAUNCH(redblack_kernel, n, g->psi, w, g->scratch, g->nx, g->ny, dx2, dy2, beta, 1, g->rb);
+            reduce_kernel<<<blocks, BLOCK>>>(g->scratch, n, RED_SUM, g->partial);
+            CUDA_CHECK(cudaGetLastError());
+            rb_check_kernel<<<1, 1>>>(g->partial, blocks, g->cfg.poisson_tol, s, g->rb);
+            CUDA_CHECK(cudaGetLastError());
+        }
+        CUDA_CHECK(cudaMemcpy(&state, g->rb, sizeof(state), cudaMemcpyDeviceToHost));
+        if (state.done)
+        {
+            printf("%s solved in %d iterations - RSS error: %E\n", name, state.iter, state.err);
             return;
         }
     }
@@ -373,22 +437,27 @@ static void poisson_redblack(gpu_solver *g, const double *w)
     exit(1);
 }
 
+// 2D DST-I of the interior of src, left in g->spec as column spectra
+static void dst2d(gpu_solver *g, const double *src)
+{
+    int nx = g->nx, ny = g->ny;
+
+    LAUNCH(extend_rows_kernel, (ny - 2) * 2 * (nx - 1), src, g->ext, nx, ny);
+    CUFFT_CHECK(cufftExecD2Z(g->plan_rows, g->ext, g->spec));
+    LAUNCH(extend_cols_kernel, (nx - 2) * 2 * (ny - 1), g->spec, g->ext, nx, ny);
+    CUFFT_CHECK(cufftExecD2Z(g->plan_cols, g->ext, g->spec));
+}
+
 // Direct solve: DST-I, divide by the eigenvalues, DST-I again, normalise.
-// Each DST-I is a real FFT of the odd extension, whose sine modes come out as
-// -Re(spectrum); the two minus signs cancel. The sign of the right-hand side
-// (-w) is folded into the final scale.
+// The sign of the right-hand side (-w) is folded into the final scale.
 static void poisson_fft(gpu_solver *g, const double *w)
 {
     int nx = g->nx, ny = g->ny, n = g->n;
-    int next = 4 * (nx - 1) * (ny - 1);
     double inv_norm = 1.0 / (4.0 * (double)(nx - 1) * (double)(ny - 1));
 
-    LAUNCH(odd_extend_kernel, next, w, g->ext, nx, ny);
-    CUFFT_CHECK(cufftExecD2Z(g->plan, g->ext, g->spec));
+    dst2d(g, w);
     LAUNCH(spectral_divide_kernel, n, g->spec, g->scratch, g->lambda_i, g->lambda_j, nx, ny);
-
-    LAUNCH(odd_extend_kernel, next, g->scratch, g->ext, nx, ny);
-    CUFFT_CHECK(cufftExecD2Z(g->plan, g->ext, g->spec));
+    dst2d(g, g->scratch);
     LAUNCH(spectral_scale_kernel, n, g->spec, g->psi, -inv_norm, nx, ny);
 }
 
@@ -459,10 +528,13 @@ gpu_solver *gpu_init(const solver_config *cfg)
     g->w_tmp   = dev_alloc(n);
     g->scratch = dev_alloc(n);
     g->partial = dev_alloc(RED_BLOCKS);
+    CUDA_CHECK(cudaMalloc((void **)&g->rb, sizeof(struct rb_state)));
 
     if (g->cfg.poisson_type == 3)
     {
-        int mx = 2 * (ny - 1), my = 2 * (nx - 1); // odd extension of the interior, rows x columns
+        int len_x = 2 * (nx - 1), len_y = 2 * (ny - 1);   // lengths of the odd extensions
+        size_t ext_rows = (size_t)(ny - 2) * len_x, ext_cols = (size_t)(nx - 2) * len_y;
+        size_t spec_rows = (size_t)(ny - 2) * nx, spec_cols = (size_t)(nx - 2) * ny;
         double *lambda = (double *)malloc((size_t)(nx > ny ? nx : ny) * sizeof(double));
         if (!lambda)
         {
@@ -470,10 +542,13 @@ gpu_solver *gpu_init(const solver_config *cfg)
             exit(1);
         }
 
-        CUFFT_CHECK(cufftPlan2d(&g->plan, mx, my, CUFFT_D2Z));
-        g->ext = dev_alloc((size_t)mx * my);
-        CUDA_CHECK(cudaMalloc((void **)&g->spec,
-                              (size_t)mx * (my / 2 + 1) * sizeof(cufftDoubleComplex)));
+        CUFFT_CHECK(cufftPlanMany(&g->plan_rows, 1, &len_x, NULL, 1, len_x,
+                                  NULL, 1, len_x / 2 + 1, CUFFT_D2Z, ny - 2));
+        CUFFT_CHECK(cufftPlanMany(&g->plan_cols, 1, &len_y, NULL, 1, len_y,
+                                  NULL, 1, len_y / 2 + 1, CUFFT_D2Z, nx - 2));
+        g->ext = dev_alloc(ext_rows > ext_cols ? ext_rows : ext_cols);
+        CUDA_CHECK(cudaMalloc((void **)&g->spec, (spec_rows > spec_cols ? spec_rows : spec_cols)
+                                                 * sizeof(cufftDoubleComplex)));
 
         // Eigenvalues of the 2D Laplacian under the DST-I of the interior, as
         // in poisson_FFT(); rows (index i) are y, columns (index j) are x:
@@ -502,9 +577,11 @@ void gpu_free(gpu_solver *g)
     cudaFree(g->w_tmp);
     cudaFree(g->scratch);
     cudaFree(g->partial);
+    cudaFree(g->rb);
     if (g->cfg.poisson_type == 3)
     {
-        cufftDestroy(g->plan);
+        cufftDestroy(g->plan_rows);
+        cufftDestroy(g->plan_cols);
         cudaFree(g->ext);
         cudaFree(g->spec);
         cudaFree(g->lambda_i);

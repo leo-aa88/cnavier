@@ -155,8 +155,8 @@ make CUDA=1 CUDA_HOME=/opt/cuda
 
 **What runs on the GPU**: everything inside the time loop. The fields (`u`, `v`, `ω`, `ψ`, RK4 stages) and the four CSR derivative operators are uploaded once and stay on the device; boundary conditions, derivatives (CSR SpMV kernels), Euler/RK4 and all three Poisson solvers run as kernels. Data returns to the host only for the VTK files, the per-iteration continuity min/max and the final centerline profiles. All arithmetic is double precision, as on the CPU.
 
-- *FFT solver*: cuFFT has no sine transform, so the DST-I is computed as a real-to-complex FFT of the odd extension of the interior (size `2(nx−1) × 2(ny−1)`).
-- *Gauss-Seidel / SOR*: red-black ordering, the same one the OpenMP build uses, with the same stopping rule.
+- *FFT solver*: cuFFT has no sine transform, so the DST-I is computed with batches of 1D real-to-complex FFTs of odd extensions, first along the rows and then along the columns, as on the CPU.
+- *Gauss-Seidel / SOR*: red-black ordering, the same one the OpenMP build uses, with the same stopping rule. The convergence test runs on the device and the host looks at it once every 32 sweeps; later sweeps in the batch do nothing once it is met, so the result is the same as checking after every sweep.
 
 **Agreement with the CPU**
 
@@ -171,11 +171,11 @@ Time per timestep, RK4 + FFT, Re=100, `dt = 10/n²`, VTK output off. Measured on
 
 | Grid | CPU, `make` | OpenMP, 8 threads | CUDA | CUDA vs CPU |
 |---|---|---|---|---|
-| 65×65 | 0.85 ms | 0.44 ms | 0.78 ms | 1.1× |
-| 129×129 | 3.66 ms | 1.46 ms | 1.45 ms | 2.5× |
-| 257×257 | 17.3 ms | 6.26 ms | 4.97 ms | 3.5× |
-| 513×513 | 85.9 ms | 40.9 ms | 20.2 ms | 4.3× |
-| 1025×1025 | 326 ms | 171 ms | 79.8 ms | 4.1× |
+| 65×65 | 0.85 ms | 0.44 ms | 0.94 ms | 0.9× |
+| 129×129 | 3.66 ms | 1.46 ms | 1.05 ms | 3.5× |
+| 257×257 | 17.3 ms | 6.26 ms | 3.62 ms | 4.8× |
+| 513×513 | 85.9 ms | 40.9 ms | 14.8 ms | 5.8× |
+| 1025×1025 | 326 ms | 171 ms | 59.6 ms | 5.5× |
 
 These are single runs on a laptop; repeat runs usually vary by 10–15%, occasionally by more. All builds use the Makefile's default `-O2`. Each row is a run such as:
 
@@ -185,10 +185,10 @@ These are single runs on a laptop; repeat runs usually vary by 10–15%, occasio
 
 Things to keep in mind:
 
-- The GPU pays off from roughly 129×129 upwards. On small grids the fixed cost of launching kernels dominates and the CPU is just as fast.
-- About 60% of the GPU time at 513×513 is the double-precision FFTs. Consumer GeForce cards are much slower in double than in single precision, so expect larger gains on workstation/datacenter GPUs.
-- Pick grid sizes where `n − 1` has only small prime factors (65, 129, 257, 513, 1025, ...). The sine transform of the interior works on length `2(n−1)`, and awkward lengths are slow on both backends: 1024×1024 takes 126 ms per step on the GPU, against 80 ms for 1025×1025.
-- The table is for the FFT solver only. Gauss-Seidel and SOR are on the GPU so that every solver option works there, not because they are fast: the convergence test after each sweep copies a value back to the host, and on the default 64×64 case SOR takes tens of milliseconds per step on the GPU, no faster than the CPU and far behind the FFT solver's 1 ms.
+- The GPU pays off from roughly 129×129 upwards. On small grids the fixed cost of launching kernels dominates and the CPU, especially with OpenMP, is faster.
+- Much of the GPU time goes to double-precision FFTs. Consumer GeForce cards are much slower in double than in single precision, so expect larger gains on workstation/datacenter GPUs.
+- Pick grid sizes where `n − 1` has only small prime factors (65, 129, 257, 513, 1025, ...). The sine transform of the interior works on length `2(n−1)`, and awkward lengths are slow on both backends: 1024×1024 takes 77 ms per step on the GPU, against 60 ms for 1025×1025.
+- The table is for the FFT solver only. Gauss-Seidel and SOR are on the GPU so that every solver option works there, not because they are fast: on the default 64×64 case SOR takes about 30 ms per step on the GPU, against about 1 ms for the FFT solver.
 
 ## Configuration
 
