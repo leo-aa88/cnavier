@@ -264,7 +264,7 @@ builds and runs `test_cnavier`:
 
 - **Building blocks**: sparse operations against dense ones; every row of the finite-difference operators (boundary rows included) exact on the polynomials its stencil is built for, for orders 2, 4 and 6, and rows written out; the derivative operators acting along the right axis on non-square grids; wall velocities, including the corners; the VTK and centerline writers.
 - **Poisson solvers**: the FFT solver against an exact eigenmode, at sizes that exercise every batching case of the transform; FFT, SOR and Gauss-Seidel giving the same answer once converged; residuals of the iterative solvers; SOR iteration counts on anisotropic grids.
-- **Time stepping**: short cavity runs with both schemes on square and non-square grids (finite, divergence-free); the stability limit (0.95× runs, 1.05× diverges) and the suggested `dt`; the observed order in `dt` on all nodes, walls included: Euler first order, RK4 fourth order, with RK4's error at the same step about a million times smaller than Euler's. Both orders also hold with a time-dependent body force, which checks that each RK4 stage evaluates the force at its own time.
+- **Time stepping**: short cavity runs with both schemes on square and non-square grids (finite, divergence-free); the stability limit (0.95× runs, 1.05× diverges) and the suggested `dt`; the observed order in `dt` on all nodes, walls included: Euler first order, RK4 fourth order, with RK4's error at the same step about a million times smaller than Euler's. Both orders also hold with a time-dependent vorticity source, which checks that each RK4 stage evaluates the source at its own time; a run started at t0 > 0 checks that the source is evaluated at that run's times.
 - **Spatial accuracy**: a manufactured solution (see [Spatial convergence](#spatial-convergence)) on 17², 33² and 65² grids: ψ, `u` and `v` converge at second order and ω at least at second order, and the errors themselves are within fixed bounds.
 - **Backends**: driving the solver through `backend.c` gives exactly what calling it directly gives, and every solver ignores changes to the caller's configuration after it is created.
 - **OpenMP** (with `OPENMP=1`): results on 1 and on 4 threads are bitwise identical above the size where loops go parallel.
@@ -317,7 +317,7 @@ cp /tmp/ref/output/centerline_v_sim.csv tests/reference/centerline_v_short.csv
 make OPENMP=1 convergence
 ```
 
-measures the global spatial order of the complete method against a manufactured solution, ψ = g(t) sin²(πx/Lx) sin²(πy/Ly). It has ψ = 0 and `u` = `v` = 0 on every wall, so it uses the solver's ordinary no-slip walls and ψ = 0 Poisson condition, and an optional body force in `solver_config` (`forcing`) makes it an exact solution. Each run starts from the exact state, uses RK4 and the FFT solver at Re = 100, and is compared with the exact solution at t = 0.25; the time step is small enough that the time error does not show in the digits printed. The study covers derivative orders 2, 4 and 6 on the unit square from 17² to 257², a 2×1 domain, and a grid with `dx = dy/2`. It takes about 1.5 minutes with 8 threads; `./convergence_study --max-n 513` goes one grid further.
+measures the global spatial order of the complete method against a manufactured solution, ψ = g(t) sin²(πx/Lx) sin²(πy/Ly). It has ψ = 0 and `u` = `v` = 0 on every wall, so it uses the solver's ordinary no-slip walls and ψ = 0 Poisson condition, and an optional source term in the vorticity equation (`vorticity_source` in `solver_config`) makes it an exact solution. Each run starts from the exact state, uses RK4 and the FFT solver at Re = 100, and is compared with the exact solution at t = 0.25; the time step is small enough that the time error does not show in the digits printed. The study covers derivative orders 2, 4 and 6 on the unit square from 17² to 257², a 2×1 domain, and a grid with `dx = dy/2`. It takes about 1.5 minutes with 8 threads; `./convergence_study --max-n 513` goes one grid further.
 
 Maximum errors, derivative order 6, unit square (observed order against the previous grid in parentheses):
 
@@ -329,7 +329,7 @@ Maximum errors, derivative order 6, unit square (observed order against the prev
 | 257² | 1.52e-5 (2.01) | 4.67e-5 (2.00) | 1.19e-4 (2.37) | 1.11e-4 (2.31) |
 | 513² | 3.78e-6 (2.01) | 1.17e-5 (2.00) | 2.58e-5 (2.21) | 2.47e-5 (2.16) |
 
-- **The method is second order in space.** ψ, `u` and `v` converge at 2.0 on every grid; ω converges faster on coarse grids and approaches 2 under refinement. The limit is the five-point Poisson operator and the low-order rows next to the walls, so `order = 6` means sixth-order stencils in the deep interior, not sixth-order results.
+- **Second order in space for this solution.** For this smooth manufactured solution with stationary no-slip walls, the complete method converges at second order with every derivative order: ψ, `u` and `v` at 2.0 on every grid, and ω faster on coarse grids, approaching 2 under refinement. So `order = 6` means sixth-order stencils in the deep interior, not sixth-order results. The order is held back by something all derivative orders share: the five-point Poisson operator or the low-order rows next to the walls (which one is the subject of an ablation study, #25).
 - **Orders 4 and 6 give the same errors** to three digits. Compared with order 2 they reduce the vorticity error about 2.6× at 513², and leave the velocity error unchanged (order 2: 1.02e-5 for `u` at 513², order 6: 1.17e-5).
 - The 2×1 domain and the `dx = dy/2` grid show the same orders.
 
@@ -366,7 +366,7 @@ cnavier/
 │   └── utils.h
 ├── tests/
 │   ├── test_solver.c   # Unit and solver tests, GPU-vs-CPU checks
-│   ├── mms.c, mms.h    # Manufactured solution: exact fields, body force, error norms
+│   ├── mms.c, mms.h    # Manufactured solution: exact fields, vorticity source, error norms
 │   ├── convergence.c   # Spatial convergence study (make convergence)
 │   ├── cli.sh          # Command-line tests
 │   ├── regression.sh   # Stored-result and Ghia et al. checks
