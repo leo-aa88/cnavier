@@ -216,7 +216,8 @@ A few numerical parameters can be overridden without recompiling; anything not g
 
 | Option | Description |
 |---|---|
-| `--n N` | Grid points per side; the grid is N×N (non-square grids are not supported) |
+| `--nx N`, `--ny N` | Grid points in x and y (8 to 16384 each) |
+| `--n N` | Same number of grid points in x and y |
 | `--dt DT` | Time step |
 | `--tf TF` | Final time |
 | `--output-interval N` | Write VTK every N iterations (`0` disables VTK output) |
@@ -241,10 +242,10 @@ Values that cannot be used (not a number, a grid outside 8–16384, `tf/dt` belo
 The wall-clock time of the time loop is printed at the end of every run.
 
 ### Grid
-The grid is nodal: node `i` sits at `x = i·Lx/(nx−1)`, so the first and last row and column of nodes lie on the walls. Wall velocities are imposed on those nodes, ψ = 0 there for every Poisson solver, and the centerline CSVs are written at the node coordinates (interpolated onto `x = Lx/2` or `y = Ly/2` when no node lies on the centerline, i.e. for an even number of nodes).
+The grid is nodal: node `j` sits at `x = j·Lx/(nx−1)` and node `i` at `y = i·Ly/(ny−1)`, so the first and last row and column of nodes lie on the walls. `nx` and `ny` are independent. Fields are stored as `ny` rows of `nx` values (`x` varies fastest), which is also the layout of the VTK files. Wall velocities are imposed on those nodes, ψ = 0 there for every Poisson solver, and the centerline CSVs are written at the node coordinates (interpolated onto `x = Lx/2` or `y = Ly/2` when no node lies on the centerline, i.e. for an even number of nodes).
 
 ### Boundary conditions
-The default case is the **lid-driven cavity**: the top wall moves at u=1, all other walls are stationary no-slip. Boundary conditions are set via `u1`–`u4` and `v1`–`v4` in `main.c`.
+The default case is the **lid-driven cavity**: the top wall moves at u=1, all other walls are stationary no-slip. Boundary conditions are set via `u1`–`u4` and `v1`–`v4` in `main.c`: the left, right, bottom and top walls, in that order (`u4` is the lid).
 
 ## Output
 

@@ -72,7 +72,7 @@ The objective of \texttt{cnavier} is to provide a small, inspectable computation
 
 The code uses a \emph{vorticity--streamfunction} formulation rather than the primitive-variable $(u,v,p)$ equations.  This choice removes pressure from the evolution system and replaces the pressure--velocity coupling problem by a scalar Poisson equation.  In two dimensions, the streamfunction definition also gives a particularly strong discrete incompressibility property: when the discrete $x$- and $y$-derivative operators commute, the recovered velocity has zero discrete divergence to round-off.
 
-The solver is designed primarily as an educational and experimental code rather than as a general-purpose production CFD package.  The current implementation assumes a rectangular Cartesian domain, a square computational array, constant Reynolds number, explicit time stepping, and Dirichlet wall velocities.  These constraints simplify the formulation sufficiently that each numerical operation can be followed directly from the governing equations to its C or CUDA implementation.
+The solver is designed primarily as an educational and experimental code rather than as a general-purpose production CFD package.  The current implementation assumes a rectangular Cartesian domain, a Cartesian computational array, constant Reynolds number, explicit time stepping, and Dirichlet wall velocities.  These constraints simplify the formulation sufficiently that each numerical operation can be followed directly from the governing equations to its C or CUDA implementation.
 
 \subsection{Repository organization}
 
@@ -188,17 +188,13 @@ The physical domain is specified by $L_x$ and $L_y$ and the computational array 
 \dy=\frac{L_y}{n_y-1},
 \label{eq:grid-spacing}
 \end{equation}
-At present, the public command line accepts a single \code{--n} value and the solver requires
-\[
-n_x=n_y.
-\]
-The allowed range is 8 through 16384 samples per direction.
+$n_x$ and $n_y$ are independent; each may range from 8 through 16384.
 
-Fields are stored as contiguous row-major arrays wrapped by the \code{mtrx} structure.  Flattening a field is therefore a direct memory copy, and the two-dimensional derivative operations are implemented as sparse matrix--vector products.
+Fields are stored as contiguous row-major arrays wrapped by the \code{mtrx} structure, with $n_y$ rows of $n_x$ values: element $(i,j)$ lies at $y=i\,\dy$, $x=j\,\dx$ and has flat index $i\,n_x+j$, which is the ordering the Kronecker operators of \cref{eq:kron-ops} assume.  Earlier versions stored $n_x$ rows of $n_y$ values while the operators assumed the transpose; the two only agree when $n_x=n_y$, so non-square grids were rejected.  Flattening a field is therefore a direct memory copy, and the two-dimensional derivative operations are implemented as sparse matrix--vector products.
 
 \subsection{Grid convention}
 
-The grid is nodal.  Node $i$ lies at $x_i=i\,\dx$, $i=0,\dots,n_x-1$, so the first and last rows and columns of the arrays lie on the walls and $n_x$ nodes span $L_x$ with $n_x-1$ intervals, as in \cref{eq:grid-spacing}.  All parts of the code use this convention:
+The grid is nodal.  Column $j$ lies at $x_j=j\,\dx$, $j=0,\dots,n_x-1$, and row $i$ at $y_i=i\,\dy$, $i=0,\dots,n_y-1$, so the first and last rows and columns of the arrays lie on the walls and $n_x$ nodes span $L_x$ with $n_x-1$ intervals, as in \cref{eq:grid-spacing}.  All parts of the code use this convention:
 
 \begin{enumerate}[leftmargin=2em]
   \item wall velocities are imposed on the wall nodes, and the one-sided finite-difference closures are evaluated there;
@@ -310,7 +306,7 @@ D_{yy} &= d_{yy}\otimes I_x.
 \end{align}
 This is a convenient algebraic representation of tensor-product finite differences on a Cartesian grid.
 
-The one-dimensional matrices are initially constructed densely because this happens only once at startup.  They are then converted to compressed sparse row (CSR) form, and the two-dimensional Kronecker products are assembled directly in CSR form.  For the widest sixth-order stencil, each derivative row has only a small fixed number of nonzero entries, so sparse matrix--vector multiplication scales linearly with the number of grid points rather than quadratically or cubically in the matrix dimension.
+The one-dimensional matrices are assembled directly in compressed sparse row (CSR) form, and so are the two-dimensional Kronecker products.  For the widest sixth-order stencil, each derivative row has only a small fixed number of nonzero entries, so sparse matrix--vector multiplication scales linearly with the number of grid points rather than quadratically or cubically in the matrix dimension.
 
 % =============================================================================
 \section{Boundary Conditions and Wall Vorticity}
@@ -409,11 +405,11 @@ Three algorithms are available.
 
 \subsection{Five-point discrete Poisson operator}
 
-The iterative solvers and the spectral eigenvalues correspond to the conventional second-order five-point Laplacian.  At an interior point,
+The iterative solvers and the spectral eigenvalues correspond to the conventional second-order five-point Laplacian.  At an interior point, with $i$ the row ($y$) and $j$ the column ($x$) index as everywhere in this document,
 \begin{equation}
-\frac{\psi_{i+1,j}-2\psi_{i,j}+\psi_{i-1,j}}{\dx^2}
+\frac{\psi_{i,j+1}-2\psi_{i,j}+\psi_{i,j-1}}{\dx^2}
 +
-\frac{\psi_{i,j+1}-2\psi_{i,j}+\psi_{i,j-1}}{\dy^2}
+\frac{\psi_{i+1,j}-2\psi_{i,j}+\psi_{i-1,j}}{\dy^2}
 =f_{i,j},
 \qquad f=-\omega.
 \label{eq:5point}
@@ -427,8 +423,8 @@ Solving \cref{eq:5point} for the center value gives the Gauss--Seidel update
 \psi_{i,j}^{\mathrm{GS}}
 =
 \frac{
-\dy^2(\psi_{i+1,j}+\psi_{i-1,j})
-+\dx^2(\psi_{i,j+1}+\psi_{i,j-1})
+\dy^2(\psi_{i,j+1}+\psi_{i,j-1})
++\dx^2(\psi_{i+1,j}+\psi_{i-1,j})
 -\dx^2\dy^2 f_{i,j}
 }{2(\dx^2+\dy^2)}.
 \label{eq:gs}
@@ -444,13 +440,14 @@ SOR applies a relaxation factor $\beta$:
 +(1-\beta)\psi_{i,j}^{(k)}.
 \label{eq:sor}
 \end{equation}
-The default program estimates an optimal relaxation parameter from the spectral radius of Jacobi iteration on the $(n_x-2)\times(n_y-2)$ interior nodes,
+The default program estimates an optimal relaxation parameter from the spectral radius of Jacobi iteration on the $(n_x-2)\times(n_y-2)$ interior nodes.  With the weights of the five-point stencil ($\Delta y^2$ on the $x$ neighbours, $\Delta x^2$ on the $y$ neighbours), the slowest Jacobi mode is the lowest sine mode in each direction, so
 \begin{align}
-\rho &= \frac{1}{2}\left[\cos\left(\frac{\pi}{n_x-1}\right)
-+\cos\left(\frac{\pi}{n_y-1}\right)\right],\\
+\rho &= \frac{\Delta y^2\cos\left(\dfrac{\pi}{n_x-1}\right)
++\Delta x^2\cos\left(\dfrac{\pi}{n_y-1}\right)}{\Delta x^2+\Delta y^2},\\
 \beta &= \frac{2}{1+\sqrt{1-\rho^2}}.
 \label{eq:sor-beta}
 \end{align}
+which reduces to $\rho=\cos(\pi/(n-1))$ on a square grid with $\Delta x=\Delta y$.  The five-point stencil is consistently ordered in both the lexicographic and the red--black sweep, so Young's optimum $\beta$ applies to the CPU and the GPU solvers alike.
 
 The default maximum iteration count is 10000 and the shipped convergence threshold is $10^{-3}$.
 
@@ -670,7 +667,7 @@ All solver arithmetic is double precision.
 
 cuFFT does not expose a native DST-I.  The CUDA backend therefore constructs the odd extension of the $(n_x-2)\times(n_y-2)$ interior of a field on a
 \begin{equation}
-2(n_x-1)\times 2(n_y-1)
+2(n_y-1)\times 2(n_x-1)
 \end{equation}
 grid.  A real-to-complex FFT of this odd extension contains the sine-transform modes required for the Dirichlet Poisson problem.  The code extracts those modes, divides by the same eigenvalues as \cref{eq:dst-eigenvalue}, applies the construction again, and scales by the DST normalization.
 
@@ -862,7 +859,9 @@ The current binary accepts:
 \normalfont Option & Description \\
 \midrule
 \endhead
---n N & Number of computational samples per side; the grid is $N\times N$. \\
+--nx N & Number of grid points in $x$. \\
+--ny N & Number of grid points in $y$. \\
+--n N & Same number of grid points in $x$ and $y$. \\
 --dt DT & Timestep. \\
 --tf TF & Final simulation time. \\
 --output-interval N & Write VTK every $N$ steps; zero disables VTK output. \\
@@ -940,7 +939,7 @@ Pressure is absent from the vorticity--streamfunction formulation.  This is an a
 
 \subsection{Geometry and dimensionality}
 
-The current method is two-dimensional, Cartesian, and square-grid-only at the public solver level.  Curvilinear grids, immersed boundaries, unstructured meshes, three-dimensional vorticity stretching, and general inflow/outflow boundaries are outside the present scope.
+The current method is two-dimensional and Cartesian.  Curvilinear grids, immersed boundaries, unstructured meshes, three-dimensional vorticity stretching, and general inflow/outflow boundaries are outside the present scope.
 
 % =============================================================================
 \section{Suggested Scientific Workflow}
@@ -976,7 +975,6 @@ The current architecture makes several research-oriented extensions relatively n
   \item alternative convection schemes, such as upwind-biased, compact, WENO, or skew-symmetric energy-conserving formulations;
   \item multigrid for the Poisson equation when boundary conditions or geometries no longer permit a separable sine transform;
   \item pressure reconstruction as a post-processing step;
-  \item extension to non-square grids after making the field ordering and Kronecker layout fully general.
 \end{itemize}
 
 % =============================================================================

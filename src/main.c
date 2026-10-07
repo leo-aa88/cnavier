@@ -55,7 +55,9 @@ static int parse_double(const char *s, double *out)
 static void usage(const char *prog)
 {
     printf("Usage: %s [options]\n", prog);
-    printf("  --n N                grid points per side (the grid is N x N)\n");
+    printf("  --nx N               grid points in x\n");
+    printf("  --ny N               grid points in y\n");
+    printf("  --n N                grid points in both x and y\n");
     printf("  --dt DT              time step\n");
     printf("  --tf TF              final time\n");
     printf("  --output-interval N  write VTK every N iterations (0 = never)\n");
@@ -92,6 +94,8 @@ int main(int argc, char *argv[])
     // Command-line overrides
     static struct option long_opts[] = {
         {"n",               required_argument, 0, 'n'},
+        {"nx",              required_argument, 0, 'x'},
+        {"ny",              required_argument, 0, 'y'},
         {"dt",              required_argument, 0, 'd'},
         {"tf",              required_argument, 0, 'f'},
         {"output-interval", required_argument, 0, 'o'},
@@ -106,6 +110,8 @@ int main(int argc, char *argv[])
         switch (opt)
         {
         case 'n': ok = parse_int(optarg, &nx); ny = nx; break;
+        case 'x': ok = parse_int(optarg, &nx); break;
+        case 'y': ok = parse_int(optarg, &ny); break;
         case 'd': ok = parse_double(optarg, &dt); break;
         case 'f': ok = parse_double(optarg, &tf); break;
         case 'o': ok = parse_int(optarg, &output_interval); break;
@@ -168,9 +174,12 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    // Spectral radius of Jacobi on the (nx-2) x (ny-2) interior nodes
-    double rho  = 0.5 * (cos(PI / (nx - 1)) + cos(PI / (ny - 1)));
-    double beta  = 2.0 / (1.0 + sqrt(1.0 - rho * rho));  // optimal SOR parameter
+    // Grid spacing: nodes 0 and nx-1 lie on the walls, so nx nodes span Lx
+    // with nx-1 intervals
+    double dx = (double)Lx / (nx - 1);
+    double dy = (double)Ly / (ny - 1);
+
+    double beta = sor_beta(nx, ny, dx, dy); // optimal SOR parameter
 
     printf("Grid: %d x %d | dt: %lf | tf: %lf\n", nx, ny, dt, tf);
 #ifdef _OPENMP
@@ -180,16 +189,12 @@ int main(int argc, char *argv[])
     printf("Poisson SOR parameter: %lf\n", beta);
 
 
-    // Boundary conditions (Dirichlet)
+    // Boundary conditions (Dirichlet): wall velocities on the left (1), right
+    // (2), bottom (3) and top (4) walls; the top wall is the moving lid
     double ui = 0., vi = 0.;
     double u1 = 0., u2 = 0., u3 = 0., u4 = 1.;
     double v1 = 0., v2 = 0., v3 = 0., v4 = 0.;
     wall_bc bc = {{u1, u2, u3, u4}, {v1, v2, v3, v4}};
-
-    // Grid spacing: nodes 0 and nx-1 lie on the walls, so nx nodes span Lx
-    // with nx-1 intervals
-    double dx = (double)Lx / (nx - 1);
-    double dy = (double)Ly / (ny - 1);
 
     // Build sparse 1D operators then free them after Kronecker
     smtrx sd_x  = SDiff1(nx, order, dx);
@@ -250,18 +255,18 @@ int main(int argc, char *argv[])
     int it_max = (int)((tf / dt) - 1);
 
     // Dense field matrices
-    mtrx u   = initm(nx, ny);
-    mtrx v   = initm(nx, ny);
-    mtrx w   = initm(nx, ny);
+    mtrx u   = initm(ny, nx);
+    mtrx v   = initm(ny, nx);
+    mtrx w   = initm(ny, nx);
 
     // Continuity check workspace — pre-allocated once, reused every iteration
-    mtrx dudx   = initm(nx, ny);
-    mtrx dvdy   = initm(nx, ny);
-    mtrx check_continuity = initm(nx, ny);
+    mtrx dudx   = initm(ny, nx);
+    mtrx dvdy   = initm(ny, nx);
+    mtrx check_continuity = initm(ny, nx);
 
-    // Initial condition
-    for (i = 1; i < nx - 1; i++)
-        for (j = 1; j < ny - 1; j++)
+    // Initial condition. Fields are ny rows (y) of nx values (x).
+    for (i = 1; i < ny - 1; i++)
+        for (j = 1; j < nx - 1; j++)
         {
             MAt(u, i, j) = ui;
             MAt(v, i, j) = vi;
@@ -315,8 +320,8 @@ int main(int argc, char *argv[])
             spmv(DY, v.M, dvdy.M);
 
             // reuse check_continuity storage
-            for (i = 0; i < nx; i++)
-                for (j = 0; j < ny; j++)
+            for (i = 0; i < ny; i++)
+                for (j = 0; j < nx; j++)
                     MAt(check_continuity, i, j) = MAt(dudx, i, j) + MAt(dvdy, i, j);
 
             cmax = maxel(check_continuity);
@@ -332,7 +337,7 @@ int main(int argc, char *argv[])
 #ifdef USE_CUDA
             if (on_gpu) gpu_get_fields(gpu, NULL, NULL, &w);
 #endif
-            printvtk(w, "vorticity");
+            printvtk(w, "vorticity", dx, dy);
         }
     }
 

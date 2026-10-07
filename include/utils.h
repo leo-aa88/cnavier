@@ -6,7 +6,9 @@
 #include "linearalg.h"
 
 double randdouble(double min, double max); // generates random double number between min and max
-void printvtk(mtrx A, char *title);        // prints matrix A to a vtk file
+// Write A (ny rows of nx values) to output/<title>-1-<n>.vtk as a structured
+// grid with spacing dx, dy
+void printvtk(mtrx A, char *title, double dx, double dy);
 
 // Memory the process can allocate now, in bytes: the kernel's MemAvailable,
 // or the room left under a cgroup memory limit if that is smaller. 0 means

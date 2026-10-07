@@ -25,8 +25,8 @@ typedef struct {
     double poisson_tol, beta, dx, dy, Re;
 } rk4_ctx;
 
-// Allocate all RK4 workspace for an nx*ny grid. Only square grids are
-// supported: exits with an error unless nx == ny.
+// Allocate all RK4 workspace for an nx*ny grid. Fields are stored as ny rows
+// (y) of nx values (x): element (i, j) is at y = i*dy, x = j*dx.
 rk4_ctx rk4_alloc(int nx, int ny);
 // Free all RK4 workspace
 void rk4_free(rk4_ctx *ctx);
@@ -69,7 +69,11 @@ dt_limits time_step_limits(const smtrx *dxx, const smtrx *dyy, double h, double 
 double round_down_3(double x);
 
 // Dirichlet wall velocities, indexed by wall:
-// 0 -> j=0, 1 -> j=ny-1, 2 -> i=0, 3 -> i=nx-1
+// 0 -> left   (x = 0,  column j = 0)
+// 1 -> right  (x = Lx, column j = nx-1)
+// 2 -> bottom (y = 0,  row i = 0)
+// 3 -> top    (y = Ly, row i = ny-1)   the lid of the default cavity
+// At the corners the left and right walls take precedence.
 typedef struct {
     double u[4];
     double v[4];
