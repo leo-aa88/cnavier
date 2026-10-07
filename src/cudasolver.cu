@@ -76,9 +76,9 @@ struct gpu_solver
     double *w_tmp;             // temporary w for intermediate stages
     double *scratch;           // continuity field / Poisson work array
     double *partial;           // per-block results of a reduction
-    double *force;             // body force of the current stage (cfg.forcing only)
-    mtrx force_host;           // ... and the host field cfg.forcing fills
-    long steps;                // steps taken; the time is steps * cfg.dt
+    double *source;            // vorticity source of the current stage (cfg.vorticity_source only)
+    mtrx source_host;          // ... and the host field cfg.vorticity_source fills
+    long steps;                // steps taken; the time is cfg.t0 + steps * cfg.dt
 
     // Convergence state of the iterative Poisson solvers, kept on the device
     // so that a batch of sweeps runs without waiting for the host
@@ -493,14 +493,14 @@ static void velocity_from_vorticity(gpu_solver *g, const double *w)
     LAUNCH(velocity_kernel, g->n, g->DX, g->DY, g->psi, g->u, g->v, g->n);
 }
 
-// out += f(t), the body force, when cfg.forcing is set. The forcing is a host
+// out += f(t), the vorticity source, when cfg.vorticity_source is set. The source is a host
 // function, so the field is filled on the host and copied over.
-static void add_body_force(gpu_solver *g, double t, double *out)
+static void add_vorticity_source(gpu_solver *g, double t, double *out)
 {
-    if (!g->cfg.forcing) return;
-    g->cfg.forcing(t, g->force_host, g->cfg.forcing_data);
-    CUDA_CHECK(cudaMemcpy(g->force, g->force_host.M, g->n * sizeof(double), cudaMemcpyHostToDevice));
-    LAUNCH(axpy_kernel, g->n, out, 1.0, g->force, out, g->n);
+    if (!g->cfg.vorticity_source) return;
+    g->cfg.vorticity_source(t, g->source_host, g->cfg.source_data);
+    CUDA_CHECK(cudaMemcpy(g->source, g->source_host.M, g->n * sizeof(double), cudaMemcpyHostToDevice));
+    LAUNCH(axpy_kernel, g->n, out, 1.0, g->source, out, g->n);
 }
 
 // Evaluate dw/dt at time t into out and update u, v consistent with w
@@ -512,7 +512,7 @@ static void dwdt(gpu_solver *g, double *w, double *out, double t)
     LAUNCH(wall_bc_kernel, g->n, g->u, g->v, g->cfg.bc, g->nx, g->ny);
     LAUNCH(vorticity_bc_kernel, g->n, g->DX, g->DY, g->u, g->v, w, g->nx, g->ny);
     LAUNCH(rhs_kernel, g->n, g->DX, g->DY, g->DX2, g->DY2, w, g->u, g->v, g->cfg.Re, out, g->n);
-    add_body_force(g, t, out);
+    add_vorticity_source(g, t, out);
 }
 
 // ---------------------------------------------------------------------------
@@ -563,10 +563,10 @@ gpu_solver *gpu_init(const solver_config *cfg)
     g->k3 = dev_alloc(n);
     g->k4 = dev_alloc(n);
     g->w_tmp = dev_alloc(n);
-    if (cfg->forcing)
+    if (cfg->vorticity_source)
     {
-        g->force = dev_alloc(n);
-        g->force_host = initm(ny, nx);
+        g->source = dev_alloc(n);
+        g->source_host = initm(ny, nx);
     }
     g->scratch = dev_alloc(n);
     g->partial = dev_alloc(RED_BLOCKS);
@@ -628,10 +628,10 @@ void gpu_free(gpu_solver *g)
     cudaFree(g->scratch);
     cudaFree(g->partial);
     cudaFree(g->rb);
-    if (g->force)
+    if (g->source)
     {
-        cudaFree(g->force);
-        freem(&g->force_host);
+        cudaFree(g->source);
+        freem(&g->source_host);
     }
     if (g->cfg.poisson_type == 3)
     {
@@ -657,7 +657,7 @@ const char *gpu_device_name(void)
 void gpu_step(gpu_solver *g)
 {
     int n = g->n;
-    double dt = g->cfg.dt, t = (double)g->steps * dt;
+    double dt = g->cfg.dt, t = g->cfg.t0 + (double)g->steps * dt;
 
     // Boundary conditions
     LAUNCH(wall_bc_kernel, n, g->u, g->v, g->cfg.bc, g->nx, g->ny);
@@ -667,7 +667,7 @@ void gpu_step(gpu_solver *g)
     {
         // Euler: single RHS evaluation, then one Poisson solve
         LAUNCH(rhs_kernel, n, g->DX, g->DY, g->DX2, g->DY2, g->w, g->u, g->v, g->cfg.Re, g->k1, n);
-        add_body_force(g, t, g->k1);
+        add_vorticity_source(g, t, g->k1);
         LAUNCH(axpy_kernel, n, g->w, dt, g->k1, g->w, n);
         velocity_from_vorticity(g, g->w);
     }

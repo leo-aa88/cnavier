@@ -42,7 +42,7 @@ static void study(const char *title, int order, double Lx, double Ly, int sx, in
     for (n = 17; (n - 1) * s + 1 <= max_n; n = 2 * n - 1)
     {
         int nx = (n - 1) * sx + 1, ny = (n - 1) * sy + 1;
-        mms_errors e = mms_run(nx, ny, Lx, Ly, RE, order, 2, 3, DT, T_FINAL);
+        mms_errors e = mms_run(nx, ny, Lx, Ly, RE, order, 2, 3, DT, 0.0, T_FINAL);
         char grid[32];
 
         snprintf(grid, sizeof(grid), "%dx%d", nx, ny);

@@ -71,7 +71,7 @@ void mms_exact(const mms_case *c, double t, mtrx *w, mtrx *u, mtrx *v, mtrx *psi
         }
 }
 
-void mms_forcing(double t, mtrx f, void *data)
+void mms_source(double t, mtrx f, void *data)
 {
     const mms_case *c = (const mms_case *)data;
     int i, j;
@@ -110,7 +110,7 @@ static mms_norm norm_of(mtrx a, mtrx b, int part)
 }
 
 mms_errors mms_run(int nx, int ny, double Lx, double Ly, double Re, int order, int time_scheme,
-                   int poisson_type, double dt, double T)
+                   int poisson_type, double dt, double t0, double T)
 {
     mms_case c = {Lx, Ly, Re, Lx / (nx - 1), Ly / (ny - 1)};
     wall_bc walls = {{0., 0., 0., 0.}, {0., 0., 0., 0.}};
@@ -138,6 +138,7 @@ mms_errors mms_run(int nx, int ny, double Lx, double Ly, double Re, int order, i
     cfg.dy = c.dy;
     cfg.Re = Re;
     cfg.dt = T / steps;
+    cfg.t0 = t0;
     cfg.time_scheme = time_scheme;
     cfg.poisson_type = poisson_type;
     cfg.poisson_max_it = 1000000;
@@ -148,18 +149,18 @@ mms_errors mms_run(int nx, int ny, double Lx, double Ly, double Re, int order, i
     cfg.DY = &DY;
     cfg.DX2 = &DX2;
     cfg.DY2 = &DY2;
-    cfg.forcing = mms_forcing;
-    cfg.forcing_data = &c;
+    cfg.vorticity_source = mms_source;
+    cfg.source_data = &c;
     rk4_ctx ctx = rk4_alloc(&cfg);
 
     mtrx w = initm(ny, nx), u = initm(ny, nx), v = initm(ny, nx);
     mtrx we = initm(ny, nx), ue = initm(ny, nx), ve = initm(ny, nx), psie = initm(ny, nx);
 
-    mms_exact(&c, 0.0, &w, &u, &v, NULL);
+    mms_exact(&c, t0, &w, &u, &v, NULL);
     for (t = 0; t < steps; t++)
         step(w, u, v, &ctx);
 
-    mms_exact(&c, T, &we, &ue, &ve, &psie);
+    mms_exact(&c, t0 + T, &we, &ue, &ve, &psie);
     apply_wall_bc(u, v, &walls);
     e.psi = norm_of(ctx.psi, psie, 0);
     e.u = norm_of(u, ue, 0);

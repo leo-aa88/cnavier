@@ -56,11 +56,12 @@ typedef struct
 // main.c. The configuration is complete, operators included, before the
 // workspace takes its copy, and the configuration points into *p, so p must
 // stay where it is until problem_free().
-// problem_init_ext() also sets the derivative order, Re, the domain size and
-// an optional body force.
+// problem_init_ext() also sets the derivative order, Re, the domain size, the
+// start time and an optional vorticity source.
 static void problem_init_ext(problem *p, int nx, int ny, double Lx, double Ly, int order, double Re,
                              int time_scheme, int poisson_type, double dt, double poisson_tol,
-                             const wall_bc *bc, void (*forcing)(double, mtrx, void *), void *forcing_data)
+                             const wall_bc *bc, double t0, void (*vorticity_source)(double, mtrx, void *),
+                             void *source_data)
 {
     double dx = Lx / (nx - 1), dy = Ly / (ny - 1);
     wall_bc lid = {{0., 0., 0., 1.}, {0., 0., 0., 0.}};
@@ -103,8 +104,9 @@ static void problem_init_ext(problem *p, int nx, int ny, double Lx, double Ly, i
     p->cfg.DY = &p->DY;
     p->cfg.DX2 = &p->DX2;
     p->cfg.DY2 = &p->DY2;
-    p->cfg.forcing = forcing;
-    p->cfg.forcing_data = forcing_data;
+    p->cfg.t0 = t0;
+    p->cfg.vorticity_source = vorticity_source;
+    p->cfg.source_data = source_data;
     p->ctx = rk4_alloc(&p->cfg);
 
     p->u = initm(ny, nx);
@@ -115,7 +117,7 @@ static void problem_init_ext(problem *p, int nx, int ny, double Lx, double Ly, i
 static void problem_init(problem *p, int nx, int ny, int time_scheme, int poisson_type, double dt,
                          double poisson_tol, const wall_bc *bc)
 {
-    problem_init_ext(p, nx, ny, 1.0, 1.0, 6, 100., time_scheme, poisson_type, dt, poisson_tol, bc, NULL, NULL);
+    problem_init_ext(p, nx, ny, 1.0, 1.0, 6, 100., time_scheme, poisson_type, dt, poisson_tol, bc, 0.0, NULL, NULL);
 }
 
 static void problem_free(problem *p)
@@ -460,15 +462,15 @@ static void test_temporal_order(void)
 }
 
 // The manufactured solution of mms.h on an n x n unit square, run with its
-// body force from the exact state at t = 0 to T; returns w
-static mtrx run_forced(int n, int scheme, double dt, double T, mms_case *c)
+// vorticity source from the exact state at t = 0 to T; returns w
+static mtrx run_with_source(int n, int scheme, double dt, double T, mms_case *c)
 {
     int t, steps = (int)floor(T / dt + 0.5);
     wall_bc walls = {{0., 0., 0., 0.}, {0., 0., 0., 0.}};
     mtrx w = initm(n, n);
     problem p;
 
-    problem_init_ext(&p, n, n, 1.0, 1.0, 6, c->Re, scheme, 3, dt, 1E-3, &walls, mms_forcing, c);
+    problem_init_ext(&p, n, n, 1.0, 1.0, 6, c->Re, scheme, 3, dt, 1E-3, &walls, 0.0, mms_source, c);
     mms_exact(c, 0.0, &p.w, &p.u, &p.v, NULL);
     for (t = 0; t < steps; t++)
         step(p.w, p.u, p.v, &p.ctx);
@@ -477,30 +479,30 @@ static mtrx run_forced(int n, int scheme, double dt, double T, mms_case *c)
     return w;
 }
 
-// With a time-dependent body force the schemes must keep their order, which
-// they do only if each RK4 stage evaluates the force at its own time
-static void test_forced_temporal_order(void)
+// With a time-dependent vorticity source the schemes must keep their order, which
+// they do only if each RK4 stage evaluates the source at its own time
+static void test_source_temporal_order(void)
 {
     int n = 17, s, k;
     double T = 0.25;
     mms_case c = {1.0, 1.0, 100.0, 1.0 / (n - 1), 1.0 / (n - 1)};
     char name[96];
 
-    printf("Unit: observed order in time with a body force, %dx%d grid, t = %g\n", n, n, T);
+    printf("Unit: observed order in time with a vorticity source, %dx%d grid, t = %g\n", n, n, T);
     for (s = 1; s <= 2; s++)
     {
         int coarse = s == 1 ? 64 : 16;
         double err[2], order;
-        mtrx ref = run_forced(n, s, T / (64 * coarse), T, &c);
+        mtrx ref = run_with_source(n, s, T / (64 * coarse), T, &c);
         for (k = 0; k < 2; k++)
         {
-            mtrx w = run_forced(n, s, T / (coarse << k), T, &c);
+            mtrx w = run_with_source(n, s, T / (coarse << k), T, &c);
             err[k] = field_diff(w, ref);
             freem(&w);
         }
         freem(&ref);
         order = log2(err[0] / err[1]);
-        snprintf(name, sizeof(name), "%s with forcing: observed order %.2f, |order - %d|",
+        snprintf(name, sizeof(name), "%s with a source: observed order %.2f, |order - %d|",
                  s == 1 ? "Euler" : "RK4", order, s == 1 ? 1 : 4);
         check(name, isnan(order) ? INFINITY : fabs(order - (s == 1 ? 1.0 : 4.0)), s == 1 ? 0.15 : 0.3);
     }
@@ -519,7 +521,7 @@ static void test_mms_spatial_order(void)
 
     printf("Unit: spatial order against a manufactured solution, RK4 + FFT, order 6\n");
     for (k = 0; k < 3; k++)
-        e[k] = mms_run(ns[k], ns[k], 1.0, 1.0, 100.0, 6, 2, 3, 2.5E-3, 0.25);
+        e[k] = mms_run(ns[k], ns[k], 1.0, 1.0, 100.0, 6, 2, 3, 2.5E-3, 0.0, 0.25);
 
 #define ORDER(field) log2(e[1].field.max / e[2].field.max)
     snprintf(name, sizeof(name), "psi: observed order %.2f (33 -> 65), |order - 2|", ORDER(psi));
@@ -533,6 +535,12 @@ static void test_mms_spatial_order(void)
 #undef ORDER
     check("psi max error at 65x65", e[2].psi.max, 3E-4);
     check("w max error at 65x65", e[2].w.max, 5E-3);
+
+    // A run that starts at t0 = 0.4 must evaluate the source at the times of
+    // that run, so its error is no larger than from t = 0
+    mms_errors late = mms_run(33, 33, 1.0, 1.0, 100.0, 6, 2, 3, 2.5E-3, 0.4, 0.25);
+    snprintf(name, sizeof(name), "start at t0 = 0.4: psi error %.2e vs %.2e from t = 0", late.psi.max, e[1].psi.max);
+    check(name, late.psi.max / e[1].psi.max, 1.5);
 }
 
 // Wall velocities go to the right nodes; at the corners the walls x = 0 and
@@ -1367,21 +1375,22 @@ static void test_gpu_step(int nx, int ny, int steps, double dt, int time_scheme,
     problem_free(&p);
 }
 
-// A run with a body force (the manufactured solution of mms.h) must match the
-// CPU: the GPU fills the force on the host at each stage's time and adds it
-static void test_gpu_forced(int nx, int ny, int steps, int time_scheme, const char *label)
+// A run with a vorticity source (the manufactured solution of mms.h), started
+// at t0 = 0.3, must match the CPU: the GPU fills the source on the host at
+// each stage's time and adds it
+static void test_gpu_source(int nx, int ny, int steps, int time_scheme, const char *label)
 {
     int t, N = nx * ny;
     char name[96];
     mms_case c = {1.0, 1.0, 100.0, 1.0 / (nx - 1), 1.0 / (ny - 1)};
     wall_bc walls = {{0., 0., 0., 0.}, {0., 0., 0., 0.}};
     problem p;
-    problem_init_ext(&p, nx, ny, 1.0, 1.0, 6, c.Re, time_scheme, 3, 0.002, 1E-10, &walls, mms_forcing, &c);
+    problem_init_ext(&p, nx, ny, 1.0, 1.0, 6, c.Re, time_scheme, 3, 0.002, 1E-10, &walls, 0.3, mms_source, &c);
     gpu_solver *g = gpu_for(&p);
     mtrx u = initm(ny, nx), v = initm(ny, nx), w = initm(ny, nx);
 
-    printf("GPU: %d steps with a body force, %s, %dx%d grid\n", steps, label, nx, ny);
-    mms_exact(&c, 0.0, &p.w, &p.u, &p.v, NULL);
+    printf("GPU: %d steps with a vorticity source, %s, %dx%d grid\n", steps, label, nx, ny);
+    mms_exact(&c, 0.3, &p.w, &p.u, &p.v, NULL);
     gpu_set_fields(g, &p.u, &p.v, &p.w);
     for (t = 0; t < steps; t++)
     {
@@ -1390,9 +1399,9 @@ static void test_gpu_forced(int nx, int ny, int steps, int time_scheme, const ch
     }
     gpu_get_fields(g, &u, &v, &w);
 
-    snprintf(name, sizeof(name), "%s with forcing: w vs CPU", label);
+    snprintf(name, sizeof(name), "%s with a source: w vs CPU", label);
     check(name, rel_diff(w.M, p.w.M, N), 1E-11);
-    snprintf(name, sizeof(name), "%s with forcing: u, v vs CPU", label);
+    snprintf(name, sizeof(name), "%s with a source: u, v vs CPU", label);
     check(name, rel_diff(u.M, p.u.M, N) + rel_diff(v.M, p.v.M, N), 1E-11);
 
     freem(&u);
@@ -1488,8 +1497,8 @@ static void run_gpu_tests(void)
     GPU_TEST(test_gpu_step(128, 128, 10, 0.0005, 2, 3, 1E-10, NULL, "RK4 + FFT", 1E-11));
     GPU_TEST(test_gpu_step(40, 24, 50, 0.002, 2, 3, 1E-10, NULL, "RK4 + FFT", 1E-11));
     GPU_TEST(test_gpu_step(24, 40, 50, 0.002, 1, 3, 1E-10, NULL, "Euler + FFT", 1E-11));
-    GPU_TEST(test_gpu_forced(33, 33, 50, 2, "RK4 + FFT"));
-    GPU_TEST(test_gpu_forced(40, 24, 50, 1, "Euler + FFT"));
+    GPU_TEST(test_gpu_source(33, 33, 50, 2, "RK4 + FFT"));
+    GPU_TEST(test_gpu_source(40, 24, 50, 1, "Euler + FFT"));
     GPU_TEST(test_gpu_step(40, 24, 20, 0.002, 2, 3, 1E-10, &four_walls,
                            "RK4 + FFT, four moving walls", 1E-11));
     GPU_TEST(test_gpu_step(26, 15, 3, 0.002, 2, 2, 1E-10, NULL, "RK4 + SOR", 1E-7));
@@ -1534,7 +1543,7 @@ int main(int argc, char **argv)
     test_wall_bc();
     test_output();
     test_temporal_order();
-    test_forced_temporal_order();
+    test_source_temporal_order();
     test_mms_spatial_order();
     test_cpu_operator_axes(13, 9);
     test_cpu_operator_axes(9, 13);

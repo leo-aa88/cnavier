@@ -280,8 +280,9 @@ int main(int argc, char *argv[])
     cfg.DY = &DY;
     cfg.DX2 = &DX2;
     cfg.DY2 = &DY2;
-    cfg.forcing = NULL;
-    cfg.forcing_data = NULL;
+    cfg.t0 = 0.0;
+    cfg.vorticity_source = NULL;
+    cfg.source_data = NULL;
 
     int it_max = (int)((tf / dt) - 1);
 
