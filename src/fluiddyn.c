@@ -4,7 +4,8 @@
 #include "fluiddyn.h"
 #include "linearalg.h"
 
-void euler(mtrx w, mtrx dwdx, mtrx dwdy, mtrx d2wdx2, mtrx d2wdy2, mtrx u, mtrx v, double Re, double dt)
+void euler(mtrx w, mtrx dwdx, mtrx dwdy, mtrx d2wdx2, mtrx d2wdy2, mtrx u, mtrx v, const double *f,
+           double Re, double dt)
 {
     int i;
 
@@ -16,7 +17,9 @@ void euler(mtrx w, mtrx dwdx, mtrx dwdy, mtrx d2wdx2, mtrx d2wdy2, mtrx u, mtrx 
         int j;
         for (j = 0; j < w.n; j++)
         {
-            MAt(w, i, j) = (-MAt(u, i, j) * MAt(dwdx, i, j) - MAt(v, i, j) * MAt(dwdy, i, j) + (1. / Re) * (MAt(d2wdx2, i, j) + MAt(d2wdy2, i, j))) * dt + MAt(w, i, j);
+            double rhs = -MAt(u, i, j) * MAt(dwdx, i, j) - MAt(v, i, j) * MAt(dwdy, i, j) + (1. / Re) * (MAt(d2wdx2, i, j) + MAt(d2wdy2, i, j));
+            if (f) rhs += f[i * w.n + j];
+            MAt(w, i, j) = rhs * dt + MAt(w, i, j);
         }
     }
 }
@@ -48,6 +51,8 @@ rk4_ctx rk4_alloc(const solver_config *cfg)
     ctx.w_tmp = initm(ny, nx);
     ctx.rhs = initm(ny, nx);
     ctx.fft = cfg->poisson_type == 3 ? fft_setup(nx, ny) : NULL;
+    ctx.force = cfg->forcing ? initm(ny, nx) : (mtrx){0};
+    ctx.steps = 0;
     return ctx;
 }
 
@@ -67,6 +72,7 @@ void rk4_free(rk4_ctx *ctx)
     freem(&ctx->rhs);
     fft_cleanup(ctx->fft);
     ctx->fft = NULL;
+    if (ctx->force.M) freem(&ctx->force);
 }
 
 // Solve nabla^2 psi = -w and recover u = dpsi/dy, v = -dpsi/dx.
@@ -139,9 +145,17 @@ static void set_wall_vorticity(mtrx w, mtrx u, mtrx v, const rk4_ctx *ctx)
     }
 }
 
-// out = -u*(dw/dx) - v*(dw/dy) + (1/Re)*(d2w/dx2 + d2w/dy2). Also sets u, v
-// from w's interior and the wall velocities, and w's boundary from u, v.
-void dwdt(mtrx w, mtrx u, mtrx v, mtrx out, rk4_ctx *ctx)
+// The body force at time t into ctx->force; NULL without cfg.forcing
+static const double *body_force(double t, rk4_ctx *ctx)
+{
+    if (!ctx->cfg.forcing) return NULL;
+    ctx->cfg.forcing(t, ctx->force, ctx->cfg.forcing_data);
+    return ctx->force.M;
+}
+
+// out = -u*(dw/dx) - v*(dw/dy) + (1/Re)*(d2w/dx2 + d2w/dy2) + f(t). Also sets
+// u, v from w's interior and the wall velocities, and w's boundary from u, v.
+void dwdt(mtrx w, mtrx u, mtrx v, mtrx out, double t, rk4_ctx *ctx)
 {
     int i;
     int nx = ctx->cfg.nx, ny = ctx->cfg.ny;
@@ -166,6 +180,11 @@ void dwdt(mtrx w, mtrx u, mtrx v, mtrx out, rk4_ctx *ctx)
         for (j = 0; j < nx; j++)
             MAt(out, i, j) = -MAt(u, i, j) * MAt(ctx->dwdx, i, j) - MAt(v, i, j) * MAt(ctx->dwdy, i, j) + (1.0 / ctx->cfg.Re) * (MAt(ctx->d2wdx2, i, j) + MAt(ctx->d2wdy2, i, j));
     }
+
+    const double *f = body_force(t, ctx);
+    if (f)
+        for (i = 0; i < nx * ny; i++)
+            out.M[i] += f[i];
 }
 
 // Classical RK4: w_{n+1} = w_n + (dt/6)*(k1 + 2*k2 + 2*k3 + k4)
@@ -174,12 +193,12 @@ void dwdt(mtrx w, mtrx u, mtrx v, mtrx out, rk4_ctx *ctx)
 // the transport RHS at the walls); step() replaces them.
 void rk4(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx)
 {
-    double dt = ctx->cfg.dt;
+    double dt = ctx->cfg.dt, t = (double)ctx->steps * dt;
     int i;
     int ny = ctx->cfg.ny, nx = ctx->cfg.nx;
 
     // k1 = f(w_n)
-    dwdt(w, u, v, ctx->k1, ctx);
+    dwdt(w, u, v, ctx->k1, t, ctx);
 
     // k2 = f(w_n + dt/2 * k1)
 #ifdef _OPENMP
@@ -191,7 +210,7 @@ void rk4(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx)
         for (j = 0; j < nx; j++)
             MAt(ctx->w_tmp, i, j) = MAt(w, i, j) + 0.5 * dt * MAt(ctx->k1, i, j);
     }
-    dwdt(ctx->w_tmp, u, v, ctx->k2, ctx);
+    dwdt(ctx->w_tmp, u, v, ctx->k2, t + 0.5 * dt, ctx);
 
     // k3 = f(w_n + dt/2 * k2)
 #ifdef _OPENMP
@@ -203,7 +222,7 @@ void rk4(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx)
         for (j = 0; j < nx; j++)
             MAt(ctx->w_tmp, i, j) = MAt(w, i, j) + 0.5 * dt * MAt(ctx->k2, i, j);
     }
-    dwdt(ctx->w_tmp, u, v, ctx->k3, ctx);
+    dwdt(ctx->w_tmp, u, v, ctx->k3, t + 0.5 * dt, ctx);
 
     // k4 = f(w_n + dt * k3)
 #ifdef _OPENMP
@@ -215,7 +234,7 @@ void rk4(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx)
         for (j = 0; j < nx; j++)
             MAt(ctx->w_tmp, i, j) = MAt(w, i, j) + dt * MAt(ctx->k3, i, j);
     }
-    dwdt(ctx->w_tmp, u, v, ctx->k4, ctx);
+    dwdt(ctx->w_tmp, u, v, ctx->k4, t + dt, ctx);
 
     // Combine: w_{n+1} = w_n + (dt/6)*(k1 + 2*k2 + 2*k3 + k4)
 #ifdef _OPENMP
@@ -325,7 +344,8 @@ void step(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx)
         // Euler: single RHS evaluation, then one Poisson solve
         derivatives(w, ctx);
 
-        euler(w, ctx->dwdx, ctx->dwdy, ctx->d2wdx2, ctx->d2wdy2, u, v, ctx->cfg.Re, dt);
+        euler(w, ctx->dwdx, ctx->dwdy, ctx->d2wdx2, ctx->d2wdy2, u, v,
+              body_force((double)ctx->steps * dt, ctx), ctx->cfg.Re, dt);
         velocity_from_vorticity(w, u, v, ctx);
     }
     else
@@ -345,4 +365,5 @@ void step(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx)
     mtrxcpy(ctx->k2, v);
     apply_wall_bc(ctx->k1, ctx->k2, bc);
     set_wall_vorticity(w, ctx->k1, ctx->k2, ctx);
+    ctx->steps++;
 }

@@ -47,6 +47,7 @@ endif
 
 BIN_FILE=cnavier
 TEST_BIN=test_cnavier
+CONV_BIN=convergence_study
 
 # Records the build flags so that switching OPENMP/CUDA rebuilds every object
 CONFIG=$(OBJ_DIR)/config
@@ -72,11 +73,19 @@ $(CONFIG): FORCE | $(OBJ_DIR)
 	@echo '$(CC) $(CC_FLAGS) $(NVCC) $(NVCC_FLAGS) $(NVCC_WERROR)' | cmp -s - $@ || echo '$(CC) $(CC_FLAGS) $(NVCC) $(NVCC_FLAGS) $(NVCC_WERROR)' > $@
 
 # Tests: make test (add CUDA=1 to also check the GPU backend against the CPU)
-$(TEST_BIN): $(OBJ_DIR)/test_solver.o $(filter-out $(OBJ_DIR)/main.o, $(OBJ_FILES))
+$(TEST_BIN): $(OBJ_DIR)/test_solver.o $(OBJ_DIR)/mms.o $(filter-out $(OBJ_DIR)/main.o, $(OBJ_FILES))
 	$(CC) $(CC_FLAGS) $^ -I$(HDR_DIR) -o $@ $(CC_LIBS)
 
 test: $(OBJ_DIR) $(TEST_BIN)
 	./$(TEST_BIN)
+
+# Spatial convergence study against a manufactured solution (a few minutes;
+# add OPENMP=1 to make it faster)
+$(CONV_BIN): $(OBJ_DIR)/convergence.o $(OBJ_DIR)/mms.o $(filter-out $(OBJ_DIR)/main.o, $(OBJ_FILES))
+	$(CC) $(CC_FLAGS) $^ -I$(HDR_DIR) -o $@ $(CC_LIBS)
+
+convergence: $(OBJ_DIR) $(CONV_BIN)
+	./$(CONV_BIN)
 
 # ---------------------------------------------------------------------------
 # Checks. CI runs each of these as one step (.github/workflows/ci.yml).
@@ -138,8 +147,8 @@ regression: $(OBJ_DIR) $(BIN_FILE)
 	$(TEST_DIR)/regression.sh $(CURDIR)/$(BIN_FILE)
 
 clean:
-	rm -rf $(BIN_FILE) $(TEST_BIN) $(OBJ_DIR) $(TBN_DIR) output/*.vtk
+	rm -rf $(BIN_FILE) $(TEST_BIN) $(CONV_BIN) $(OBJ_DIR) $(TBN_DIR) output/*.vtk
 
 FORCE:
 
-.PHONY: all test clean FORCE format format-check cppcheck tidy test-asan valgrind test-cli regression
+.PHONY: all test convergence clean FORCE format format-check cppcheck tidy test-asan valgrind test-cli regression

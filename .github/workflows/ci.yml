@@ -41,12 +41,12 @@ jobs:
         run: make tidy
       - name: gcc -Wextra -Werror, serial and OpenMP
         run: |
-          make WERROR=1 cnavier test_cnavier
-          make WERROR=1 OPENMP=1 cnavier test_cnavier
+          make WERROR=1 cnavier test_cnavier convergence_study
+          make WERROR=1 OPENMP=1 cnavier test_cnavier convergence_study
       - name: clang -Wextra -Werror, serial and OpenMP
         run: |
-          make CC=clang WERROR=1 cnavier test_cnavier
-          make CC=clang WERROR=1 OPENMP=1 cnavier test_cnavier
+          make CC=clang WERROR=1 cnavier test_cnavier convergence_study
+          make CC=clang WERROR=1 OPENMP=1 cnavier test_cnavier convergence_study
 
   build:
     name: Build (${{ matrix.config }})

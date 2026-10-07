@@ -264,7 +264,8 @@ builds and runs `test_cnavier`:
 
 - **Building blocks**: sparse operations against dense ones; every row of the finite-difference operators (boundary rows included) exact on the polynomials its stencil is built for, for orders 2, 4 and 6, and rows written out; the derivative operators acting along the right axis on non-square grids; wall velocities, including the corners; the VTK and centerline writers.
 - **Poisson solvers**: the FFT solver against an exact eigenmode, at sizes that exercise every batching case of the transform; FFT, SOR and Gauss-Seidel giving the same answer once converged; residuals of the iterative solvers; SOR iteration counts on anisotropic grids.
-- **Time stepping**: short cavity runs with both schemes on square and non-square grids (finite, divergence-free); the stability limit (0.95× runs, 1.05× diverges) and the suggested `dt`; the observed order in `dt` on all nodes, walls included: Euler first order, RK4 fourth order, with RK4's error at the same step about a million times smaller than Euler's.
+- **Time stepping**: short cavity runs with both schemes on square and non-square grids (finite, divergence-free); the stability limit (0.95× runs, 1.05× diverges) and the suggested `dt`; the observed order in `dt` on all nodes, walls included: Euler first order, RK4 fourth order, with RK4's error at the same step about a million times smaller than Euler's. Both orders also hold with a time-dependent body force, which checks that each RK4 stage evaluates the force at its own time.
+- **Spatial accuracy**: a manufactured solution (see [Spatial convergence](#spatial-convergence)) on 17², 33² and 65² grids: ψ, `u` and `v` converge at second order and ω at least at second order, and the errors themselves are within fixed bounds.
 - **Backends**: driving the solver through `backend.c` gives exactly what calling it directly gives, and every solver ignores changes to the caller's configuration after it is created.
 - **OpenMP** (with `OPENMP=1`): results on 1 and on 4 threads are bitwise identical above the size where loops go parallel.
 
@@ -272,7 +273,7 @@ builds and runs `test_cnavier`:
 make CUDA=1 test
 ```
 
-additionally checks the GPU backend against the CPU: SpMV for all four operators, each Poisson solver, the continuity diagnostic, and full timesteps for the Euler/RK4 and FFT/SOR/Gauss-Seidel combinations on square and non-square grids. These comparisons are what keeps the GPU code in step with the CPU code, so run them on a machine with a GPU after changing either.
+additionally checks the GPU backend against the CPU: SpMV for all four operators, each Poisson solver, the continuity diagnostic, and full timesteps for the Euler/RK4 and FFT/SOR/Gauss-Seidel combinations on square and non-square grids, with and without a body force. These comparisons are what keeps the GPU code in step with the CPU code, so run them on a machine with a GPU after changing either.
 
 ```bash
 make OPENMP=1 CUDA=1 test
@@ -310,6 +311,28 @@ cp /tmp/ref/output/centerline_u_sim.csv tests/reference/centerline_u_short.csv
 cp /tmp/ref/output/centerline_v_sim.csv tests/reference/centerline_v_short.csv
 ```
 
+### Spatial convergence
+
+```bash
+make OPENMP=1 convergence
+```
+
+measures the global spatial order of the complete method against a manufactured solution, ψ = g(t) sin²(πx/Lx) sin²(πy/Ly). It has ψ = 0 and `u` = `v` = 0 on every wall, so it uses the solver's ordinary no-slip walls and ψ = 0 Poisson condition, and an optional body force in `solver_config` (`forcing`) makes it an exact solution. Each run starts from the exact state, uses RK4 and the FFT solver at Re = 100, and is compared with the exact solution at t = 0.25; the time step is small enough that the time error does not show in the digits printed. The study covers derivative orders 2, 4 and 6 on the unit square from 17² to 257², a 2×1 domain, and a grid with `dx = dy/2`. It takes about 1.5 minutes with 8 threads; `./convergence_study --max-n 513` goes one grid further.
+
+Maximum errors, derivative order 6, unit square (observed order against the previous grid in parentheses):
+
+| Grid | ψ | `u` | ω, walls included | ω, interior |
+|---|---|---|---|---|
+| 33² | 1.02e-3 | 2.97e-3 | 2.89e-2 | 2.01e-2 |
+| 65² | 2.49e-4 (2.03) | 7.44e-4 (2.00) | 3.84e-3 (2.91) | 3.26e-3 (2.62) |
+| 129² | 6.12e-5 (2.02) | 1.86e-4 (2.00) | 6.19e-4 (2.63) | 5.50e-4 (2.57) |
+| 257² | 1.52e-5 (2.01) | 4.67e-5 (2.00) | 1.19e-4 (2.37) | 1.11e-4 (2.31) |
+| 513² | 3.78e-6 (2.01) | 1.17e-5 (2.00) | 2.58e-5 (2.21) | 2.47e-5 (2.16) |
+
+- **The method is second order in space.** ψ, `u` and `v` converge at 2.0 on every grid; ω converges faster on coarse grids and approaches 2 under refinement. The limit is the five-point Poisson operator and the low-order rows next to the walls, so `order = 6` means sixth-order stencils in the deep interior, not sixth-order results.
+- **Orders 4 and 6 give the same errors** to three digits. Compared with order 2 they reduce the vorticity error about 2.6× at 513², and leave the velocity error unchanged (order 2: 1.02e-5 for `u` at 513², order 6: 1.17e-5).
+- The 2×1 domain and the `dx = dy/2` grid show the same orders.
+
 ### Continuous integration
 
 GitHub Actions (`.github/workflows/ci.yml`) runs, in order: formatting; cppcheck, clang-tidy and `-Wextra -Werror` builds with gcc and clang; serial, OpenMP and CUDA builds; then the test suite, the command-line and regression tests for the serial and OpenMP builds, and the sanitizer and valgrind checks. The CUDA build's test program must report its GPU tests as skipped (exit status 77).
@@ -329,6 +352,7 @@ cnavier/
 │   ├── finitediff.c    # Finite difference operators (dense + sparse)
 │   ├── fluiddyn.c      # CPU timestep: Euler/RK4, wall and vorticity BCs, stability limit
 │   ├── poisson.c       # Gauss-Seidel, SOR, and FFT Poisson solvers
+│   ├── threads.c       # Default number of OpenMP threads
 │   ├── cudasolver.cu   # CUDA backend (built only with CUDA=1)
 │   └── utils.c         # VTK output, random utilities
 ├── include/
@@ -338,9 +362,12 @@ cnavier/
 │   ├── backend.h
 │   ├── poisson.h
 │   ├── cudasolver.h
+│   ├── threads.h
 │   └── utils.h
 ├── tests/
 │   ├── test_solver.c   # Unit and solver tests, GPU-vs-CPU checks
+│   ├── mms.c, mms.h    # Manufactured solution: exact fields, body force, error norms
+│   ├── convergence.c   # Spatial convergence study (make convergence)
 │   ├── cli.sh          # Command-line tests
 │   ├── regression.sh   # Stored-result and Ghia et al. checks
 │   └── reference/      # Stored results and the Ghia et al. data
