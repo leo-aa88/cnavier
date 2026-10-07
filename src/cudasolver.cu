@@ -12,7 +12,8 @@
 #include <cuda_runtime.h>
 #include <cufft.h>
 
-extern "C" {
+extern "C"
+{
 #include "linearalg.h"
 #include "fluiddyn.h"
 #include "poisson.h"
@@ -23,47 +24,50 @@ extern "C" {
 #define RED_BLOCKS 256 // max blocks used by a reduction
 #define RB_BATCH   32  // red-black sweeps queued between looks at the convergence state
 
-#define CUDA_CHECK(call)                                                   \
-    do {                                                                   \
-        cudaError_t err_ = (call);                                         \
-        if (err_ != cudaSuccess)                                           \
-        {                                                                  \
-            printf("** CUDA error: %s (%s:%d) **\n",                       \
-                   cudaGetErrorString(err_), __FILE__, __LINE__);          \
-            exit(1);                                                       \
-        }                                                                  \
+#define CUDA_CHECK(call)                                          \
+    do                                                            \
+    {                                                             \
+        cudaError_t err_ = (call);                                \
+        if (err_ != cudaSuccess)                                  \
+        {                                                         \
+            printf("** CUDA error: %s (%s:%d) **\n",              \
+                   cudaGetErrorString(err_), __FILE__, __LINE__); \
+            exit(1);                                              \
+        }                                                         \
     } while (0)
 
-#define CUFFT_CHECK(call)                                                  \
-    do {                                                                   \
-        cufftResult res_ = (call);                                         \
-        if (res_ != CUFFT_SUCCESS)                                         \
-        {                                                                  \
-            printf("** cuFFT error: %d (%s:%d) **\n",                      \
-                   (int)res_, __FILE__, __LINE__);                         \
-            exit(1);                                                       \
-        }                                                                  \
+#define CUFFT_CHECK(call)                             \
+    do                                                \
+    {                                                 \
+        cufftResult res_ = (call);                    \
+        if (res_ != CUFFT_SUCCESS)                    \
+        {                                             \
+            printf("** cuFFT error: %d (%s:%d) **\n", \
+                   (int)res_, __FILE__, __LINE__);    \
+            exit(1);                                  \
+        }                                             \
     } while (0)
 
 // Launch a kernel with one thread per element of an n-element array
-#define LAUNCH(kernel, n, ...)                                             \
-    do {                                                                   \
-        kernel<<<((n) + BLOCK - 1) / BLOCK, BLOCK>>>(__VA_ARGS__);         \
-        CUDA_CHECK(cudaGetLastError());                                    \
+#define LAUNCH(kernel, n, ...)                                     \
+    do                                                             \
+    {                                                              \
+        kernel<<<((n) + BLOCK - 1) / BLOCK, BLOCK>>>(__VA_ARGS__); \
+        CUDA_CHECK(cudaGetLastError());                            \
     } while (0)
 
 // Device copy of a CSR matrix
 typedef struct
 {
     double *values;
-    int    *col_idx;
-    int    *row_ptr;
+    int *col_idx;
+    int *row_ptr;
 } csr_dev;
 
 struct gpu_solver
 {
     solver_config cfg; // copy taken by gpu_init(); later changes to the caller's have no effect
-    int    nx, ny, n;  // cfg.nx, cfg.ny and their product, for brevity
+    int nx, ny, n;     // cfg.nx, cfg.ny and their product, for brevity
 
     csr_dev DX, DY, DX2, DY2;
 
@@ -78,10 +82,10 @@ struct gpu_solver
     struct rb_state *rb;
 
     // FFT Poisson solver (poisson_type 3)
-    cufftHandle         plan_rows; // batched real FFTs of the odd extensions of the rows
-    cufftHandle         plan_cols; // ... and of the columns
-    double             *ext;       // odd extensions, (ny-2) x 2(nx-1) or (nx-2) x 2(ny-1)
-    cufftDoubleComplex *spec;      // their spectra, (ny-2) x nx or (nx-2) x ny
+    cufftHandle plan_rows;       // batched real FFTs of the odd extensions of the rows
+    cufftHandle plan_cols;       // ... and of the columns
+    double *ext;                 // odd extensions, (ny-2) x 2(nx-1) or (nx-2) x 2(ny-1)
+    cufftDoubleComplex *spec;    // their spectra, (ny-2) x nx or (nx-2) x ny
     double *lambda_i, *lambda_j; // eigenvalues of the 1D second differences
 };
 
@@ -114,11 +118,16 @@ __global__ void wall_bc_kernel(double *u, double *v, wall_bc bc, int nx, int ny)
     int i = k / nx, j = k % nx;
     int wall;
 
-    if (j == 0)           wall = 0;
-    else if (j == nx - 1) wall = 1;
-    else if (i == 0)      wall = 2;
-    else if (i == ny - 1) wall = 3;
-    else return;
+    if (j == 0)
+        wall = 0;
+    else if (j == nx - 1)
+        wall = 1;
+    else if (i == 0)
+        wall = 2;
+    else if (i == ny - 1)
+        wall = 3;
+    else
+        return;
 
     u[k] = bc.u[wall];
     v[k] = bc.v[wall];
@@ -143,9 +152,7 @@ __global__ void rhs_kernel(csr_dev DX, csr_dev DY, csr_dev DX2, csr_dev DY2,
 {
     int k = blockIdx.x * blockDim.x + threadIdx.x;
     if (k < n)
-        out[k] = - u[k] * csr_row(DX, w, k)
-                 - v[k] * csr_row(DY, w, k)
-                 + (1.0 / Re) * (csr_row(DX2, w, k) + csr_row(DY2, w, k));
+        out[k] = -u[k] * csr_row(DX, w, k) - v[k] * csr_row(DY, w, k) + (1.0 / Re) * (csr_row(DX2, w, k) + csr_row(DY2, w, k));
 }
 
 // u = dpsi/dy, v = -dpsi/dx
@@ -189,9 +196,9 @@ __global__ void rk4_combine_kernel(double *w, double c, const double *k1, const 
 // Device-side state of a red-black solve
 struct rb_state
 {
-    int    done;  // set once the stopping rule is met; later sweeps do nothing
-    int    iter;  // sweep at which it was met
-    double err;   // sum of |change| in that sweep
+    int done;   // set once the stopping rule is met; later sweeps do nothing
+    int iter;   // sweep at which it was met
+    double err; // sum of |change| in that sweep
 };
 
 // One colour of a red-black sweep for nabla^2 psi = -w; beta = 1 is Gauss-Seidel.
@@ -210,11 +217,12 @@ __global__ void redblack_kernel(double *psi, const double *w, double *delta, int
 
     double denom = 2.0 * (dx2 + dy2);
     double old = psi[k];
-    double upd = beta * (dx2 * (psi[k + nx] + psi[k - nx])   // y-neighbours
-                       + dy2 * (psi[k + 1]  + psi[k - 1])    // x-neighbours
-                       + dx2 * dy2 * w[k]) / denom
-               + (1.0 - beta) * old;
-    psi[k]   = upd;
+    double upd = beta * (dx2 * (psi[k + nx] + psi[k - nx]) // y-neighbours
+                         + dy2 * (psi[k + 1] + psi[k - 1]) // x-neighbours
+                         + dx2 * dy2 * w[k]) /
+                     denom +
+                 (1.0 - beta) * old;
+    psi[k] = upd;
     delta[k] = fabs(upd - old);
 }
 
@@ -295,7 +303,12 @@ __global__ void spectral_scale_kernel(const cufftDoubleComplex *spec, double *ou
         out[k] = dst_mode(spec, i, j, ny) * scale;
 }
 
-enum { RED_SUM, RED_MAX, RED_MIN };
+enum
+{
+    RED_SUM,
+    RED_MAX,
+    RED_MIN
+};
 
 __host__ __device__ inline double red_identity(int op)
 {
@@ -342,7 +355,7 @@ __global__ void rb_check_kernel(const double *partial, int blocks, double tol, i
     {
         rb->done = 1;
         rb->iter = iter;
-        rb->err  = acc;
+        rb->err = acc;
     }
 }
 
@@ -363,11 +376,11 @@ static csr_dev csr_upload(const smtrx *A)
     csr_dev d;
     int nnz = A->row_ptr[A->m];
 
-    CUDA_CHECK(cudaMalloc((void **)&d.values,  nnz * sizeof(double)));
+    CUDA_CHECK(cudaMalloc((void **)&d.values, nnz * sizeof(double)));
     CUDA_CHECK(cudaMalloc((void **)&d.col_idx, nnz * sizeof(int)));
     CUDA_CHECK(cudaMalloc((void **)&d.row_ptr, (A->m + 1) * sizeof(int)));
-    CUDA_CHECK(cudaMemcpy(d.values,  A->values,  nnz * sizeof(double),    cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d.col_idx, A->col_idx, nnz * sizeof(int),       cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d.values, A->values, nnz * sizeof(double), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d.col_idx, A->col_idx, nnz * sizeof(int), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d.row_ptr, A->row_ptr, (A->m + 1) * sizeof(int), cudaMemcpyHostToDevice));
     return d;
 }
@@ -407,9 +420,9 @@ static void poisson_redblack(gpu_solver *g, const double *w)
     int blocks = (n + BLOCK - 1) / BLOCK;
     if (blocks > RED_BLOCKS) blocks = RED_BLOCKS;
 
-    CUDA_CHECK(cudaMemset(g->psi,     0, n * sizeof(double)));
+    CUDA_CHECK(cudaMemset(g->psi, 0, n * sizeof(double)));
     CUDA_CHECK(cudaMemset(g->scratch, 0, n * sizeof(double)));
-    CUDA_CHECK(cudaMemset(g->rb,      0, sizeof(struct rb_state)));
+    CUDA_CHECK(cudaMemset(g->rb, 0, sizeof(struct rb_state)));
 
     // Sweeps are queued in batches and the host looks at the result once per
     // batch. Sweeps after the one that meets the stopping rule return at
@@ -513,26 +526,32 @@ gpu_solver *gpu_init(const solver_config *cfg)
         exit(1);
     }
 
-    g->nx = nx; g->ny = ny; g->n = n;
+    g->nx = nx;
+    g->ny = ny;
+    g->n = n;
     g->cfg = *cfg;
 
-    g->DX  = csr_upload(cfg->DX);
-    g->DY  = csr_upload(cfg->DY);
+    g->DX = csr_upload(cfg->DX);
+    g->DY = csr_upload(cfg->DY);
     g->DX2 = csr_upload(cfg->DX2);
     g->DY2 = csr_upload(cfg->DY2);
 
-    g->u  = dev_alloc(n); g->v  = dev_alloc(n);
-    g->w  = dev_alloc(n); g->psi = dev_alloc(n);
-    g->k1 = dev_alloc(n); g->k2 = dev_alloc(n);
-    g->k3 = dev_alloc(n); g->k4 = dev_alloc(n);
-    g->w_tmp   = dev_alloc(n);
+    g->u = dev_alloc(n);
+    g->v = dev_alloc(n);
+    g->w = dev_alloc(n);
+    g->psi = dev_alloc(n);
+    g->k1 = dev_alloc(n);
+    g->k2 = dev_alloc(n);
+    g->k3 = dev_alloc(n);
+    g->k4 = dev_alloc(n);
+    g->w_tmp = dev_alloc(n);
     g->scratch = dev_alloc(n);
     g->partial = dev_alloc(RED_BLOCKS);
     CUDA_CHECK(cudaMalloc((void **)&g->rb, sizeof(struct rb_state)));
 
     if (g->cfg.poisson_type == 3)
     {
-        int len_x = 2 * (nx - 1), len_y = 2 * (ny - 1);   // lengths of the odd extensions
+        int len_x = 2 * (nx - 1), len_y = 2 * (ny - 1); // lengths of the odd extensions
         size_t ext_rows = (size_t)(ny - 2) * len_x, ext_cols = (size_t)(nx - 2) * len_y;
         size_t spec_rows = (size_t)(ny - 2) * nx, spec_cols = (size_t)(nx - 2) * ny;
         double *lambda = (double *)malloc((size_t)(nx > ny ? nx : ny) * sizeof(double));
@@ -547,8 +566,7 @@ gpu_solver *gpu_init(const solver_config *cfg)
         CUFFT_CHECK(cufftPlanMany(&g->plan_cols, 1, &len_y, NULL, 1, len_y,
                                   NULL, 1, len_y / 2 + 1, CUFFT_D2Z, nx - 2));
         g->ext = dev_alloc(ext_rows > ext_cols ? ext_rows : ext_cols);
-        CUDA_CHECK(cudaMalloc((void **)&g->spec, (spec_rows > spec_cols ? spec_rows : spec_cols)
-                                                 * sizeof(cufftDoubleComplex)));
+        CUDA_CHECK(cudaMalloc((void **)&g->spec, (spec_rows > spec_cols ? spec_rows : spec_cols) * sizeof(cufftDoubleComplex)));
 
         // Eigenvalues of the 2D Laplacian under the DST-I of the interior, as
         // in poisson_FFT(); rows (index i) are y, columns (index j) are x:
@@ -571,9 +589,18 @@ void gpu_free(gpu_solver *g)
 {
     if (!g) return;
 
-    csr_free(g->DX); csr_free(g->DY); csr_free(g->DX2); csr_free(g->DY2);
-    cudaFree(g->u);  cudaFree(g->v);  cudaFree(g->w);  cudaFree(g->psi);
-    cudaFree(g->k1); cudaFree(g->k2); cudaFree(g->k3); cudaFree(g->k4);
+    csr_free(g->DX);
+    csr_free(g->DY);
+    csr_free(g->DX2);
+    csr_free(g->DY2);
+    cudaFree(g->u);
+    cudaFree(g->v);
+    cudaFree(g->w);
+    cudaFree(g->psi);
+    cudaFree(g->k1);
+    cudaFree(g->k2);
+    cudaFree(g->k3);
+    cudaFree(g->k4);
     cudaFree(g->w_tmp);
     cudaFree(g->scratch);
     cudaFree(g->partial);
@@ -659,7 +686,9 @@ void gpu_get_fields(gpu_solver *g, mtrx *u, mtrx *v, mtrx *w)
 
 void gpu_spmv(gpu_solver *g, int op, const double *x, double *y)
 {
-    csr_dev A = (op == 0) ? g->DX : (op == 1) ? g->DY : (op == 2) ? g->DX2 : g->DY2;
+    csr_dev A = (op == 0) ? g->DX : (op == 1) ? g->DY
+                                : (op == 2)   ? g->DX2
+                                              : g->DY2;
     size_t bytes = g->n * sizeof(double);
 
     CUDA_CHECK(cudaMemcpy(g->w_tmp, x, bytes, cudaMemcpyHostToDevice));

@@ -126,7 +126,11 @@ vec gaussian(mtrx A, vec b)
     // Augmented matrix as a flat array
     int cols = b.n + 1;
     double *a = (double *)malloc((size_t)b.n * cols * sizeof(double));
-    if (!a) { printf("** Error: insufficient memory **\n"); exit(1); }
+    if (!a)
+    {
+        printf("** Error: insufficient memory **\n");
+        exit(1);
+    }
 
     for (i = 0; i < b.n; i++)
     {
@@ -150,9 +154,9 @@ vec gaussian(mtrx A, vec b)
             {
                 for (j = 0; j < n; j++)
                 {
-                    double temp    = a[i * n + j];
-                    a[i * n + j]   = a[k * n + j];
-                    a[k * n + j]   = temp;
+                    double temp = a[i * n + j];
+                    a[i * n + j] = a[k * n + j];
+                    a[k * n + j] = temp;
                 }
             }
         }
@@ -185,7 +189,7 @@ mtrx kronecker(mtrx A, mtrx B)
 
     for (ia = 0; ia < A.m; ia++)
         for (ib = 0; ib < B.m; ib++)
-            for (i = 0; i < A.n; i++)  // col block in A
+            for (i = 0; i < A.n; i++) // col block in A
                 for (j = 0; j < B.n; j++)
                     MAt(C, ia * B.m + ib, i * B.n + j) =
                         MAt(A, ia, i) * MAt(B, ib, j);
@@ -271,10 +275,12 @@ void mtrxcpy(mtrx A, mtrx B)
 smtrx initsm(int m, int n, int nnz)
 {
     smtrx A;
-    A.m = m; A.n = n; A.nnz = nnz;
-    A.values  = (double *)malloc(nnz * sizeof(double));
-    A.col_idx = (int *)   malloc(nnz * sizeof(int));
-    A.row_ptr = (int *)   malloc((m + 1) * sizeof(int));
+    A.m = m;
+    A.n = n;
+    A.nnz = nnz;
+    A.values = (double *)malloc(nnz * sizeof(double));
+    A.col_idx = (int *)malloc(nnz * sizeof(int));
+    A.row_ptr = (int *)malloc((m + 1) * sizeof(int));
     if (!A.values || !A.col_idx || !A.row_ptr)
     {
         printf("** Error: insufficient memory for sparse matrix **\n");
@@ -312,7 +318,7 @@ smtrx seye(int n)
     smtrx I = initsm(n, n, n);
     for (i = 0; i < n; i++)
     {
-        I.values[i]  = 1.0;
+        I.values[i] = 1.0;
         I.col_idx[i] = i;
         I.row_ptr[i] = i;
     }
@@ -333,7 +339,7 @@ smtrx skronecker(smtrx A, smtrx B)
             for (ka = A.row_ptr[ia]; ka < A.row_ptr[ia + 1]; ka++)
                 for (kb = B.row_ptr[ib]; kb < B.row_ptr[ib + 1]; kb++)
                 {
-                    C.values[pos]  = A.values[ka] * B.values[kb];
+                    C.values[pos] = A.values[ka] * B.values[kb];
                     C.col_idx[pos] = A.col_idx[ka] * B.n + B.col_idx[kb];
                     pos++;
                 }
@@ -346,12 +352,14 @@ smtrx skronecker(smtrx A, smtrx B)
 void flatten(mtrx A, double *out, int nx, int ny)
 {
     // With flat storage A.M is already row-major — just memcpy
-    (void)nx; (void)ny; // nx*ny == A.m*A.n by contract
+    (void)nx;
+    (void)ny; // nx*ny == A.m*A.n by contract
     memcpy(out, A.M, (size_t)A.m * A.n * sizeof(double));
 }
 
 void unflatten(double *in, mtrx A, int nx, int ny)
 {
-    (void)nx; (void)ny;
+    (void)nx;
+    (void)ny;
     memcpy(A.M, in, (size_t)A.m * A.n * sizeof(double));
 }

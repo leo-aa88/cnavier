@@ -35,26 +35,40 @@ rk4_ctx rk4_alloc(const solver_config *cfg)
 
     ctx.cfg = *cfg;
 
-    ctx.dwdx    = initm(ny, nx); ctx.dwdy    = initm(ny, nx);
-    ctx.d2wdx2  = initm(ny, nx); ctx.d2wdy2  = initm(ny, nx);
-    ctx.dpsidx  = initm(ny, nx); ctx.dpsidy  = initm(ny, nx);
-    ctx.psi     = initm(ny, nx); ctx.psi_scratch = initm(ny, nx);
-    ctx.k1      = initm(ny, nx); ctx.k2      = initm(ny, nx);
-    ctx.k3      = initm(ny, nx); ctx.k4      = initm(ny, nx);
-    ctx.w_tmp   = initm(ny, nx); ctx.rhs     = initm(ny, nx);
-    ctx.fft     = cfg->poisson_type == 3 ? fft_setup(nx, ny) : NULL;
+    ctx.dwdx = initm(ny, nx);
+    ctx.dwdy = initm(ny, nx);
+    ctx.d2wdx2 = initm(ny, nx);
+    ctx.d2wdy2 = initm(ny, nx);
+    ctx.dpsidx = initm(ny, nx);
+    ctx.dpsidy = initm(ny, nx);
+    ctx.psi = initm(ny, nx);
+    ctx.psi_scratch = initm(ny, nx);
+    ctx.k1 = initm(ny, nx);
+    ctx.k2 = initm(ny, nx);
+    ctx.k3 = initm(ny, nx);
+    ctx.k4 = initm(ny, nx);
+    ctx.w_tmp = initm(ny, nx);
+    ctx.rhs = initm(ny, nx);
+    ctx.fft = cfg->poisson_type == 3 ? fft_setup(nx, ny) : NULL;
     return ctx;
 }
 
 void rk4_free(rk4_ctx *ctx)
 {
-    freem(&ctx->dwdx);   freem(&ctx->dwdy);
-    freem(&ctx->d2wdx2); freem(&ctx->d2wdy2);
-    freem(&ctx->dpsidx); freem(&ctx->dpsidy);
-    freem(&ctx->psi);    freem(&ctx->psi_scratch);
-    freem(&ctx->k1);     freem(&ctx->k2);
-    freem(&ctx->k3);     freem(&ctx->k4);
-    freem(&ctx->w_tmp);  freem(&ctx->rhs);
+    freem(&ctx->dwdx);
+    freem(&ctx->dwdy);
+    freem(&ctx->d2wdx2);
+    freem(&ctx->d2wdy2);
+    freem(&ctx->dpsidx);
+    freem(&ctx->dpsidy);
+    freem(&ctx->psi);
+    freem(&ctx->psi_scratch);
+    freem(&ctx->k1);
+    freem(&ctx->k2);
+    freem(&ctx->k3);
+    freem(&ctx->k4);
+    freem(&ctx->w_tmp);
+    freem(&ctx->rhs);
     fft_cleanup(ctx->fft);
     ctx->fft = NULL;
 }
@@ -93,8 +107,8 @@ static void velocity_from_vorticity(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx)
 // First and second derivatives of w into the workspace
 static void derivatives(mtrx w, rk4_ctx *ctx)
 {
-    spmv(*ctx->cfg.DX,  w.M, ctx->dwdx.M);
-    spmv(*ctx->cfg.DY,  w.M, ctx->dwdy.M);
+    spmv(*ctx->cfg.DX, w.M, ctx->dwdx.M);
+    spmv(*ctx->cfg.DY, w.M, ctx->dwdy.M);
     spmv(*ctx->cfg.DX2, w.M, ctx->d2wdx2.M);
     spmv(*ctx->cfg.DY2, w.M, ctx->d2wdy2.M);
 }
@@ -118,10 +132,7 @@ void dwdt(mtrx w, mtrx u, mtrx v, mtrx out, rk4_ctx *ctx)
     {
         int j;
         for (j = 0; j < nx; j++)
-            MAt(out, i, j) = - MAt(u, i, j) * MAt(ctx->dwdx,   i, j)
-                             - MAt(v, i, j) * MAt(ctx->dwdy,   i, j)
-                             + (1.0 / ctx->cfg.Re) * (MAt(ctx->d2wdx2, i, j)
-                                                + MAt(ctx->d2wdy2, i, j));
+            MAt(out, i, j) = -MAt(u, i, j) * MAt(ctx->dwdx, i, j) - MAt(v, i, j) * MAt(ctx->dwdy, i, j) + (1.0 / ctx->cfg.Re) * (MAt(ctx->d2wdx2, i, j) + MAt(ctx->d2wdy2, i, j));
     }
 }
 
@@ -180,10 +191,7 @@ void rk4(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx)
     {
         int j;
         for (j = 0; j < nx; j++)
-            MAt(w, i, j) += (dt / 6.0) * (MAt(ctx->k1, i, j)
-                                       + 2.0 * MAt(ctx->k2, i, j)
-                                       + 2.0 * MAt(ctx->k3, i, j)
-                                           + MAt(ctx->k4, i, j));
+            MAt(w, i, j) += (dt / 6.0) * (MAt(ctx->k1, i, j) + 2.0 * MAt(ctx->k2, i, j) + 2.0 * MAt(ctx->k3, i, j) + MAt(ctx->k4, i, j));
     }
 
     // Final Poisson solve so u, v are consistent with w_{n+1}
@@ -226,11 +234,11 @@ dt_limits time_step_limits(const smtrx *dxx, const smtrx *dyy, double h, double 
                            double max_co, int time_scheme)
 {
     dt_limits l;
-    l.courant   = u_max > 0. ? max_co * h / u_max : HUGE_VAL;
-    l.viscous   = max_stable_dt(dxx, dyy, Re, time_scheme);
+    l.courant = u_max > 0. ? max_co * h / u_max : HUGE_VAL;
+    l.viscous = max_stable_dt(dxx, dyy, Re, time_scheme);
     l.advection = time_scheme == 1 ? euler_advection_dt(Re, u_max) : HUGE_VAL;
-    l.accept    = fmin(l.courant, l.viscous);
-    l.suggest   = fmin(l.accept, l.advection);
+    l.accept = fmin(l.courant, l.viscous);
+    l.suggest = fmin(l.accept, l.advection);
     return l;
 }
 
@@ -254,13 +262,17 @@ void apply_wall_bc(mtrx u, mtrx v, const wall_bc *bc)
 
     for (j = 0; j < nx; j++)
     {
-        MAt(u, 0, j)    = bc->u[2];  MAt(v, 0, j)    = bc->v[2];
-        MAt(u, ny-1, j) = bc->u[3];  MAt(v, ny-1, j) = bc->v[3];
+        MAt(u, 0, j) = bc->u[2];
+        MAt(v, 0, j) = bc->v[2];
+        MAt(u, ny - 1, j) = bc->u[3];
+        MAt(v, ny - 1, j) = bc->v[3];
     }
     for (i = 0; i < ny; i++)
     {
-        MAt(u, i, 0)    = bc->u[0];  MAt(v, i, 0)    = bc->v[0];
-        MAt(u, i, nx-1) = bc->u[1];  MAt(v, i, nx-1) = bc->v[1];
+        MAt(u, i, 0) = bc->u[0];
+        MAt(v, i, 0) = bc->v[0];
+        MAt(u, i, nx - 1) = bc->u[1];
+        MAt(v, i, nx - 1) = bc->v[1];
     }
 }
 
@@ -281,13 +293,13 @@ void step(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx)
 
     for (j = 0; j < nx; j++)
     {
-        MAt(w, 0, j)    = MAt(dvdx, 0, j)    - MAt(dudy, 0, j);
-        MAt(w, ny-1, j) = MAt(dvdx, ny-1, j) - MAt(dudy, ny-1, j);
+        MAt(w, 0, j) = MAt(dvdx, 0, j) - MAt(dudy, 0, j);
+        MAt(w, ny - 1, j) = MAt(dvdx, ny - 1, j) - MAt(dudy, ny - 1, j);
     }
     for (i = 0; i < ny; i++)
     {
-        MAt(w, i, 0)    = MAt(dvdx, i, 0)    - MAt(dudy, i, 0);
-        MAt(w, i, nx-1) = MAt(dvdx, i, nx-1) - MAt(dudy, i, nx-1);
+        MAt(w, i, 0) = MAt(dvdx, i, 0) - MAt(dudy, i, 0);
+        MAt(w, i, nx - 1) = MAt(dvdx, i, nx - 1) - MAt(dudy, i, nx - 1);
     }
 
     if (ctx->cfg.time_scheme == 1)

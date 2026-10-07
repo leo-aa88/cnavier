@@ -49,7 +49,6 @@ static int parse_double(const char *s, double *out)
     return 1;
 }
 
-
 static void usage(const char *prog)
 {
     printf("Usage: %s [options]\n", prog);
@@ -85,37 +84,55 @@ int main(int argc, char *argv[])
     int poisson_max_it = 10000;
     double poisson_tol = 1E-3;
     int output_interval = 20;
-    int poisson_type  = 3; // 1=Gauss-Seidel  2=SOR  3=FFT (direct, exact)
-    int time_scheme   = 2; // 1=Euler  2=RK4
-    int use_gpu       = 1; // only meaningful when built with CUDA=1
+    int poisson_type = 3; // 1=Gauss-Seidel  2=SOR  3=FFT (direct, exact)
+    int time_scheme = 2;  // 1=Euler  2=RK4
+    int use_gpu = 1;      // only meaningful when built with CUDA=1
 
     // Command-line overrides
     static struct option long_opts[] = {
-        {"n",               required_argument, 0, 'n'},
-        {"nx",              required_argument, 0, 'x'},
-        {"ny",              required_argument, 0, 'y'},
-        {"dt",              required_argument, 0, 'd'},
-        {"tf",              required_argument, 0, 'f'},
+        {"n", required_argument, 0, 'n'},
+        {"nx", required_argument, 0, 'x'},
+        {"ny", required_argument, 0, 'y'},
+        {"dt", required_argument, 0, 'd'},
+        {"tf", required_argument, 0, 'f'},
         {"output-interval", required_argument, 0, 'o'},
-        {"cpu",             no_argument,       0, 'c'},
-        {"help",            no_argument,       0, 'h'},
-        {0, 0, 0, 0}
-    };
+        {"cpu", no_argument, 0, 'c'},
+        {"help", no_argument, 0, 'h'},
+        {0, 0, 0, 0}};
     int opt, opt_index;
     while ((opt = getopt_long(argc, argv, "", long_opts, &opt_index)) != -1)
     {
         int ok = 1;
         switch (opt)
         {
-        case 'n': ok = parse_int(optarg, &nx); ny = nx; break;
-        case 'x': ok = parse_int(optarg, &nx); break;
-        case 'y': ok = parse_int(optarg, &ny); break;
-        case 'd': ok = parse_double(optarg, &dt); break;
-        case 'f': ok = parse_double(optarg, &tf); break;
-        case 'o': ok = parse_int(optarg, &output_interval); break;
-        case 'c': use_gpu = 0; break;
-        case 'h': usage(argv[0]); return 0;
-        default:  usage(argv[0]); return 1;
+        case 'n':
+            ok = parse_int(optarg, &nx);
+            ny = nx;
+            break;
+        case 'x':
+            ok = parse_int(optarg, &nx);
+            break;
+        case 'y':
+            ok = parse_int(optarg, &ny);
+            break;
+        case 'd':
+            ok = parse_double(optarg, &dt);
+            break;
+        case 'f':
+            ok = parse_double(optarg, &tf);
+            break;
+        case 'o':
+            ok = parse_int(optarg, &output_interval);
+            break;
+        case 'c':
+            use_gpu = 0;
+            break;
+        case 'h':
+            usage(argv[0]);
+            return 0;
+        default:
+            usage(argv[0]);
+            return 1;
         }
         if (!ok)
         {
@@ -163,9 +180,8 @@ int main(int argc, char *argv[])
     // processes can still take memory after this check, so it is a guard
     // against the clear cases only; backend_create() checks again for the
     // backend it actually uses.
-    double mem_needed = (double)nx * ny * 4.0 * (7.0 * (sizeof(double) + sizeof(int)) + sizeof(int))
-                      + backend_host_memory(nx, ny, use_gpu);
-    double mem_avail  = available_memory();
+    double mem_needed = (double)nx * ny * 4.0 * (7.0 * (sizeof(double) + sizeof(int)) + sizeof(int)) + backend_host_memory(nx, ny, use_gpu);
+    double mem_avail = available_memory();
     if (mem_avail >= 0. && mem_needed > mem_avail)
     {
         printf("** Error: a %d x %d grid needs about %.1f GB of memory; about %.1f GB is available **\n",
@@ -187,7 +203,6 @@ int main(int argc, char *argv[])
 #endif
     printf("Poisson SOR parameter: %lf\n", beta);
 
-
     // Boundary conditions (Dirichlet): wall velocities on the left (1), right
     // (2), bottom (3) and top (4) walls; the top wall is the moving lid
     double ui = 0., vi = 0.;
@@ -196,12 +211,12 @@ int main(int argc, char *argv[])
     wall_bc bc = {{u1, u2, u3, u4}, {v1, v2, v3, v4}};
 
     // Build sparse 1D operators then free them after Kronecker
-    smtrx sd_x  = SDiff1(nx, order, dx);
-    smtrx sd_y  = SDiff1(ny, order, dy);
+    smtrx sd_x = SDiff1(nx, order, dx);
+    smtrx sd_y = SDiff1(ny, order, dy);
     smtrx sd_x2 = SDiff2(nx, order, dx);
     smtrx sd_y2 = SDiff2(ny, order, dy);
-    smtrx sIx   = seye(nx);
-    smtrx sIy   = seye(ny);
+    smtrx sIx = seye(nx);
+    smtrx sIy = seye(ny);
 
     // Stability checks, before the 2D operators are built so that a run that
     // cannot work fails at once. The fastest wall is the velocity scale.
@@ -235,22 +250,36 @@ int main(int argc, char *argv[])
                dt, round_down_3(lim.advection));
 
     // Sparse 2D operators: DX = I_y x d_x,  DY = d_y x I_x
-    smtrx DX  = skronecker(sIy,   sd_x);
-    smtrx DY  = skronecker(sd_y,  sIx);
-    smtrx DX2 = skronecker(sIy,   sd_x2);
+    smtrx DX = skronecker(sIy, sd_x);
+    smtrx DY = skronecker(sd_y, sIx);
+    smtrx DX2 = skronecker(sIy, sd_x2);
     smtrx DY2 = skronecker(sd_y2, sIx);
 
-    freesm(sd_x); freesm(sd_y); freesm(sd_x2); freesm(sd_y2);
-    freesm(sIx);  freesm(sIy);
+    freesm(sd_x);
+    freesm(sd_y);
+    freesm(sd_x2);
+    freesm(sd_y2);
+    freesm(sIx);
+    freesm(sIy);
 
     // Everything that defines the run, for whichever backend runs it
     solver_config cfg;
-    cfg.nx = nx; cfg.ny = ny; cfg.dx = dx; cfg.dy = dy;
-    cfg.Re = Re; cfg.dt = dt; cfg.time_scheme = time_scheme;
-    cfg.poisson_type = poisson_type; cfg.poisson_max_it = poisson_max_it;
-    cfg.poisson_tol = poisson_tol; cfg.beta = beta;
+    cfg.nx = nx;
+    cfg.ny = ny;
+    cfg.dx = dx;
+    cfg.dy = dy;
+    cfg.Re = Re;
+    cfg.dt = dt;
+    cfg.time_scheme = time_scheme;
+    cfg.poisson_type = poisson_type;
+    cfg.poisson_max_it = poisson_max_it;
+    cfg.poisson_tol = poisson_tol;
+    cfg.beta = beta;
     cfg.bc = bc;
-    cfg.DX = &DX; cfg.DY = &DY; cfg.DX2 = &DX2; cfg.DY2 = &DY2;
+    cfg.DX = &DX;
+    cfg.DY = &DY;
+    cfg.DX2 = &DX2;
+    cfg.DY2 = &DY2;
 
     int it_max = (int)((tf / dt) - 1);
 
@@ -297,8 +326,7 @@ int main(int argc, char *argv[])
     }
 
     clock_gettime(CLOCK_MONOTONIC, &t_end);
-    double elapsed = (double)(t_end.tv_sec - t_start.tv_sec)
-                   + 1E-9 * (double)(t_end.tv_nsec - t_start.tv_nsec);
+    double elapsed = (double)(t_end.tv_sec - t_start.tv_sec) + 1E-9 * (double)(t_end.tv_nsec - t_start.tv_nsec);
 
     backend_fields(solver, &u, &v, &w);
 
@@ -314,7 +342,10 @@ int main(int argc, char *argv[])
            elapsed, 1E3 * elapsed / (it_max + 1), it_max + 1, backend_name(solver));
 
     backend_free(solver);
-    freesm(DX); freesm(DY); freesm(DX2); freesm(DY2);
+    freesm(DX);
+    freesm(DY);
+    freesm(DX2);
+    freesm(DY2);
 
     printf("Simulation complete!\n");
     return 0;

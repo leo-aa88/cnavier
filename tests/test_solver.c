@@ -43,11 +43,11 @@ static void check(const char *name, double value, double limit)
 
 typedef struct
 {
-    int           nx, ny;
-    smtrx         DX, DY, DX2, DY2;
+    int nx, ny;
+    smtrx DX, DY, DX2, DY2;
     solver_config cfg; // shared by the CPU and GPU solvers
-    rk4_ctx       ctx; // CPU workspace
-    mtrx          u, v, w;
+    rk4_ctx ctx;       // CPU workspace
+    mtrx u, v, w;
 } problem;
 
 // A lid-driven cavity on a unit square with nx x ny nodes (bc == NULL), or
@@ -62,30 +62,44 @@ static void problem_init(problem *p, int nx, int ny, int time_scheme, int poisso
     double dx = 1.0 / (nx - 1), dy = 1.0 / (ny - 1);
     wall_bc lid = {{0., 0., 0., 1.}, {0., 0., 0., 0.}};
 
-    p->nx = nx; p->ny = ny;
+    p->nx = nx;
+    p->ny = ny;
 
-    smtrx sd_x  = SDiff1(nx, order, dx);
-    smtrx sd_y  = SDiff1(ny, order, dy);
+    smtrx sd_x = SDiff1(nx, order, dx);
+    smtrx sd_y = SDiff1(ny, order, dy);
     smtrx sd_x2 = SDiff2(nx, order, dx);
     smtrx sd_y2 = SDiff2(ny, order, dy);
-    smtrx sIx   = seye(nx);
-    smtrx sIy   = seye(ny);
+    smtrx sIx = seye(nx);
+    smtrx sIy = seye(ny);
 
-    p->DX  = skronecker(sIy,   sd_x);
-    p->DY  = skronecker(sd_y,  sIx);
-    p->DX2 = skronecker(sIy,   sd_x2);
+    p->DX = skronecker(sIy, sd_x);
+    p->DY = skronecker(sd_y, sIx);
+    p->DX2 = skronecker(sIy, sd_x2);
     p->DY2 = skronecker(sd_y2, sIx);
 
-    freesm(sd_x); freesm(sd_y); freesm(sd_x2); freesm(sd_y2);
-    freesm(sIx);  freesm(sIy);
+    freesm(sd_x);
+    freesm(sd_y);
+    freesm(sd_x2);
+    freesm(sd_y2);
+    freesm(sIx);
+    freesm(sIy);
 
-    p->cfg.nx = nx; p->cfg.ny = ny; p->cfg.dx = dx; p->cfg.dy = dy;
-    p->cfg.Re = 100.; p->cfg.dt = dt; p->cfg.time_scheme = time_scheme;
+    p->cfg.nx = nx;
+    p->cfg.ny = ny;
+    p->cfg.dx = dx;
+    p->cfg.dy = dy;
+    p->cfg.Re = 100.;
+    p->cfg.dt = dt;
+    p->cfg.time_scheme = time_scheme;
     p->cfg.poisson_type = poisson_type;
-    p->cfg.poisson_max_it = 200000; p->cfg.poisson_tol = poisson_tol;
+    p->cfg.poisson_max_it = 200000;
+    p->cfg.poisson_tol = poisson_tol;
     p->cfg.beta = sor_beta(nx, ny, dx, dy);
     p->cfg.bc = bc ? *bc : lid;
-    p->cfg.DX = &p->DX; p->cfg.DY = &p->DY; p->cfg.DX2 = &p->DX2; p->cfg.DY2 = &p->DY2;
+    p->cfg.DX = &p->DX;
+    p->cfg.DY = &p->DY;
+    p->cfg.DX2 = &p->DX2;
+    p->cfg.DY2 = &p->DY2;
     p->ctx = rk4_alloc(&p->cfg);
 
     p->u = initm(ny, nx);
@@ -95,8 +109,13 @@ static void problem_init(problem *p, int nx, int ny, int time_scheme, int poisso
 
 static void problem_free(problem *p)
 {
-    freem(&p->u); freem(&p->v); freem(&p->w);
-    freesm(p->DX); freesm(p->DY); freesm(p->DX2); freesm(p->DY2);
+    freem(&p->u);
+    freem(&p->v);
+    freem(&p->w);
+    freesm(p->DX);
+    freesm(p->DY);
+    freesm(p->DX2);
+    freesm(p->DY2);
     rk4_free(&p->ctx);
 }
 
@@ -145,14 +164,16 @@ static void continuity_range(problem *p, double *cmax, double *cmin)
 
     spmv(p->DX, p->u.M, dudx);
     spmv(p->DY, p->v.M, dvdy);
-    *cmax = -__DBL_MAX__; *cmin = __DBL_MAX__;
+    *cmax = -__DBL_MAX__;
+    *cmin = __DBL_MAX__;
     for (k = 0; k < n; k++)
     {
         double c = dudx[k] + dvdy[k];
         if (c > *cmax) *cmax = c;
         if (c < *cmin) *cmin = c;
     }
-    free(dudx); free(dvdy);
+    free(dudx);
+    free(dvdy);
 }
 
 // ---------------------------------------------------------------------------
@@ -207,20 +228,34 @@ static void test_linearalg(void)
     // Element-wise helpers
     mtrx m = initm(3, 4), m2 = initm(3, 4);
     double flat[12];
-    for (i = 0; i < 12; i++) m.M[i] = (i % 5) - 2.5 * (i == 7) + 3.0 * (i == 2);
+    for (i = 0; i < 12; i++)
+        m.M[i] = (i % 5) - 2.5 * (i == 7) + 3.0 * (i == 2);
     flatten(m, flat, 3, 4);
     unflatten(flat, m2, 3, 4);
     check("flatten / unflatten round trip", rel_diff(m2.M, m.M, 12), 0.0);
     check("maxel", fabs(maxel(m) - 5.0), 0.0);
     check("minel", fabs(minel(m) - (-0.5)), 0.0);
     negcpy(m2, m);
-    for (i = 0; i < 12; i++) m2.M[i] += m.M[i];
+    for (i = 0; i < 12; i++)
+        m2.M[i] += m.M[i];
     check("negcpy", max_abs(m2.M, 12), 0.0);
 
-    freem(&x); freem(&y_dense); freem(&d); freem(&a); freem(&b);
-    freem(&k_dense); freem(&k_sparse); freem(&e_dense); freem(&e_sparse);
-    freem(&m); freem(&m2);
-    freesm(s); freesm(s1); freesm(s2); freesm(ks); freesm(se);
+    freem(&x);
+    freem(&y_dense);
+    freem(&d);
+    freem(&a);
+    freem(&b);
+    freem(&k_dense);
+    freem(&k_sparse);
+    freem(&e_dense);
+    freem(&e_sparse);
+    freem(&m);
+    freem(&m2);
+    freesm(s);
+    freesm(s1);
+    freesm(s2);
+    freesm(ks);
+    freesm(se);
 }
 
 // ---------------------------------------------------------------------------
@@ -259,8 +294,10 @@ static void test_finitediff_exactness(void)
                     int k;
                     for (k = S.row_ptr[r]; k < S.row_ptr[r + 1]; k++)
                         sum += S.values[k] * pow((S.col_idx[k] - r) * dx, p);
-                    if (isnan(sum)) worst = NAN;
-                    else if (!isnan(worst) && fabs(sum - expect) > worst) worst = fabs(sum - expect);
+                    if (isnan(sum))
+                        worst = NAN;
+                    else if (!isnan(worst) && fabs(sum - expect) > worst)
+                        worst = fabs(sum - expect);
                 }
             }
             snprintf(name, sizeof(name), "order %d, %s derivative: every row exact", order,
@@ -298,13 +335,18 @@ static void test_finitediff_rows(void)
 
     printf("CPU: finite-difference operators, rows written out\n");
     {
-        int c0[] = {0, 1};         double v0[] = {-h, h};
-        int c1[] = {0, 2};         double v1[] = {-0.5 * h, 0.5 * h};
-        int c2[] = {0, 1, 3, 4};   double v2[] = {1.0 / 12.0 * h, -2.0 / 3.0 * h, 2.0 / 3.0 * h, -1.0 / 12.0 * h};
+        int c0[] = {0, 1};
+        double v0[] = {-h, h};
+        int c1[] = {0, 2};
+        double v1[] = {-0.5 * h, 0.5 * h};
+        int c2[] = {0, 1, 3, 4};
+        double v2[] = {1.0 / 12.0 * h, -2.0 / 3.0 * h, 2.0 / 3.0 * h, -1.0 / 12.0 * h};
         int c5[] = {2, 3, 4, 6, 7, 8};
         double v5[] = {-1.0 / 60.0 * h, 3.0 / 20.0 * h, -3.0 / 4.0 * h, 3.0 / 4.0 * h, -3.0 / 20.0 * h, 1.0 / 60.0 * h};
-        int c8[] = {7, 9};         double v8[] = {-0.5 * h, 0.5 * h};
-        int c9[] = {8, 9};         double v9[] = {-h, h};
+        int c8[] = {7, 9};
+        double v8[] = {-0.5 * h, 0.5 * h};
+        int c9[] = {8, 9};
+        double v9[] = {-h, h};
         worst = fmax(worst, row_diff(d1, 0, 2, c0, v0));
         worst = fmax(worst, row_diff(d1, 1, 2, c1, v1));
         worst = fmax(worst, row_diff(d1, 2, 4, c2, v2));
@@ -316,12 +358,15 @@ static void test_finitediff_rows(void)
 
     worst = 0.0;
     {
-        int c0[] = {0, 1, 2, 3};   double v0[] = {2 * h2, -5 * h2, 4 * h2, -1 * h2};
-        int c1[] = {0, 1, 2};      double v1[] = {h2, -2 * h2, h2};
+        int c0[] = {0, 1, 2, 3};
+        double v0[] = {2 * h2, -5 * h2, 4 * h2, -1 * h2};
+        int c1[] = {0, 1, 2};
+        double v1[] = {h2, -2 * h2, h2};
         int c5[] = {2, 3, 4, 5, 6, 7, 8};
         double v5[] = {1.0 / 90.0 * h2, -3.0 / 20.0 * h2, 3.0 / 2.0 * h2, -49.0 / 18.0 * h2,
                        3.0 / 2.0 * h2, -3.0 / 20.0 * h2, 1.0 / 90.0 * h2};
-        int c9[] = {6, 7, 8, 9};   double v9[] = {-1 * h2, 4 * h2, -5 * h2, 2 * h2};
+        int c9[] = {6, 7, 8, 9};
+        double v9[] = {-1 * h2, 4 * h2, -5 * h2, 2 * h2};
         worst = fmax(worst, row_diff(d2, 0, 4, c0, v0));
         worst = fmax(worst, row_diff(d2, 1, 3, c1, v1));
         worst = fmax(worst, row_diff(d2, 5, 7, c5, v5));
@@ -329,7 +374,8 @@ static void test_finitediff_rows(void)
     }
     check("second derivative, order 6: rows 0, 1, 5, 9", worst, 1E-12);
 
-    freesm(d1); freesm(d2);
+    freesm(d1);
+    freesm(d2);
 }
 
 // Run the cavity from rest to time T and return w
@@ -414,17 +460,22 @@ static void test_wall_bc(void)
     double bad = 0.0;
 
     printf("Unit: wall velocities\n");
-    for (i = 0; i < nx * ny; i++) u.M[i] = v.M[i] = -1.0;
+    for (i = 0; i < nx * ny; i++)
+        u.M[i] = v.M[i] = -1.0;
     apply_wall_bc(u, v, &bc);
     for (i = 0; i < ny; i++)
         for (j = 0; j < nx; j++)
         {
-            int wall = (j == 0) ? 0 : (j == nx - 1) ? 1 : (i == 0) ? 2 : (i == ny - 1) ? 3 : -1;
+            int wall = (j == 0) ? 0 : (j == nx - 1) ? 1
+                                  : (i == 0)        ? 2
+                                  : (i == ny - 1)   ? 3
+                                                    : -1;
             double eu = wall < 0 ? -1.0 : bc.u[wall], ev = wall < 0 ? -1.0 : bc.v[wall];
             bad += fabs(MAt(u, i, j) - eu) + fabs(MAt(v, i, j) - ev);
         }
     check("every node has its wall's velocity, interior untouched", bad, 0.0);
-    freem(&u); freem(&v);
+    freem(&u);
+    freem(&v);
 }
 
 // Count the numbers in a file after the line starting with `after`
@@ -474,12 +525,25 @@ static void test_output(void)
     // Files of an earlier run: one this run overwrites, one it would not reach
     // (a later frame of a longer run), and one of another series
     f = fopen("output/unittest-1-0.vtk", "w");
-    if (f) { fprintf(f, "stale\n1 2 3\n"); fclose(f); }
+    if (f)
+    {
+        fprintf(f, "stale\n1 2 3\n");
+        fclose(f);
+    }
     f = fopen("output/unittest-1-5.vtk", "w");
-    if (f) { fprintf(f, "stale\n"); fclose(f); }
+    if (f)
+    {
+        fprintf(f, "stale\n");
+        fclose(f);
+    }
     f = fopen("output/other-1-5.vtk", "w");
-    if (f) { fprintf(f, "keep\n"); fclose(f); }
-    for (i = 0; i < nx * ny; i++) a.M[i] = 0.5 * i;
+    if (f)
+    {
+        fprintf(f, "keep\n");
+        fclose(f);
+    }
+    for (i = 0; i < nx * ny; i++)
+        a.M[i] = 0.5 * i;
     printvtk(a, "unittest", 1.0 / (nx - 1), 1.0 / (ny - 1));
     f = fopen("output/unittest-1-0.vtk", "r");
     int header = f && fgets(line, sizeof(line), f) && strncmp(line, "# vtk DataFile", 14) == 0;
@@ -515,7 +579,11 @@ static void test_output(void)
         double coord, val;
         int rows = 0;
         f = fopen(c == 0 ? "output/centerline_u_sim.csv" : "output/centerline_v_sim.csv", "r");
-        if (!f || !fgets(line, sizeof(line), f)) { worst = INFINITY; break; }
+        if (!f || !fgets(line, sizeof(line), f))
+        {
+            worst = INFINITY;
+            break;
+        }
         while (fgets(line, sizeof(line), f))
         {
             char *end, *comma;
@@ -538,10 +606,13 @@ static void test_output(void)
     const char *names[] = {"output/unittest-1-0.vtk", "output/other-1-5.vtk", "output/centerline_u_sim.csv",
                            "output/centerline_v_sim.csv", "output/centerline_u_ghia.csv",
                            "output/centerline_v_ghia.csv"};
-    for (i = 0; i < 6; i++) remove(names[i]);
+    for (i = 0; i < 6; i++)
+        remove(names[i]);
     rmdir("output");
     if (chdir(cwd) == 0) rmdir(tmpl);
-    freem(&a); freem(&u); freem(&v);
+    freem(&a);
+    freem(&u);
+    freem(&v);
 }
 
 // ---------------------------------------------------------------------------
@@ -573,18 +644,41 @@ static void test_cpu_operator_axes(int nx, int ny)
             {
                 double x = j * p.cfg.dx, y = i * p.cfg.dy;
                 k = i * nx + j;
-                if (op == 0) { f[k] = x * (1 + y * y); e[k] = 1 + y * y; }
-                if (op == 1) { f[k] = y * (1 + x * x); e[k] = 1 + x * x; }
-                if (op == 2) { f[k] = x * x * (1 + y); e[k] = 2 * (1 + y); }
-                if (op == 3) { f[k] = y * y * (1 + x); e[k] = 2 * (1 + x); }
+                if (op == 0)
+                {
+                    f[k] = x * (1 + y * y);
+                    e[k] = 1 + y * y;
+                }
+                if (op == 1)
+                {
+                    f[k] = y * (1 + x * x);
+                    e[k] = 1 + x * x;
+                }
+                if (op == 2)
+                {
+                    f[k] = x * x * (1 + y);
+                    e[k] = 2 * (1 + y);
+                }
+                if (op == 3)
+                {
+                    f[k] = y * y * (1 + x);
+                    e[k] = 2 * (1 + x);
+                }
             }
-        spmv(op == 0 ? p.DX : op == 1 ? p.DY : op == 2 ? p.DX2 : p.DY2, f, d);
+        spmv(op == 0 ? p.DX : op == 1 ? p.DY
+                          : op == 2   ? p.DX2
+                                      : p.DY2,
+             f, d);
         err = rel_diff(d, e, N);
-        snprintf(name, sizeof(name), "%s exact on its test polynomial", op == 0 ? "DX" : op == 1 ? "DY" : op == 2 ? "DX2" : "DY2");
+        snprintf(name, sizeof(name), "%s exact on its test polynomial", op == 0 ? "DX" : op == 1 ? "DY"
+                                                                                     : op == 2   ? "DX2"
+                                                                                                 : "DY2");
         check(name, err, 1E-9);
     }
 
-    free(f); free(d); free(e);
+    free(f);
+    free(d);
+    free(e);
     problem_free(&p);
 }
 
@@ -599,15 +693,13 @@ static void test_cpu_poisson_fft(int nx, int ny)
     char name[96];
     double dx = 1.0 / (nx - 1), dy = 1.0 / (ny - 1);
     mtrx f = initm(ny, nx), psi = initm(ny, nx), expected = initm(ny, nx);
-    double lambda = (2.0 * cos(PI * p / (double)(ny - 1)) - 2.0) / (dy * dy)
-                  + (2.0 * cos(PI * q / (double)(nx - 1)) - 2.0) / (dx * dx);
+    double lambda = (2.0 * cos(PI * p / (double)(ny - 1)) - 2.0) / (dy * dy) + (2.0 * cos(PI * q / (double)(nx - 1)) - 2.0) / (dx * dx);
 
     printf("CPU: FFT Poisson solver against an exact eigenmode, %dx%d grid\n", nx, ny);
     for (i = 1; i < ny - 1; i++)
         for (j = 1; j < nx - 1; j++)
         {
-            MAt(f, i, j) = sin(PI * i * p / (double)(ny - 1))
-                         * sin(PI * j * q / (double)(nx - 1));
+            MAt(f, i, j) = sin(PI * i * p / (double)(ny - 1)) * sin(PI * j * q / (double)(nx - 1));
             MAt(expected, i, j) = MAt(f, i, j) / lambda;
         }
 
@@ -617,7 +709,9 @@ static void test_cpu_poisson_fft(int nx, int ny)
     snprintf(name, sizeof(name), "psi vs eigenmode / eigenvalue, %dx%d", nx, ny);
     check(name, rel_diff(psi.M, expected.M, nx * ny), 1E-10);
 
-    freem(&f); freem(&psi); freem(&expected);
+    freem(&f);
+    freem(&psi);
+    freem(&expected);
 }
 
 // Largest |value| on the wall nodes
@@ -642,9 +736,7 @@ static double poisson_residual(mtrx f, mtrx psi, double dx, double dy)
     for (i = 1; i < f.m - 1; i++)
         for (j = 1; j < f.n - 1; j++)
         {
-            r = (MAt(psi, i+1, j) - 2.0 * MAt(psi, i, j) + MAt(psi, i-1, j)) / (dy * dy)
-              + (MAt(psi, i, j+1) - 2.0 * MAt(psi, i, j) + MAt(psi, i, j-1)) / (dx * dx)
-              - MAt(f, i, j);
+            r = (MAt(psi, i + 1, j) - 2.0 * MAt(psi, i, j) + MAt(psi, i - 1, j)) / (dy * dy) + (MAt(psi, i, j + 1) - 2.0 * MAt(psi, i, j) + MAt(psi, i, j - 1)) / (dx * dx) - MAt(f, i, j);
             if (isnan(r)) return NAN;
             if (fabs(r) > rmax) rmax = fabs(r);
         }
@@ -676,7 +768,11 @@ static void test_cpu_poisson_agree(int nx, int ny)
     check("psi on the wall nodes, all three solvers",
           wall_max(fft) + wall_max(sor) + wall_max(gs), 0.0);
 
-    freem(&f); freem(&fft); freem(&sor); freem(&gs); freem(&scratch);
+    freem(&f);
+    freem(&fft);
+    freem(&sor);
+    freem(&gs);
+    freem(&scratch);
 }
 
 // On a strongly anisotropic grid (dx != dy) the SOR parameter must account
@@ -692,7 +788,9 @@ static void test_cpu_sor_anisotropic(int nx, int ny, int max_iterations)
     int k = poisson_SOR(f, psi, scratch, dx, dy, 100000, 1E-3, sor_beta(nx, ny, dx, dy));
     snprintf(name, sizeof(name), "SOR iterations at the shipped tolerance (%d)", k);
     check(name, k, max_iterations);
-    freem(&f); freem(&psi); freem(&scratch);
+    freem(&f);
+    freem(&psi);
+    freem(&scratch);
 }
 
 static void test_cpu_poisson_iterative(void)
@@ -710,7 +808,9 @@ static void test_cpu_poisson_iterative(void)
     poisson_SOR(f, psi, scratch, dx, dx, 200000, 1E-9, beta);
     check("SOR residual", poisson_residual(f, psi, dx, dx), 1E-4);
 
-    freem(&f); freem(&psi); freem(&scratch);
+    freem(&f);
+    freem(&psi);
+    freem(&scratch);
 }
 
 // Short lid-driven cavity run: the fields must stay finite, the lid must
@@ -847,8 +947,12 @@ static void run_threads(int n, int scheme, int poisson_type, int steps, int thre
     for (t = 0; t < steps; t++)
         step(p.w, p.u, p.v, &p.ctx);
     omp_set_num_threads(saved);
-    out[0] = initm(n, n); out[1] = initm(n, n); out[2] = initm(n, n);
-    mtrxcpy(out[0], p.w); mtrxcpy(out[1], p.u); mtrxcpy(out[2], p.v);
+    out[0] = initm(n, n);
+    out[1] = initm(n, n);
+    out[2] = initm(n, n);
+    mtrxcpy(out[0], p.w);
+    mtrxcpy(out[1], p.u);
+    mtrxcpy(out[2], p.v);
     problem_free(&p);
 }
 
@@ -870,7 +974,8 @@ static void test_openmp_thread_count(int scheme, int poisson_type, const char *l
     for (k = 0; k < 3; k++)
     {
         diff += memcmp(one[k].M, many[k].M, (size_t)n * n * sizeof(double)) != 0;
-        freem(&one[k]); freem(&many[k]);
+        freem(&one[k]);
+        freem(&many[k]);
     }
     snprintf(name, sizeof(name), "%s: w, u, v bitwise identical", label);
     check(name, diff, 0.0);
@@ -1039,14 +1144,18 @@ static void test_backend(void)
         backend_get_fields(b, &u, &v, &w);
         check("GPU backend vs CPU: w", rel_diff(w.M, p.w.M, N), 1E-11);
         check("GPU backend vs CPU: u", rel_diff(u.M, p.u.M, N), 1E-11);
-        freem(&u0); freem(&v0); freem(&w0);
+        freem(&u0);
+        freem(&v0);
+        freem(&w0);
     }
     else
         n_skipped++;
     backend_free(b);
 #endif
 
-    freem(&u); freem(&v); freem(&w);
+    freem(&u);
+    freem(&v);
+    freem(&w);
     problem_free(&p);
 }
 
@@ -1090,7 +1199,9 @@ static void test_gpu_spmv(int nx, int ny)
         check(name, rel_diff(y_gpu, y_cpu, N), 1E-12);
     }
 
-    free(x); free(y_cpu); free(y_gpu);
+    free(x);
+    free(y_cpu);
+    free(y_gpu);
     gpu_free(g);
     problem_free(&p);
 }
@@ -1128,7 +1239,10 @@ static void test_gpu_poisson(int nx, int ny, int poisson_type, const char *label
         check(name, poisson_residual(f, psi_gpu, p.cfg.dx, p.cfg.dy), 1E-4);
     }
 
-    freem(&w); freem(&f); freem(&psi_cpu); freem(&psi_gpu);
+    freem(&w);
+    freem(&f);
+    freem(&psi_cpu);
+    freem(&psi_gpu);
     gpu_free(g);
     problem_free(&p);
 }
@@ -1161,7 +1275,9 @@ static void test_gpu_step(int nx, int ny, int steps, double dt, int time_scheme,
     snprintf(name, sizeof(name), "%s: v vs CPU", label);
     check(name, rel_diff(v.M, p.v.M, N), limit);
 
-    freem(&u); freem(&v); freem(&w);
+    freem(&u);
+    freem(&v);
+    freem(&w);
     gpu_free(g);
     problem_free(&p);
 }
@@ -1199,13 +1315,22 @@ static void test_gpu_fields(int n)
     check("continuity max vs CPU", fabs(cmax_gpu - cmax_cpu) / fabs(cmax_cpu), 1E-12);
     check("continuity min vs CPU", fabs(cmin_gpu - cmin_cpu) / fabs(cmin_cpu), 1E-12);
 
-    freem(&u); freem(&v); freem(&w);
+    freem(&u);
+    freem(&v);
+    freem(&w);
     gpu_free(g);
     problem_free(&p);
 }
 
 // Run a GPU test, or count it as skipped when there is no device to run it on
-#define GPU_TEST(call) do { if (have_gpu) (call); else n_skipped++; } while (0)
+#define GPU_TEST(call)   \
+    do                   \
+    {                    \
+        if (have_gpu)    \
+            (call);      \
+        else             \
+            n_skipped++; \
+    } while (0)
 
 static void run_gpu_tests(void)
 {

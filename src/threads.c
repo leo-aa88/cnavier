@@ -57,7 +57,10 @@ int physical_cores(void)
 
 #else
 // Elsewhere the topology is not read, and the OpenMP default applies
-int physical_cores(void) { return 0; }
+int physical_cores(void)
+{
+    return 0;
+}
 #endif
 
 #ifdef _OPENMP
@@ -79,5 +82,7 @@ void default_threads(void)
     if (cores > 0 && cores < omp_get_max_threads()) omp_set_num_threads(cores);
 }
 #else
-void default_threads(void) {}
+void default_threads(void)
+{
+}
 #endif
