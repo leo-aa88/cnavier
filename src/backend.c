@@ -22,7 +22,7 @@ struct backend
 
     // CPU solver only: workspace, and scratch for the continuity check
     rk4_ctx ws;
-    mtrx    dudx, dvdy;
+    mtrx dudx, dvdy;
 };
 
 static int on_gpu(const backend *b)
@@ -89,10 +89,10 @@ backend *backend_create(const solver_config *cfg, int prefer_gpu)
 #endif
 
     require_memory(backend_host_memory(cfg->nx, cfg->ny, 0), "CPU backend");
-    b->ws   = rk4_alloc(&b->cfg);
-    b->u    = initm(cfg->ny, cfg->nx);
-    b->v    = initm(cfg->ny, cfg->nx);
-    b->w    = initm(cfg->ny, cfg->nx);
+    b->ws = rk4_alloc(&b->cfg);
+    b->u = initm(cfg->ny, cfg->nx);
+    b->v = initm(cfg->ny, cfg->nx);
+    b->w = initm(cfg->ny, cfg->nx);
     b->dudx = initm(cfg->ny, cfg->nx);
     b->dvdy = initm(cfg->ny, cfg->nx);
     return b;
@@ -105,14 +105,19 @@ void backend_free(backend *b)
     if (b->gpu)
     {
         gpu_free(b->gpu);
-        freem(&b->u); freem(&b->v); freem(&b->w);
+        freem(&b->u);
+        freem(&b->v);
+        freem(&b->w);
         free(b);
         return;
     }
 #endif
     rk4_free(&b->ws);
-    freem(&b->u); freem(&b->v); freem(&b->w);
-    freem(&b->dudx); freem(&b->dvdy);
+    freem(&b->u);
+    freem(&b->v);
+    freem(&b->w);
+    freem(&b->dudx);
+    freem(&b->dvdy);
     free(b);
 }
 

@@ -1,32 +1,88 @@
 name: CI
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
+    paths-ignore: ["**/*.md", "docs/**"]
   pull_request:
+    paths-ignore: ["**/*.md", "docs/**"]
+
+# Every job runs on Ubuntu 22.04: its clang-format, clang-tidy and cppcheck are
+# the versions .clang-format, .clang-tidy and the Makefile were checked with.
+# Each check is a make target, so it can be run locally the same way.
+env:
+  APT: sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -y
 
 jobs:
-  cpu:
-    name: CPU build and tests
+  lint:
+    name: Formatting
     runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install clang-format
+        run: $APT update && $APT install clang-format
+      - name: make format-check
+        run: make format-check
+
+  static-analysis:
+    name: Static analysis and warnings
+    needs: lint
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: $APT update && $APT install libfftw3-dev cppcheck clang clang-tidy libomp-dev
+      - name: make cppcheck
+        run: make cppcheck
+      - name: make tidy
+        run: make tidy
+      - name: gcc -Wextra -Werror, serial and OpenMP
+        run: |
+          make WERROR=1 cnavier test_cnavier
+          make WERROR=1 OPENMP=1 cnavier test_cnavier
+      - name: clang -Wextra -Werror, serial and OpenMP
+        run: |
+          make CC=clang WERROR=1 cnavier test_cnavier
+          make CC=clang WERROR=1 OPENMP=1 cnavier test_cnavier
+
+  build:
+    name: Build (${{ matrix.config }})
+    needs: static-analysis
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        config: [serial, openmp]
     steps:
       - uses: actions/checkout@v4
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y libfftw3-dev
-      - name: Serial build and tests
-        run: make test
-      - name: OpenMP build and tests
-        run: make OPENMP=1 test
+        run: $APT update && $APT install libfftw3-dev
+      - name: Build solver and tests
+        run: make ${{ matrix.config == 'openmp' && 'OPENMP=1' || '' }} cnavier test_cnavier
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cnavier-${{ matrix.config }}
+          path: |
+            cnavier
+            test_cnavier
+          if-no-files-found: error
+          retention-days: 7
 
   cuda:
     name: CUDA build
+    needs: static-analysis
     runs-on: ubuntu-22.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y libfftw3-dev nvidia-cuda-toolkit
-      - name: Build solver and tests with CUDA
-        run: make CUDA=1 cnavier test_cnavier
+        run: $APT update && $APT install libfftw3-dev nvidia-cuda-toolkit
+      - name: Build solver and tests with CUDA, -Wextra -Werror
+        run: make CUDA=1 WERROR=1 cnavier test_cnavier
       # Hosted runners have no GPU, so the GPU tests cannot run here. The CPU
       # checks must pass and the suite must say the GPU ones were skipped
       # (exit status 77) rather than report a clean pass.
@@ -36,3 +92,44 @@ jobs:
           ./test_cnavier || status=$?
           echo "exit status: $status"
           test "$status" -eq 77
+
+  test:
+    name: Tests (${{ matrix.config }})
+    needs: build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        config: [serial, openmp]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: $APT update && $APT install libfftw3-dev
+      - uses: actions/download-artifact@v4
+        with:
+          name: cnavier-${{ matrix.config }}
+      - name: Restore execute permissions
+        run: chmod +x cnavier test_cnavier
+      # The same commands as make test, make test-cli and make regression,
+      # run on the binaries from the build job
+      - name: Unit and solver tests
+        run: ./test_cnavier
+      - name: Command line
+        run: tests/cli.sh "$PWD/cnavier"
+      - name: Regression (stored results and Ghia et al.)
+        run: tests/regression.sh "$PWD/cnavier"
+
+  memory:
+    name: Memory checks
+    needs: build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: $APT update && $APT install libfftw3-dev valgrind
+      - name: make test-asan (AddressSanitizer + UndefinedBehaviorSanitizer)
+        run: make test-asan
+      - name: make valgrind (any leak, including still-reachable memory, fails)
+        run: make valgrind

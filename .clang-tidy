@@ -1,0 +1,9 @@
+# clang-tidy configuration, used by `make tidy` and CI
+Checks: >
+  -*,
+  bugprone-*,
+  clang-analyzer-*,
+  cert-err34-c,
+  -bugprone-easily-swappable-parameters,
+  -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling
+WarningsAsErrors: '*'

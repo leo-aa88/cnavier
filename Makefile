@@ -21,6 +21,18 @@ ifeq ($(CUDA),1)
   CC_LIBS += -lcufft -lcudart -lstdc++
 endif
 
+# Stricter warnings, as in CI: make WERROR=1
+ifeq ($(WERROR),1)
+  CC_FLAGS += -Wextra -Werror
+  NVCC_WERROR = -Werror all-warnings -Xcompiler -Wall,-Wextra,-Werror
+endif
+
+# AddressSanitizer and UndefinedBehaviorSanitizer: make SANITIZE=1 (CPU builds)
+ifeq ($(SANITIZE),1)
+  CC_FLAGS += -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer
+  CC_LIBS += -fsanitize=address,undefined
+endif
+
 SRC_DIR=src
 HDR_DIR=include/
 OBJ_DIR=obj
@@ -48,7 +60,7 @@ $(OBJ_DIR)/%.o: $(SRC_DIR)/%.c $(CONFIG)
 	$(CC) $(CC_FLAGS) -c $< -I$(HDR_DIR) -o $@ $(LFLAGS)
 
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.cu $(CONFIG)
-	$(NVCC) $(NVCC_FLAGS) -c $< -I$(HDR_DIR) -o $@
+	$(NVCC) $(NVCC_FLAGS) $(NVCC_WERROR) -c $< -I$(HDR_DIR) -o $@
 
 $(OBJ_DIR)/%.o: $(TEST_DIR)/%.c $(CONFIG)
 	$(CC) $(CC_FLAGS) -c $< -I$(HDR_DIR) -o $@
@@ -57,7 +69,7 @@ $(OBJ_DIR):
 	mkdir $@
 
 $(CONFIG): FORCE | $(OBJ_DIR)
-	@echo '$(CC) $(CC_FLAGS) $(NVCC) $(NVCC_FLAGS)' | cmp -s - $@ || echo '$(CC) $(CC_FLAGS) $(NVCC) $(NVCC_FLAGS)' > $@
+	@echo '$(CC) $(CC_FLAGS) $(NVCC) $(NVCC_FLAGS) $(NVCC_WERROR)' | cmp -s - $@ || echo '$(CC) $(CC_FLAGS) $(NVCC) $(NVCC_FLAGS) $(NVCC_WERROR)' > $@
 
 # Tests: make test (add CUDA=1 to also check the GPU backend against the CPU)
 $(TEST_BIN): $(OBJ_DIR)/test_solver.o $(filter-out $(OBJ_DIR)/main.o, $(OBJ_FILES))
@@ -66,9 +78,68 @@ $(TEST_BIN): $(OBJ_DIR)/test_solver.o $(filter-out $(OBJ_DIR)/main.o, $(OBJ_FILE
 test: $(OBJ_DIR) $(TEST_BIN)
 	./$(TEST_BIN)
 
+# ---------------------------------------------------------------------------
+# Checks. CI runs each of these as one step (.github/workflows/ci.yml).
+# ---------------------------------------------------------------------------
+
+CLANG_FORMAT ?= clang-format
+CLANG_TIDY   ?= clang-tidy
+CPPCHECK     ?= cppcheck
+VALGRIND     ?= valgrind
+
+FORMAT_FILES = $(wildcard $(SRC_DIR)/*.c $(SRC_DIR)/*.cu $(HDR_DIR)*.h $(TEST_DIR)/*.c)
+LINT_FILES   = $(wildcard $(SRC_DIR)/*.c $(TEST_DIR)/*.c)
+
+# A short solver run, in a scratch directory so output/ is left alone
+SMOKE_RUN = $(TEST_DIR)/run_in_tmp.sh
+SMOKE_ARGS = --tf 0.05 --output-interval 5
+
+VALGRIND_FLAGS = --leak-check=full --show-leak-kinds=all --errors-for-leak-kinds=all \
+                 --error-exitcode=1 --quiet
+
+# Rewrite the sources in the style of .clang-format
+format:
+	$(CLANG_FORMAT) -i $(FORMAT_FILES)
+
+format-check:
+	$(CLANG_FORMAT) --dry-run --Werror $(FORMAT_FILES)
+
+cppcheck:
+	$(CPPCHECK) --enable=warning,performance,portability --std=c11 --error-exitcode=1 \
+	            --inline-suppr --quiet -I$(HDR_DIR) $(LINT_FILES)
+
+# Checks are listed in .clang-tidy. Run twice so that the code behind
+# #ifdef USE_CUDA and #ifdef _OPENMP is analysed too. cppcheck explores those
+# configurations by itself. Neither tool reads the CUDA source; nvcc's own
+# warnings are errors with WERROR=1.
+tidy:
+	$(CLANG_TIDY) --quiet $(LINT_FILES) -- -I$(HDR_DIR) -std=gnu11
+	$(CLANG_TIDY) --quiet $(LINT_FILES) -- -I$(HDR_DIR) -std=gnu11 -DUSE_CUDA -fopenmp
+
+# Test suite and a short solver run under ASan + UBSan
+test-asan:
+	$(MAKE) SANITIZE=1 $(BIN_FILE) $(TEST_BIN)
+	./$(TEST_BIN)
+	$(SMOKE_RUN) $(CURDIR)/$(BIN_FILE) $(SMOKE_ARGS)
+
+# Test suite and a short solver run under valgrind; any leak, including
+# memory still reachable at exit, is an error. Use a serial CPU build: the
+# OpenMP and CUDA runtimes keep memory of their own.
+valgrind: $(OBJ_DIR) $(BIN_FILE) $(TEST_BIN)
+	$(VALGRIND) $(VALGRIND_FLAGS) ./$(TEST_BIN) > /dev/null
+	$(SMOKE_RUN) $(VALGRIND) $(VALGRIND_FLAGS) $(CURDIR)/$(BIN_FILE) $(SMOKE_ARGS) > /dev/null
+
+# Invalid command lines must be refused without writing anything
+test-cli: $(OBJ_DIR) $(BIN_FILE)
+	$(TEST_DIR)/cli.sh $(CURDIR)/$(BIN_FILE)
+
+# A short run against stored results, and the default case against Ghia et al.
+regression: $(OBJ_DIR) $(BIN_FILE)
+	$(TEST_DIR)/regression.sh $(CURDIR)/$(BIN_FILE)
+
 clean:
 	rm -rf $(BIN_FILE) $(TEST_BIN) $(OBJ_DIR) $(TBN_DIR) output/*.vtk
 
 FORCE:
 
-.PHONY: all test clean FORCE
+.PHONY: all test clean FORCE format format-check cppcheck tidy test-asan valgrind test-cli regression

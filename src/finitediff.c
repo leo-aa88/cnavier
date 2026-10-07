@@ -10,9 +10,9 @@
 // not stored.
 typedef struct
 {
-    int    *row, *col;
+    int *row, *col;
     double *val;
-    int     count, cap;
+    int count, cap;
 } op_builder;
 
 static void op_set(op_builder *D, int i, int j, double v)
@@ -51,7 +51,7 @@ static smtrx op_to_csr(op_builder *D, int n)
 {
     int i, k, a, b, pos;
     int *count = (int *)calloc(n + 1, sizeof(int));
-    int *order = (int *)malloc((D->count > 0 ? D->count : 1) * sizeof(int));
+    int *order = (int *)calloc(D->count > 0 ? D->count : 1, sizeof(int));
     if (!count || !order)
     {
         printf("** Error: insufficient memory for finite-difference operator **\n");
@@ -93,7 +93,7 @@ static smtrx op_to_csr(op_builder *D, int n)
                 continue;
             if (D->val[k] != 0.0)
             {
-                S.values[pos]  = D->val[k];
+                S.values[pos] = D->val[k];
                 S.col_idx[pos] = D->col[k];
                 pos++;
             }
@@ -138,10 +138,10 @@ static void build_diff1(op_builder *D, int n, int o, double dx)
         op_set(D, 1, 2, (double)0.5 / dx);
         for (i = 2; i < (n - 2); i++)
         {
-            op_set(D, i, i - 2,  1.0 / 12.0 / dx);
-            op_set(D, i, i - 1, -2.0 /  3.0 / dx);
+            op_set(D, i, i - 2, 1.0 / 12.0 / dx);
+            op_set(D, i, i - 1, -2.0 / 3.0 / dx);
             op_set(D, i, i, 0);
-            op_set(D, i, i + 1,  2.0 /  3.0 / dx);
+            op_set(D, i, i + 1, 2.0 / 3.0 / dx);
             op_set(D, i, i + 2, -1.0 / 12.0 / dx);
         }
         op_set(D, n - 1, n - 1, op_get(D, 0, 1));
@@ -158,20 +158,20 @@ static void build_diff1(op_builder *D, int n, int o, double dx)
         op_set(D, 1, 0, (double)-0.5 / dx);
         op_set(D, 1, 1, (double)0 / dx);
         op_set(D, 1, 2, (double)0.5 / dx);
-        op_set(D, 2, 0,  1.0 / 12.0 / dx);
-        op_set(D, 2, 1, -2.0 /  3.0 / dx);
-        op_set(D, 2, 2,  0.0);
-        op_set(D, 2, 3,  2.0 /  3.0 / dx);
+        op_set(D, 2, 0, 1.0 / 12.0 / dx);
+        op_set(D, 2, 1, -2.0 / 3.0 / dx);
+        op_set(D, 2, 2, 0.0);
+        op_set(D, 2, 3, 2.0 / 3.0 / dx);
         op_set(D, 2, 4, -1.0 / 12.0 / dx);
         for (i = 3; i < (n - 3); i++)
         {
             op_set(D, i, i - 3, -1.0 / 60.0 / dx);
-            op_set(D, i, i - 2,  3.0 / 20.0 / dx);
-            op_set(D, i, i - 1, -3.0 /  4.0 / dx);
+            op_set(D, i, i - 2, 3.0 / 20.0 / dx);
+            op_set(D, i, i - 1, -3.0 / 4.0 / dx);
             op_set(D, i, i, 0.0);
-            op_set(D, i, i + 1,  3.0 /  4.0 / dx);
+            op_set(D, i, i + 1, 3.0 / 4.0 / dx);
             op_set(D, i, i + 2, -3.0 / 20.0 / dx);
-            op_set(D, i, i + 3,  1.0 / 60.0 / dx);
+            op_set(D, i, i + 3, 1.0 / 60.0 / dx);
         }
         op_set(D, n - 1, n - 1, op_get(D, 0, 1));
         op_set(D, n - 1, n - 2, op_get(D, 0, 0));
@@ -226,11 +226,11 @@ static void build_diff2(op_builder *D, int n, int o, double dx)
         op_set(D, 1, 2, (double)1 / (dx * dx));
         for (i = 2; i < (n - 2); i++)
         {
-            op_set(D, i, i - 2,  -1.0 / 12.0 / (dx * dx));
-            op_set(D, i, i - 1,   4.0 /  3.0 / (dx * dx));
-            op_set(D, i, i,      -5.0 /  2.0 / (dx * dx));
-            op_set(D, i, i + 1,   4.0 /  3.0 / (dx * dx));
-            op_set(D, i, i + 2,  -1.0 / 12.0 / (dx * dx));
+            op_set(D, i, i - 2, -1.0 / 12.0 / (dx * dx));
+            op_set(D, i, i - 1, 4.0 / 3.0 / (dx * dx));
+            op_set(D, i, i, -5.0 / 2.0 / (dx * dx));
+            op_set(D, i, i + 1, 4.0 / 3.0 / (dx * dx));
+            op_set(D, i, i + 2, -1.0 / 12.0 / (dx * dx));
         }
         op_set(D, n - 1, n - 1, op_get(D, 0, 0));
         op_set(D, n - 1, n - 2, op_get(D, 0, 1));
@@ -250,20 +250,20 @@ static void build_diff2(op_builder *D, int n, int o, double dx)
         op_set(D, 1, 0, (double)1 / (dx * dx)); // Central-scheme (second-order)
         op_set(D, 1, 1, (double)-2 / (dx * dx));
         op_set(D, 1, 2, (double)1 / (dx * dx));
-        op_set(D, 2, 0,  -1.0 / 12.0 / (dx * dx)); // Central-scheme (fourth-order)
-        op_set(D, 2, 1,   4.0 /  3.0 / (dx * dx));
-        op_set(D, 2, 2,  -5.0 /  2.0 / (dx * dx));
-        op_set(D, 2, 3,   4.0 /  3.0 / (dx * dx));
-        op_set(D, 2, 4,  -1.0 / 12.0 / (dx * dx));
+        op_set(D, 2, 0, -1.0 / 12.0 / (dx * dx)); // Central-scheme (fourth-order)
+        op_set(D, 2, 1, 4.0 / 3.0 / (dx * dx));
+        op_set(D, 2, 2, -5.0 / 2.0 / (dx * dx));
+        op_set(D, 2, 3, 4.0 / 3.0 / (dx * dx));
+        op_set(D, 2, 4, -1.0 / 12.0 / (dx * dx));
         for (i = 3; i < (n - 3); i++)
         {
-            op_set(D, i, i - 3,   1.0 / 90.0 / (dx * dx));
-            op_set(D, i, i - 2,  -3.0 / 20.0 / (dx * dx));
-            op_set(D, i, i - 1,   3.0 /  2.0 / (dx * dx));
-            op_set(D, i, i,     -49.0 / 18.0 / (dx * dx));
-            op_set(D, i, i + 1,   3.0 /  2.0 / (dx * dx));
-            op_set(D, i, i + 2,  -3.0 / 20.0 / (dx * dx));
-            op_set(D, i, i + 3,   1.0 / 90.0 / (dx * dx));
+            op_set(D, i, i - 3, 1.0 / 90.0 / (dx * dx));
+            op_set(D, i, i - 2, -3.0 / 20.0 / (dx * dx));
+            op_set(D, i, i - 1, 3.0 / 2.0 / (dx * dx));
+            op_set(D, i, i, -49.0 / 18.0 / (dx * dx));
+            op_set(D, i, i + 1, 3.0 / 2.0 / (dx * dx));
+            op_set(D, i, i + 2, -3.0 / 20.0 / (dx * dx));
+            op_set(D, i, i + 3, 1.0 / 90.0 / (dx * dx));
         }
         op_set(D, n - 1, n - 1, op_get(D, 0, 0));
         op_set(D, n - 1, n - 2, op_get(D, 0, 1));

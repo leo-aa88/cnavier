@@ -44,7 +44,7 @@ static int cgroup_room(const char *dir, int v2, double *room)
     snprintf(path, sizeof(path), "%s/%s", dir, v2 ? "memory.current" : "memory.usage_in_bytes");
     used = read_number(path, "");
     snprintf(path, sizeof(path), "%s/memory.stat", dir);
-    active   = read_number(path, v2 ? "active_file " : "total_active_file ");
+    active = read_number(path, v2 ? "active_file " : "total_active_file ");
     inactive = read_number(path, v2 ? "inactive_file " : "total_inactive_file ");
     if (used < 0) used = 0.0;
     if (active > 0 && active < used) used -= active;
@@ -74,7 +74,8 @@ static int own_cgroup(char *cg, size_t size)
         *ctrl++ = '\0';
         *path++ = '\0';
         path[strcspn(path, "\n")] = '\0';
-        if (strcmp(line, "0") == 0 && *ctrl == '\0') found = 2;
+        if (strcmp(line, "0") == 0 && *ctrl == '\0')
+            found = 2;
         else
             for (char *c = strtok(ctrl, ","); c; c = strtok(NULL, ","))
                 if (strcmp(c, "memory") == 0) found = 1;
@@ -96,7 +97,8 @@ double available_memory(void)
 
     // What the kernel thinks can be allocated without swapping
     double kb = read_number("/proc/meminfo", "MemAvailable:");
-    if (kb >= 0) avail = kb * 1024.0; // -1: no MemAvailable line
+    if (kb >= 0)
+        avail = kb * 1024.0; // -1: no MemAvailable line
     else
     {
         long pages = sysconf(_SC_PHYS_PAGES), size = sysconf(_SC_PAGESIZE);
@@ -118,8 +120,10 @@ double available_memory(void)
         if (cgroup_room(dir, version == 2, &room) && (avail < 0 || room < avail)) avail = room;
         slash = strrchr(cg, '/');
         if (!slash || strcmp(cg, "/") == 0) break;
-        if (slash == cg) cg[1] = '\0'; // last step: the root itself
-        else *slash = '\0';
+        if (slash == cg)
+            cg[1] = '\0'; // last step: the root itself
+        else
+            *slash = '\0';
     }
     return avail;
 }
@@ -148,7 +152,7 @@ static void remove_old_series(const char *title)
     {
         const char *rest;
         size_t digits;
-        if (strncmp(e->d_name, prefix, len) != 0) continue;  // also skips names shorter than prefix
+        if (strncmp(e->d_name, prefix, len) != 0) continue; // also skips names shorter than prefix
         rest = e->d_name + len;
         digits = strspn(rest, "0123456789");
         if (digits > 0 && strcmp(rest + digits, ".vtk") == 0)
@@ -227,7 +231,7 @@ void printvtk(mtrx A, char *title, double dx, double dy)
         fprintf(pf, "\n");
         for (j = 0; j < A.n; j++)
         {
-            if ((j == 0))
+            if (j == 0)
             {
                 sprintf(c, "%.6lf", MAt(A, i, j));
                 fprintf(pf, "%s", c);
@@ -248,21 +252,21 @@ void print_centerline(mtrx u, mtrx v, int nx, int ny, double dx, double dy)
 
     // Ghia et al. (1982), Table 1 — Re=100
     // u-velocity along vertical centerline x=0.5, y in [0,1]
-    static const double ghia_y[]  = {0.0000, 0.0547, 0.0625, 0.0703, 0.1016, 0.1719,
-                                      0.2813, 0.4531, 0.5000, 0.6172, 0.7344, 0.8516,
-                                      0.9531, 0.9609, 0.9688, 0.9766, 1.0000};
-    static const double ghia_u[]  = {0.0000,-0.0372,-0.0419,-0.0477,-0.0643,-0.1015,
-                                     -0.1566,-0.2109,-0.2058,-0.1364, 0.0033, 0.2315,
-                                      0.6872, 0.7372, 0.7887, 0.8412, 1.0000};
+    static const double ghia_y[] = {0.0000, 0.0547, 0.0625, 0.0703, 0.1016, 0.1719,
+                                    0.2813, 0.4531, 0.5000, 0.6172, 0.7344, 0.8516,
+                                    0.9531, 0.9609, 0.9688, 0.9766, 1.0000};
+    static const double ghia_u[] = {0.0000, -0.0372, -0.0419, -0.0477, -0.0643, -0.1015,
+                                    -0.1566, -0.2109, -0.2058, -0.1364, 0.0033, 0.2315,
+                                    0.6872, 0.7372, 0.7887, 0.8412, 1.0000};
 
     // Ghia et al. (1982), Table 2 — Re=100
     // v-velocity along horizontal centerline y=0.5, x in [0,1]
-    static const double ghia_x[]  = {0.0000, 0.0625, 0.0703, 0.0781, 0.0938, 0.1563,
-                                      0.2266, 0.2344, 0.5000, 0.8047, 0.8594, 0.9063,
-                                      0.9453, 0.9531, 0.9609, 0.9688, 1.0000};
-    static const double ghia_v[]  = {0.0000, 0.0923, 0.1009, 0.1089, 0.1232, 0.1608,
-                                      0.1751, 0.1753, 0.0545,-0.2453,-0.2245,-0.1691,
-                                     -0.1031,-0.0886,-0.0739,-0.0591, 0.0000};
+    static const double ghia_x[] = {0.0000, 0.0625, 0.0703, 0.0781, 0.0938, 0.1563,
+                                    0.2266, 0.2344, 0.5000, 0.8047, 0.8594, 0.9063,
+                                    0.9453, 0.9531, 0.9609, 0.9688, 1.0000};
+    static const double ghia_v[] = {0.0000, 0.0923, 0.1009, 0.1089, 0.1232, 0.1608,
+                                    0.1751, 0.1753, 0.0545, -0.2453, -0.2245, -0.1691,
+                                    -0.1031, -0.0886, -0.0739, -0.0591, 0.0000};
     int n_ghia = 17;
 
     // The centerlines lie halfway between the walls. With an even number of
@@ -271,12 +275,16 @@ void print_centerline(mtrx u, mtrx v, int nx, int ny, double dx, double dy)
     // is used as is.
     // Fields are ny rows (y) of nx values (x): cj is the middle column, ci the
     // middle row.
-    int    cj = (nx - 1) / 2, ci = (ny - 1) / 2;
+    int cj = (nx - 1) / 2, ci = (ny - 1) / 2;
     double tj = 0.5 * (nx - 1) - cj, ti = 0.5 * (ny - 1) - ci;
 
     // --- u along the vertical centerline: simulation data at the nodes y = i*dy ---
     f = fopen("./output/centerline_u_sim.csv", "w");
-    if (!f) { printf("Error opening centerline_u_sim.csv\n"); return; }
+    if (!f)
+    {
+        printf("Error opening centerline_u_sim.csv\n");
+        return;
+    }
     fprintf(f, "y,u\n");
     for (i = 0; i < ny; i++)
         fprintf(f, "%.6f,%.6f\n", i * dy,
@@ -285,7 +293,11 @@ void print_centerline(mtrx u, mtrx v, int nx, int ny, double dx, double dy)
 
     // --- u along vertical centerline: Ghia et al. (1982) reference ---
     f = fopen("./output/centerline_u_ghia.csv", "w");
-    if (!f) { printf("Error opening centerline_u_ghia.csv\n"); return; }
+    if (!f)
+    {
+        printf("Error opening centerline_u_ghia.csv\n");
+        return;
+    }
     fprintf(f, "y,u\n");
     for (j = 0; j < n_ghia; j++)
         fprintf(f, "%.6f,%.6f\n", ghia_y[j], ghia_u[j]);
@@ -293,7 +305,11 @@ void print_centerline(mtrx u, mtrx v, int nx, int ny, double dx, double dy)
 
     // --- v along the horizontal centerline: simulation data at the nodes x = j*dx ---
     f = fopen("./output/centerline_v_sim.csv", "w");
-    if (!f) { printf("Error opening centerline_v_sim.csv\n"); return; }
+    if (!f)
+    {
+        printf("Error opening centerline_v_sim.csv\n");
+        return;
+    }
     fprintf(f, "x,v\n");
     for (j = 0; j < nx; j++)
         fprintf(f, "%.6f,%.6f\n", j * dx,
@@ -302,7 +318,11 @@ void print_centerline(mtrx u, mtrx v, int nx, int ny, double dx, double dy)
 
     // --- v along horizontal centerline: Ghia et al. (1982) reference ---
     f = fopen("./output/centerline_v_ghia.csv", "w");
-    if (!f) { printf("Error opening centerline_v_ghia.csv\n"); return; }
+    if (!f)
+    {
+        printf("Error opening centerline_v_ghia.csv\n");
+        return;
+    }
     fprintf(f, "x,v\n");
     for (j = 0; j < n_ghia; j++)
         fprintf(f, "%.6f,%.6f\n", ghia_x[j], ghia_v[j]);

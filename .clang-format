@@ -1,0 +1,11 @@
+# clang-format configuration, used by `make format` / `make format-check` and CI.
+# Checked with clang-format 14.
+BasedOnStyle: LLVM
+IndentWidth: 4
+BreakBeforeBraces: Allman
+ColumnLimit: 0
+AllowShortFunctionsOnASingleLine: None
+AllowShortIfStatementsOnASingleLine: WithoutElse
+AllowShortBlocksOnASingleLine: Always
+AlignConsecutiveMacros: true
+SortIncludes: Never

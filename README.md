@@ -31,7 +31,7 @@ At each timestep:
 ## Features
 
 - **Spatial discretisation**: finite differences of selectable order (2nd, 4th, or 6th)
-- **Time integration**: explicit Euler or classical RK4 (4th-order accurate)
+- **Time integration**: explicit Euler or classical RK4. The wall vorticity is updated once per step, which limits both to first order in time overall, and RK4 is currently no more accurate than Euler at the same step (measured; see [Tests](#tests))
 - **Poisson solver**: three options — Gauss-Seidel, SOR, or FFTW3-based direct DST-I solver (default)
 - **Sparse operators**: 2D derivative operators built as CSR sparse matrices via Kronecker products, replacing dense O(n³) matrix-vector multiplies with O(7n) SpMV
 - **GPU acceleration**: optional CUDA backend that runs the whole time loop on an NVIDIA GPU (see [CUDA](#cuda-gpu))
@@ -259,13 +259,19 @@ At the end of a run the velocity profiles along the two centerlines are written 
 make test
 ```
 
-builds and runs `test_cnavier`, which checks the CPU solver: the FFT Poisson solver against an exact eigenmode, the Gauss-Seidel/SOR residuals, and short cavity runs with both time schemes.
+builds and runs `test_cnavier`:
+
+- **Building blocks**: sparse operations against dense ones; every row of the finite-difference operators (boundary rows included) exact on the polynomials its stencil is built for, for orders 2, 4 and 6, and rows written out; the derivative operators acting along the right axis on non-square grids; wall velocities, including the corners; the VTK and centerline writers.
+- **Poisson solvers**: the FFT solver against an exact eigenmode, at sizes that exercise every batching case of the transform; FFT, SOR and Gauss-Seidel giving the same answer once converged; residuals of the iterative solvers; SOR iteration counts on anisotropic grids.
+- **Time stepping**: short cavity runs with both schemes on square and non-square grids (finite, divergence-free); the stability limit (0.95× runs, 1.05× diverges) and the suggested `dt`; the observed order in `dt` on the interior nodes. Euler is first order. RK4 is also first order overall, not fourth, and its error is about Euler's: the wall vorticity is computed once per step from the velocities at its start and not updated between the stages. The test checks that RK4 stays at least first order.
+- **Backends**: driving the solver through `backend.c` gives exactly what calling it directly gives, and every solver ignores changes to the caller's configuration after it is created.
+- **OpenMP** (with `OPENMP=1`): results on 1 and on 4 threads are bitwise identical above the size where loops go parallel.
 
 ```bash
 make CUDA=1 test
 ```
 
-additionally checks the GPU backend against the CPU: SpMV for all four operators, each Poisson solver, the continuity diagnostic, and full timesteps for the Euler/RK4 and FFT/SOR/Gauss-Seidel combinations on several grid sizes. These comparisons are what keeps the GPU code in step with the CPU code, so run them on a machine with a GPU after changing either.
+additionally checks the GPU backend against the CPU: SpMV for all four operators, each Poisson solver, the continuity diagnostic, and full timesteps for the Euler/RK4 and FFT/SOR/Gauss-Seidel combinations on square and non-square grids. These comparisons are what keeps the GPU code in step with the CPU code, so run them on a machine with a GPU after changing either.
 
 ```bash
 make OPENMP=1 CUDA=1 test
@@ -283,14 +289,38 @@ The exit status tells the three outcomes apart:
 
 A CUDA build tested on a machine without a GPU therefore does **not** count as a pass: the summary line says how many GPU tests were skipped and `make` reports an error.
 
-GitHub Actions (`.github/workflows/ci.yml`) runs the CPU tests for the serial and OpenMP builds, and compiles the CUDA build. The hosted runners have no GPU, so the GPU-vs-CPU checks are not run there.
+### Other checks
+
+| Command | What it checks |
+|---|---|
+| `make test-cli` | Invalid command lines (NaN, garbage after numbers, grids out of range, unstable `dt`, ...) are refused with exit status 1 and an error message, and write nothing. A crash counts as a failure |
+| `make regression` | 100 steps of the default case against `tests/reference/`, and the steady default case within 0.004 (`u`) and 0.010 (`v`) of the Ghia et al. (1982) data stored in `tests/reference/`. Non-finite values fail; a self-test checks that |
+| `make test-asan` | The test suite and a short run under AddressSanitizer and UndefinedBehaviorSanitizer |
+| `make valgrind` | The test suite and a short run under valgrind; any leak, including memory still reachable at exit, fails |
+| `make format-check` | Formatting against `.clang-format` (`make format` applies it) |
+| `make cppcheck`, `make tidy` | Static analysis with cppcheck and clang-tidy (checks in `.clang-tidy`), including the code behind `#ifdef USE_CUDA` and `_OPENMP`. Neither reads `cudasolver.cu` |
+| `make WERROR=1` | Build with `-Wextra -Werror`; with `CUDA=1`, nvcc and its host compiler treat warnings as errors too |
+
+The results in `tests/reference/` are deterministic, so `make regression` fails only when the numerics change. If they change on purpose, regenerate them:
+
+```bash
+mkdir -p /tmp/ref/output && (cd /tmp/ref && $OLDPWD/cnavier --tf 0.5 --output-interval 0)
+cp /tmp/ref/output/centerline_u_sim.csv tests/reference/centerline_u_short.csv
+cp /tmp/ref/output/centerline_v_sim.csv tests/reference/centerline_v_short.csv
+```
+
+### Continuous integration
+
+GitHub Actions (`.github/workflows/ci.yml`) runs, in order: formatting; cppcheck, clang-tidy and `-Wextra -Werror` builds with gcc and clang; serial, OpenMP and CUDA builds; then the test suite, the command-line and regression tests for the serial and OpenMP builds, and the sanitizer and valgrind checks. The CUDA build's test program must report its GPU tests as skipped (exit status 77).
+
+The hosted runners have no GPU, so the GPU-vs-CPU checks only run where someone runs `make CUDA=1 test` on a machine with one. The pull request template asks for that whenever the numerics change.
 
 ## Project structure
 
 ```
 cnavier/
 ├── .github/workflows/
-│   └── ci.yml          # CPU tests, CUDA compile check
+│   └── ci.yml          # Formatting, static analysis, builds, tests, memory checks
 ├── src/
 │   ├── main.c          # Configuration, command line, time loop and output
 │   ├── backend.c       # One interface over the CPU and CUDA solvers
@@ -309,7 +339,10 @@ cnavier/
 │   ├── cudasolver.h
 │   └── utils.h
 ├── tests/
-│   └── test_solver.c   # CPU tests and GPU-vs-CPU checks
+│   ├── test_solver.c   # Unit and solver tests, GPU-vs-CPU checks
+│   ├── cli.sh          # Command-line tests
+│   ├── regression.sh   # Stored-result and Ghia et al. checks
+│   └── reference/      # Stored results and the Ghia et al. data
 ├── output/             # VTK output files
 ├── Re1000_cavity_flow_example.png
 ├── Re1000_cavity_flow_example.mp4
@@ -322,4 +355,4 @@ cnavier/
 
 The default `poisson_type = 3` uses FFTW3's `RODFT00` plan (DST-I) of the interior nodes to solve the Poisson equation exactly in O(n² log n). It solves the same discrete problem as Gauss-Seidel and SOR (the 5-point Laplacian with ψ = 0 on the wall nodes), so once those have converged all three give the same ψ. This is orders of magnitude faster than the iterative solvers at high Reynolds numbers where many iterations are required for convergence. FFTW plans are computed once at startup via `fft_setup()` and reused every timestep.
 
-With RK4 (`time_scheme = 2`), the Poisson equation is solved once per RK4 stage (5 solves per timestep total). Since each solve is O(n² log n), this remains fast and gives 4th-order temporal accuracy.
+With RK4 (`time_scheme = 2`), the Poisson equation is solved once per RK4 stage (5 solves per timestep total). Since each solve is O(n² log n), this remains fast.

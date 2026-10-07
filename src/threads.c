@@ -1,5 +1,5 @@
 #ifdef __linux__
-#define _GNU_SOURCE // sched_getaffinity
+#define _GNU_SOURCE // NOLINT(bugprone-reserved-identifier): needed for sched_getaffinity
 #include <sched.h>
 #endif
 #include <stdio.h>
@@ -49,7 +49,7 @@ int physical_cores(void)
         fclose(f);
         for (k = 0; k < count; k++)
             if (strcmp(seen[k], list) == 0) break;
-        if (k == count) strcpy(seen[count++], list);
+        if (k == count) snprintf(seen[count++], sizeof(seen[0]), "%s", list);
     }
     free(seen);
     return count;
@@ -57,7 +57,10 @@ int physical_cores(void)
 
 #else
 // Elsewhere the topology is not read, and the OpenMP default applies
-int physical_cores(void) { return 0; }
+int physical_cores(void)
+{
+    return 0;
+}
 #endif
 
 #ifdef _OPENMP
@@ -79,5 +82,7 @@ void default_threads(void)
     if (cores > 0 && cores < omp_get_max_threads()) omp_set_num_threads(cores);
 }
 #else
-void default_threads(void) {}
+void default_threads(void)
+{
+}
 #endif

@@ -7,14 +7,14 @@
 
 void euler(mtrx w, mtrx dwdx, mtrx dwdy, mtrx d2wdx2, mtrx d2wdy2, mtrx u, mtrx v, double Re, double dt); // Euler time-advancement
 
-
 // Dirichlet wall velocities, indexed by wall:
 // 0 -> left   (x = 0,  column j = 0)
 // 1 -> right  (x = Lx, column j = nx-1)
 // 2 -> bottom (y = 0,  row i = 0)
 // 3 -> top    (y = Ly, row i = ny-1)   the lid of the default cavity
 // At the corners the left and right walls take precedence.
-typedef struct {
+typedef struct
+{
     double u[4];
     double v[4];
 } wall_bc;
@@ -23,32 +23,34 @@ typedef struct {
 // solver takes a copy when it is created, so later changes to the caller's
 // struct have no effect on it. The operators are owned by the caller and must
 // outlive the solver.
-typedef struct {
-    int    nx, ny;                         // grid points in x and y
-    double dx, dy;                         // grid spacing
-    double Re;                             // Reynolds number
-    double dt;                             // time step
-    int    time_scheme;                    // 1=Euler, 2=RK4
-    int    poisson_type;                   // 1=Gauss-Seidel, 2=SOR, 3=FFT
-    int    poisson_max_it;                 // iteration limit of Gauss-Seidel/SOR
-    double poisson_tol, beta;              // their tolerance and SOR parameter
-    wall_bc bc;                            // wall velocities
-    const smtrx *DX, *DY, *DX2, *DY2;      // sparse derivative operators
+typedef struct
+{
+    int nx, ny;                       // grid points in x and y
+    double dx, dy;                    // grid spacing
+    double Re;                        // Reynolds number
+    double dt;                        // time step
+    int time_scheme;                  // 1=Euler, 2=RK4
+    int poisson_type;                 // 1=Gauss-Seidel, 2=SOR, 3=FFT
+    int poisson_max_it;               // iteration limit of Gauss-Seidel/SOR
+    double poisson_tol, beta;         // their tolerance and SOR parameter
+    wall_bc bc;                       // wall velocities
+    const smtrx *DX, *DY, *DX2, *DY2; // sparse derivative operators
 } solver_config;
 
 // CPU workspace: everything needed to advance a timestep without allocating
 // inside the loop. Fields are stored as ny rows (y) of nx values (x): element
 // (i, j) is at y = i*dy, x = j*dx.
-typedef struct {
-    solver_config cfg;           // copy taken by rk4_alloc(); do not change
-    mtrx   dwdx, dwdy;           // first derivatives of w
-    mtrx   d2wdx2, d2wdy2;       // second derivatives of w
-    mtrx   dpsidx, dpsidy;       // scratch for the vorticity boundary values
-    mtrx   psi, psi_scratch;     // Poisson solution and scratch
-    mtrx   k1, k2, k3, k4;       // RK4 stage increments
-    mtrx   w_tmp;                // temporary w for intermediate stages
-    mtrx   rhs;                  // Poisson right-hand side, -w
-    struct fft_solver *fft;      // FFT Poisson solver (poisson_type 3), else NULL
+typedef struct
+{
+    solver_config cfg;      // copy taken by rk4_alloc(); do not change
+    mtrx dwdx, dwdy;        // first derivatives of w
+    mtrx d2wdx2, d2wdy2;    // second derivatives of w
+    mtrx dpsidx, dpsidy;    // scratch for the vorticity boundary values
+    mtrx psi, psi_scratch;  // Poisson solution and scratch
+    mtrx k1, k2, k3, k4;    // RK4 stage increments
+    mtrx w_tmp;             // temporary w for intermediate stages
+    mtrx rhs;               // Poisson right-hand side, -w
+    struct fft_solver *fft; // FFT Poisson solver (poisson_type 3), else NULL
 } rk4_ctx;
 
 // Allocate the CPU workspace for the run described by cfg (copied)

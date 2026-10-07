@@ -38,4 +38,3 @@ void fft_cleanup(fft_solver *s);
 void poisson_FFT(fft_solver *s, mtrx f, mtrx u, double dx, double dy);
 
 #endif // POISSON_H_INCLUDED
-

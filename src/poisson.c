@@ -38,9 +38,7 @@ int poisson(mtrx f, mtrx u, mtrx u0, double dx, double dy, int itmax, double tol
             int j0 = (i & 1) ? 1 : 2;
             int j;
             for (j = j0; j < nx - 1; j += 2)
-                MAt(u, i, j) = (dx2 * (MAt(u, i+1, j) + MAt(u, i-1, j))
-                            + dy2 * (MAt(u, i, j+1) + MAt(u, i, j-1))
-                            - dx2 * dy2 * MAt(f, i, j)) / denom;
+                MAt(u, i, j) = (dx2 * (MAt(u, i + 1, j) + MAt(u, i - 1, j)) + dy2 * (MAt(u, i, j + 1) + MAt(u, i, j - 1)) - dx2 * dy2 * MAt(f, i, j)) / denom;
         }
 #pragma omp parallel for schedule(static) if (ny * nx >= OMP_MIN_WORK)
         for (i = 1; i < ny - 1; i++)
@@ -48,16 +46,12 @@ int poisson(mtrx f, mtrx u, mtrx u0, double dx, double dy, int itmax, double tol
             int j0 = (i & 1) ? 2 : 1;
             int j;
             for (j = j0; j < nx - 1; j += 2)
-                MAt(u, i, j) = (dx2 * (MAt(u, i+1, j) + MAt(u, i-1, j))
-                            + dy2 * (MAt(u, i, j+1) + MAt(u, i, j-1))
-                            - dx2 * dy2 * MAt(f, i, j)) / denom;
+                MAt(u, i, j) = (dx2 * (MAt(u, i + 1, j) + MAt(u, i - 1, j)) + dy2 * (MAt(u, i, j + 1) + MAt(u, i, j - 1)) - dx2 * dy2 * MAt(f, i, j)) / denom;
         }
 #else
         for (i = 1; i < ny - 1; i++)
             for (int j = 1; j < nx - 1; j++)
-                MAt(u, i, j) = (dx2 * (MAt(u, i+1, j) + MAt(u, i-1, j))
-                            + dy2 * (MAt(u, i, j+1) + MAt(u, i, j-1))
-                            - dx2 * dy2 * MAt(f, i, j)) / denom;
+                MAt(u, i, j) = (dx2 * (MAt(u, i + 1, j) + MAt(u, i - 1, j)) + dy2 * (MAt(u, i, j + 1) + MAt(u, i, j - 1)) - dx2 * dy2 * MAt(f, i, j)) / denom;
 #endif
         e = error(u, u0);
         if (e < tol)
@@ -102,10 +96,7 @@ int poisson_SOR(mtrx f, mtrx u, mtrx u0, double dx, double dy, int itmax, double
             int j0 = (i & 1) ? 1 : 2;
             int j;
             for (j = j0; j < nx - 1; j += 2)
-                MAt(u, i, j) = beta  * (dx2 * (MAt(u, i+1, j) + MAt(u, i-1, j))
-                                    + dy2 * (MAt(u, i, j+1) + MAt(u, i, j-1))
-                                    - dx2 * dy2 * MAt(f, i, j)) / denom
-                           + (1.0 - beta) * MAt(u0, i, j);
+                MAt(u, i, j) = beta * (dx2 * (MAt(u, i + 1, j) + MAt(u, i - 1, j)) + dy2 * (MAt(u, i, j + 1) + MAt(u, i, j - 1)) - dx2 * dy2 * MAt(f, i, j)) / denom + (1.0 - beta) * MAt(u0, i, j);
         }
 #pragma omp parallel for schedule(static) if (ny * nx >= OMP_MIN_WORK)
         for (i = 1; i < ny - 1; i++)
@@ -113,18 +104,12 @@ int poisson_SOR(mtrx f, mtrx u, mtrx u0, double dx, double dy, int itmax, double
             int j0 = (i & 1) ? 2 : 1;
             int j;
             for (j = j0; j < nx - 1; j += 2)
-                MAt(u, i, j) = beta  * (dx2 * (MAt(u, i+1, j) + MAt(u, i-1, j))
-                                    + dy2 * (MAt(u, i, j+1) + MAt(u, i, j-1))
-                                    - dx2 * dy2 * MAt(f, i, j)) / denom
-                           + (1.0 - beta) * MAt(u0, i, j);
+                MAt(u, i, j) = beta * (dx2 * (MAt(u, i + 1, j) + MAt(u, i - 1, j)) + dy2 * (MAt(u, i, j + 1) + MAt(u, i, j - 1)) - dx2 * dy2 * MAt(f, i, j)) / denom + (1.0 - beta) * MAt(u0, i, j);
         }
 #else
         for (i = 1; i < ny - 1; i++)
             for (int j = 1; j < nx - 1; j++)
-                MAt(u, i, j) = beta  * (dx2 * (MAt(u, i+1, j) + MAt(u, i-1, j))
-                                    + dy2 * (MAt(u, i, j+1) + MAt(u, i, j-1))
-                                    - dx2 * dy2 * MAt(f, i, j)) / denom
-                           + (1.0 - beta) * MAt(u0, i, j);
+                MAt(u, i, j) = beta * (dx2 * (MAt(u, i + 1, j) + MAt(u, i - 1, j)) + dy2 * (MAt(u, i, j + 1) + MAt(u, i, j - 1)) - dx2 * dy2 * MAt(f, i, j)) / denom + (1.0 - beta) * MAt(u0, i, j);
 #endif
         e = error(u, u0);
         if (e < tol)
@@ -174,14 +159,14 @@ typedef struct
 {
     fftw_plan full; // exactly DST_BATCH transforms, or NULL if count < DST_BATCH
     fftw_plan rest; // the last count % DST_BATCH transforms, or NULL if none
-    int       count;
+    int count;
     ptrdiff_t step; // offset between batches, in doubles
 } dst_pass;
 
 struct fft_solver
 {
-    int      nx, ny;
-    double  *buf;                 // interior work buffer, (ny-2) rows of (nx-2), row-major
+    int nx, ny;
+    double *buf; // interior work buffer, (ny-2) rows of (nx-2), row-major
     dst_pass pass_rows, pass_cols;
 };
 
@@ -196,9 +181,9 @@ static dst_pass make_pass(double *buf, int len, int count, int stride, int dist)
     fftw_r2r_kind kind = FFTW_RODFT00;
 
     p.count = count;
-    p.step  = (ptrdiff_t)DST_BATCH * dist;
-    p.full  = NULL;
-    p.rest  = NULL;
+    p.step = (ptrdiff_t)DST_BATCH * dist;
+    p.full = NULL;
+    p.rest = NULL;
     if (count >= DST_BATCH)
         p.full = fftw_plan_many_r2r(1, &len, DST_BATCH, buf, NULL, stride, dist,
                                     buf, NULL, stride, dist, &kind, FFTW_ESTIMATE);
@@ -247,11 +232,19 @@ fft_solver *fft_setup(int nx, int ny)
     int rows = ny - 2, cols = nx - 2; // interior nodes; fields are ny rows of nx
     fft_solver *s = (fft_solver *)malloc(sizeof(fft_solver));
 
-    if (!s) { printf("** Error: insufficient memory **\n"); exit(1); }
-    s->nx  = nx;
-    s->ny  = ny;
+    if (!s)
+    {
+        printf("** Error: insufficient memory **\n");
+        exit(1);
+    }
+    s->nx = nx;
+    s->ny = ny;
     s->buf = (double *)fftw_malloc((size_t)rows * cols * sizeof(double));
-    if (!s->buf) { printf("** Error: fftw_malloc failed **\n"); exit(1); }
+    if (!s->buf)
+    {
+        printf("** Error: fftw_malloc failed **\n");
+        exit(1);
+    }
 
     s->pass_rows = make_pass(s->buf, cols, rows, 1, cols); // rows of cols contiguous values (x)
     s->pass_cols = make_pass(s->buf, rows, cols, cols, 1); // columns, values cols apart (y)
@@ -302,13 +295,11 @@ void poisson_FFT(fft_solver *s, mtrx f, mtrx u, double dx, double dy)
 #endif
     for (i = 0; i < rows; i++)
     {
-        double lambda_i = (2.0 * cos(PI * (i + 1) / (double)(rows + 1)) - 2.0)
-                          / (dy * dy);
+        double lambda_i = (2.0 * cos(PI * (i + 1) / (double)(rows + 1)) - 2.0) / (dy * dy);
         int j;
         for (j = 0; j < cols; j++)
         {
-            double lambda_j = (2.0 * cos(PI * (j + 1) / (double)(cols + 1)) - 2.0)
-                              / (dx * dx);
+            double lambda_j = (2.0 * cos(PI * (j + 1) / (double)(cols + 1)) - 2.0) / (dx * dx);
             fft_buf[i * cols + j] /= (lambda_i + lambda_j);
         }
     }
@@ -325,6 +316,7 @@ void poisson_FFT(fft_solver *s, mtrx f, mtrx u, double dx, double dy)
         int j;
         for (j = 0; j < nx; j++)
             MAt(u, i, j) = (i == 0 || i == ny - 1 || j == 0 || j == nx - 1)
-                         ? 0.0 : fft_buf[(i - 1) * cols + (j - 1)] * inv_norm;
+                               ? 0.0
+                               : fft_buf[(i - 1) * cols + (j - 1)] * inv_norm;
     }
 }
