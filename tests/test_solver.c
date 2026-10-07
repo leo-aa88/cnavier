@@ -157,6 +157,115 @@ static void continuity_range(problem *p, double *cmax, double *cmin)
 }
 
 // ---------------------------------------------------------------------------
+// Finite-difference operators
+// ---------------------------------------------------------------------------
+
+// Every row of SDiff1/SDiff2, boundary rows included, must differentiate
+// polynomials exactly up to the degree its stencil is built for. A row b nodes
+// from the nearer end uses, for the first derivative, a one-sided first-order
+// stencil (b = 0) or a centered stencil of order min(order, 2b); for the second
+// derivative a one-sided stencil exact for cubics (b = 0) or a centered one of
+// order min(order, 2b), which is exact one degree higher.
+static void test_finitediff_exactness(void)
+{
+    int o, op, r, p, n = 16;
+    int orders[3] = {2, 4, 6};
+    double dx = 0.1;
+    char name[96];
+
+    printf("CPU: finite-difference operators are exact on polynomials\n");
+    for (o = 0; o < 3; o++)
+        for (op = 1; op <= 2; op++)
+        {
+            int order = orders[o];
+            smtrx S = op == 1 ? SDiff1(n, order, dx) : SDiff2(n, order, dx);
+            double worst = 0.0;
+            for (r = 0; r < n; r++)
+            {
+                int b = r < n - 1 - r ? r : n - 1 - r;
+                int deg = (b == 0) ? (op == 1 ? 1 : 3)
+                                   : (2 * b < order ? 2 * b : order) + (op == 2);
+                for (p = 0; p <= deg; p++)
+                {
+                    // f(x) = (x - x_r)^p, whose derivative at x_r is known
+                    double sum = 0.0, expect = (op == 1) ? (p == 1) : 2.0 * (p == 2);
+                    int k;
+                    for (k = S.row_ptr[r]; k < S.row_ptr[r + 1]; k++)
+                        sum += S.values[k] * pow((S.col_idx[k] - r) * dx, p);
+                    if (isnan(sum)) worst = NAN;
+                    else if (!isnan(worst) && fabs(sum - expect) > worst) worst = fabs(sum - expect);
+                }
+            }
+            snprintf(name, sizeof(name), "order %d, %s derivative: every row exact", order,
+                     op == 1 ? "first" : "second");
+            check(name, isnan(worst) ? INFINITY : worst, 1E-8);
+            freesm(S);
+        }
+}
+
+// Largest |difference| between row r of S and the expected (columns, values);
+// infinite if the row has a different set of non-zeros
+static double row_diff(smtrx S, int r, int count, const int *cols, const double *vals)
+{
+    int k;
+    double d = 0.0;
+    if (S.row_ptr[r + 1] - S.row_ptr[r] != count) return INFINITY;
+    for (k = 0; k < count; k++)
+    {
+        if (S.col_idx[S.row_ptr[r] + k] != cols[k]) return INFINITY;
+        d = fmax(d, fabs(S.values[S.row_ptr[r] + k] - vals[k]));
+    }
+    return d;
+}
+
+// A few rows written out, from each block of the 6th-order operators: the
+// first rows, an interior row, and the last rows that are copied from the
+// first ones. Checks the column order, that zero coefficients are not stored,
+// and the mirrored rows (built by reading back earlier entries).
+static void test_finitediff_rows(void)
+{
+    int n = 10;
+    double dx = 0.5, h = 1.0 / dx, h2 = 1.0 / (dx * dx);
+    smtrx d1 = SDiff1(n, 6, dx), d2 = SDiff2(n, 6, dx);
+    double worst = 0.0;
+
+    printf("CPU: finite-difference operators, rows written out\n");
+    {
+        int c0[] = {0, 1};         double v0[] = {-h, h};
+        int c1[] = {0, 2};         double v1[] = {-0.5 * h, 0.5 * h};
+        int c2[] = {0, 1, 3, 4};   double v2[] = {1.0 / 12.0 * h, -2.0 / 3.0 * h, 2.0 / 3.0 * h, -1.0 / 12.0 * h};
+        int c5[] = {2, 3, 4, 6, 7, 8};
+        double v5[] = {-1.0 / 60.0 * h, 3.0 / 20.0 * h, -3.0 / 4.0 * h, 3.0 / 4.0 * h, -3.0 / 20.0 * h, 1.0 / 60.0 * h};
+        int c8[] = {7, 9};         double v8[] = {-0.5 * h, 0.5 * h};
+        int c9[] = {8, 9};         double v9[] = {-h, h};
+        worst = fmax(worst, row_diff(d1, 0, 2, c0, v0));
+        worst = fmax(worst, row_diff(d1, 1, 2, c1, v1));
+        worst = fmax(worst, row_diff(d1, 2, 4, c2, v2));
+        worst = fmax(worst, row_diff(d1, 5, 6, c5, v5));
+        worst = fmax(worst, row_diff(d1, 8, 2, c8, v8));
+        worst = fmax(worst, row_diff(d1, 9, 2, c9, v9));
+    }
+    check("first derivative, order 6: rows 0, 1, 2, 5, 8, 9", worst, 1E-14);
+
+    worst = 0.0;
+    {
+        int c0[] = {0, 1, 2, 3};   double v0[] = {2 * h2, -5 * h2, 4 * h2, -1 * h2};
+        int c1[] = {0, 1, 2};      double v1[] = {h2, -2 * h2, h2};
+        int c5[] = {2, 3, 4, 5, 6, 7, 8};
+        double v5[] = {1.0 / 90.0 * h2, -3.0 / 20.0 * h2, 3.0 / 2.0 * h2, -49.0 / 18.0 * h2,
+                       3.0 / 2.0 * h2, -3.0 / 20.0 * h2, 1.0 / 90.0 * h2};
+        int c9[] = {6, 7, 8, 9};   double v9[] = {-1 * h2, 4 * h2, -5 * h2, 2 * h2};
+        worst = fmax(worst, row_diff(d2, 0, 4, c0, v0));
+        worst = fmax(worst, row_diff(d2, 1, 3, c1, v1));
+        worst = fmax(worst, row_diff(d2, 5, 7, c5, v5));
+        worst = fmax(worst, row_diff(d2, 9, 4, c9, v9));
+    }
+    check("second derivative, order 6: rows 0, 1, 5, 9", worst, 1E-12);
+
+    freesm(d1); freesm(d2);
+}
+
+// ---------------------------------------------------------------------------
 // CPU tests
 // ---------------------------------------------------------------------------
 
@@ -460,6 +569,8 @@ static void run_gpu_tests(void)
 
 int main(void)
 {
+    test_finitediff_exactness();
+    test_finitediff_rows();
     test_cpu_poisson_fft();
     test_cpu_poisson_iterative();
     test_cpu_step(2, "RK4");

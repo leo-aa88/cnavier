@@ -22,12 +22,10 @@ typedef struct vector
 void zerosm(mtrx A);                            // Initialize matrix with zeros
 double *allocm(int m, int n);                   // Allocate flat matrix buffer m x n
 void freem(mtrx *A);                            // Free matrix memory and NULL the pointer
-double *readm(char *filename, int *m, int *n);  // Read matrix from file
 void printm(mtrx A);                            // Print matrix
 void zerosv(vec v);                             // Initialize vector with zeros
 double *allocv(int n);                          // Allocate vector with size n
 double *freev(vec v);                           // Free memory for vector
-double *readv(char *filename, int *n);          // Read vector
 void printv(vec v);                             // Print vector
 mtrx mtrxmul(mtrx A, mtrx B);                  // Matrix multiplication
 vec gaussian(mtrx A, vec b);                   // Gaussian elimination

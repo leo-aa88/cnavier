@@ -20,37 +20,6 @@ void euler(mtrx w, mtrx dwdx, mtrx dwdy, mtrx d2wdx2, mtrx d2wdy2, mtrx u, mtrx 
     }
 }
 
-mtrx continuity(mtrx dudx, mtrx dvdy)
-{
-    int i, j;
-    mtrx temp;
-    temp = initm(dudx.m, dudx.n);
-
-    for (i = 0; i < temp.m; i++)
-    {
-        for (j = 0; j < temp.n; j++)
-        {
-            MAt(temp, i, j) = MAt(dudx, i, j) + MAt(dvdy, i, j);
-        }
-    }
-    return temp;
-}
-
-mtrx vorticity(mtrx dudy, mtrx dvdx)
-{
-    int i, j;
-    mtrx temp;
-    temp = initm(dudy.m, dudy.n);
-
-    for (i = 0; i < temp.m; i++)
-    {
-        for (j = 0; j < temp.n; j++)
-        {
-            MAt(temp, i, j) = MAt(dvdx, i, j) - MAt(dudy, i, j);
-        }
-    }
-    return temp;
-}
 // ---------------------------------------------------------------------------
 // RK4 time integration
 // ---------------------------------------------------------------------------

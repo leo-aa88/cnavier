@@ -54,6 +54,7 @@ dkms.conf
 .vscode
 .output
 *.vtk
+output/centerline_*_sim.csv
 cnavier
 test_cnavier
 obj/

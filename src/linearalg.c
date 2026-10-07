@@ -35,22 +35,6 @@ void freem(mtrx *A)
     A->M = NULL;
 }
 
-double *readm(char *filename, int *m, int *n)
-{
-    int i, j;
-    FILE *f;
-    double *A;
-    f = fopen(filename, "r");
-    fscanf(f, "%d", m);
-    fscanf(f, "%d", n);
-    A = allocm(*m, *n);
-    for (i = 0; i < *m; i++)
-        for (j = 0; j < *n; j++)
-            fscanf(f, "%lf", &A[i * (*n) + j]);
-    fclose(f);
-    return A;
-}
-
 void printm(mtrx A)
 {
     int i, j;
@@ -96,20 +80,6 @@ double *freev(vec v)
     if (v.v == NULL) return NULL;
     free(v.v);
     return NULL;
-}
-
-double *readv(char *filename, int *n)
-{
-    int i;
-    FILE *f;
-    double *v;
-    f = fopen(filename, "r");
-    fscanf(f, "%d", n);
-    v = allocv(*n);
-    for (i = 0; i < *n; i++)
-        fscanf(f, "%lf", &v[i]);
-    fclose(f);
-    return v;
 }
 
 void printv(vec v)
