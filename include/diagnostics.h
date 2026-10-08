@@ -14,7 +14,12 @@
 typedef struct
 {
     double E, Z, P;
-    double I; // energy input of the built-in forcing: <u A sin(k y)> + eps (forcing.h)
+    // Energy input of the built-in forcing (forcing.h): the work <u A sin(k y)>
+    // of the Kolmogorov force (the continuum expression), plus eps, the
+    // expected input of the random kicks. A single kick also changes E by
+    // <u . du>, which averages to zero but not on any one step, so a
+    // step-by-step energy budget holds only on average.
+    double I;
 } flow_integrals;
 
 // wx, wy: scratch of nx*ny values each
@@ -40,7 +45,16 @@ int spectra_bins(const spectra *s);
 double spectra_dk(const spectra *s);
 // Arrays of spectra_bins() values; any may be NULL
 void spectra_compute(spectra *s, mtrx u, mtrx v, mtrx w, double *E, double *Z, double *PE, double *PZ);
-// Write output/spectrum-1-<n>.csv (k, E, Z, PE, PZ) for time t
+// Viscous dissipation of energy and enstrophy in each shell, as the discrete
+// equations have it: the viscous term nu (DX2 + DY2) w removes
+//   DE(k) = nu sum over the shell of (A/Q) |w^|^2   (continuum: 2 nu Z(k))
+//   DZ(k) = nu sum over the shell of Q |w^|^2       (continuum: 2 nu P(k))
+// so in an unforced flow without drag dE/dt = sum of the nonlinear transfers
+// - sum DE exactly, where 2 nu Z holds only to the order of the scheme; the
+// difference grows where A/Q departs from 1, near the grid cutoff. Drag
+// removes exactly 2 alpha E. Arrays of spectra_bins() values; either may be NULL.
+void spectra_dissipation(spectra *s, mtrx w, double *DE, double *DZ);
+// Write output/spectrum-1-<n>.csv (k, E, Z, PE, PZ, DE, DZ) for time t
 void spectra_write(spectra *s, mtrx u, mtrx v, mtrx w, double t);
 void spectra_free(spectra *s);
 

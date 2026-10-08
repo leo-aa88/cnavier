@@ -1007,6 +1007,43 @@ static void flux_consistency(int nx, int ny, int order, double out[2])
     problem_free(&p);
 }
 
+// The energy budget of the discrete equations closes: on a coarse grid with a
+// random field, where A/Q is far from 1, the centred difference of E over two
+// RK4 steps equals the nonlinear transfer minus the discrete viscous
+// dissipation sum D_E to the time-stepping error, while the continuum budget
+// dE/dt = -2 nu Z is off by far more
+static void discrete_budget(int n, int order, double out[2])
+{
+    int k, B, N = n * n;
+    double dt = 5E-5, nu = 0.01, rate, Em, Ep, sumD = 0.0, *PE, *DE;
+    problem p;
+    spectra *sp;
+
+    problem_init_ext(&p, n, n, 1.0, 1.0, 1, order, 1.0 / nu, 2, 3, dt, 1E-10, NULL, 0.0, NULL, NULL, 2, 0, 2);
+    fill_pseudo_random(p.w.M, N, 3u);
+    step(p.w, p.u, p.v, &p.ctx); // makes u, v consistent with w
+    Em = compute_integrals(&p.cfg, p.u, p.v, p.w, p.ctx.k1.M, p.ctx.k2.M).E;
+    step(p.w, p.u, p.v, &p.ctx);
+    flow_integrals f0 = compute_integrals(&p.cfg, p.u, p.v, p.w, p.ctx.k1.M, p.ctx.k2.M);
+    sp = spectra_setup(&p.cfg);
+    B = spectra_bins(sp);
+    PE = (double *)calloc(B, sizeof(double));
+    DE = (double *)calloc(B, sizeof(double));
+    spectra_compute(sp, p.u, p.v, p.w, NULL, NULL, PE, NULL);
+    spectra_dissipation(sp, p.w, DE, NULL);
+    for (k = 0; k < B; k++)
+        sumD += DE[k];
+    rate = -PE[B - 1] - sumD;
+    step(p.w, p.u, p.v, &p.ctx);
+    Ep = compute_integrals(&p.cfg, p.u, p.v, p.w, p.ctx.k1.M, p.ctx.k2.M).E;
+    out[0] = fabs((Ep - Em) / (2.0 * dt) - rate) / fabs(rate);
+    out[1] = fabs((Ep - Em) / (2.0 * dt) + 2.0 * nu * f0.Z) / fabs(rate);
+    free(PE);
+    free(DE);
+    spectra_free(sp);
+    problem_free(&p);
+}
+
 static void test_budgets(void)
 {
     double a[4], b[4], o;
@@ -1022,6 +1059,15 @@ static void test_budgets(void)
         flux_consistency(24, 20, o, r);
         snprintf(name, sizeof(name), "order %d, 24x20: energy %.1e, enstrophy %.1e", o, r[0], r[1]);
         check(name, r[0] + r[1], 1E-12);
+    }
+
+    printf("Diagnostics: the discrete energy budget closes, random field\n");
+    for (int o = 2; o <= 6; o += 4)
+    {
+        double r[2];
+        discrete_budget(24, o, r);
+        snprintf(name, sizeof(name), "order %d, 24x24: discrete budget %.1e (continuum %.1e)", o, r[0], r[1]);
+        check(name, r[0], 1E-5);
     }
 
     printf("Diagnostics: spectra and budgets, unforced periodic flow, order 6, 32x32 -> 64x64\n");

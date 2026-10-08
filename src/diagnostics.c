@@ -231,36 +231,63 @@ void spectra_compute(spectra *s, mtrx u, mtrx v, mtrx w, double *E, double *Z, d
     free(TZ);
 }
 
+void spectra_dissipation(spectra *s, mtrx w, double *DE, double *DZ)
+{
+    int b, k, n = s->nx * s->ny, modes = s->kx * s->ny;
+    double inv = 1.0 / ((double)n * n), nu = 1.0 / s->cfg.Re;
+
+    for (b = 0; b < s->bins; b++)
+    {
+        if (DE) DE[b] = 0.0;
+        if (DZ) DZ[b] = 0.0;
+    }
+    transform(s, w.M, s->wh);
+    for (k = 1; k < modes; k++)
+    {
+        // The viscous term nu (DX2 + DY2) w has symbol -nu Q, so it changes
+        // the mode's energy at -nu (A/Q) |w^|^2 and its enstrophy at -nu Q |w^|^2
+        double c = s->weight[k] * inv, w2 = s->wh[k][0] * s->wh[k][0] + s->wh[k][1] * s->wh[k][1];
+        double Q = -s->lap[k];
+        if (DE) DE[s->bin[k]] += nu * c * s->ratio[k] * w2;
+        if (DZ) DZ[s->bin[k]] += nu * c * Q * w2;
+    }
+}
+
 void spectra_write(spectra *s, mtrx u, mtrx v, mtrx w, double t)
 {
     int b, frame = output_frame("spectrum", ".csv");
     char name[96];
     FILE *f;
-    double *E = (double *)malloc((size_t)s->bins * sizeof(double));
-    double *Z = (double *)malloc((size_t)s->bins * sizeof(double));
-    double *PE = (double *)malloc((size_t)s->bins * sizeof(double));
-    double *PZ = (double *)malloc((size_t)s->bins * sizeof(double));
+    double *E = (double *)calloc((size_t)s->bins, sizeof(double));
+    double *Z = (double *)calloc((size_t)s->bins, sizeof(double));
+    double *PE = (double *)calloc((size_t)s->bins, sizeof(double));
+    double *PZ = (double *)calloc((size_t)s->bins, sizeof(double));
+    double *DE = (double *)calloc((size_t)s->bins, sizeof(double));
+    double *DZ = (double *)calloc((size_t)s->bins, sizeof(double));
 
-    if (!E || !Z || !PE || !PZ)
+    if (!E || !Z || !PE || !PZ || !DE || !DZ)
     {
         printf("** Error: insufficient memory **\n");
         exit(1);
     }
     spectra_compute(s, u, v, w, E, Z, PE, PZ);
+    spectra_dissipation(s, w, DE, DZ);
     snprintf(name, sizeof(name), "./output/spectrum-1-%d.csv", frame);
     if (!(f = fopen(name, "w")))
     {
         printf("\nError while opening file\n");
         exit(1);
     }
-    fprintf(f, "# t = %.17g\nk,E,Z,Pi_E,Pi_Z\n", t);
+    fprintf(f, "# t = %.17g\nk,E,Z,Pi_E,Pi_Z,D_E,D_Z\n", t);
     for (b = 0; b < s->bins; b++)
-        fprintf(f, "%.17g,%.17g,%.17g,%.17g,%.17g\n", b * s->dk, E[b], Z[b], PE[b], PZ[b]);
+        fprintf(f, "%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g\n", b * s->dk, E[b], Z[b], PE[b], PZ[b], DE[b], DZ[b]);
     fclose(f);
     free(E);
     free(Z);
     free(PE);
     free(PZ);
+    free(DE);
+    free(DZ);
 }
 
 void spectra_free(spectra *s)
