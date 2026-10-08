@@ -217,11 +217,13 @@ void spectra_compute(spectra *s, mtrx u, mtrx v, mtrx w, double *E, double *Z, d
         for (b = 0; b < s->bins; b++)
             Z[b] = 0.0;
 
-    // The solver's nonlinear term N = -(u DX w + v DY w)
+    // The solver's nonlinear term N = -(u DX w + v DY w), or its
+    // skew-symmetric form (skew_correction())
     spmv(*s->cfg.DX, w.M, s->wx);
     spmv(*s->cfg.DY, w.M, s->wy);
     for (k = 0; k < n; k++)
         s->nl[k] = -(u.M[k] * s->wx[k] + v.M[k] * s->wy[k]);
+    if (s->cfg.advection == 1) skew_correction(&s->cfg, u.M, v.M, w.M, s->wx, s->wy, s->nl, s->wx, s->wy);
 
     transform(s, u.M, s->uh);
     transform(s, v.M, s->vh);
@@ -254,25 +256,36 @@ void spectra_compute(spectra *s, mtrx u, mtrx v, mtrx w, double *E, double *Z, d
     free(TZ);
 }
 
-void spectra_dissipation(spectra *s, mtrx w, double *DE, double *DZ)
+void spectra_dissipation(spectra *s, mtrx w, double *DE, double *DZ, double *FE, double *FZ)
 {
     int b, k, n = s->nx * s->ny, modes = s->kx * s->ny;
+    const forcing_config *fc = &s->cfg.forcing;
     double inv = 1.0 / ((double)n * n), nu = 1.0 / s->cfg.Re;
 
     for (b = 0; b < s->bins; b++)
     {
         if (DE) DE[b] = 0.0;
         if (DZ) DZ[b] = 0.0;
+        if (FE) FE[b] = 0.0;
+        if (FZ) FZ[b] = 0.0;
     }
     transform(s, w.M, s->wh);
+    // The mean vorticity (zero in a physical periodic flow) carries no energy
+    // and feels only the drag
+    if (FZ) FZ[0] = fc->drag * (s->wh[0][0] * s->wh[0][0] + s->wh[0][1] * s->wh[0][1]) * inv;
     for (k = 1; k < modes; k++)
     {
-        // The viscous term nu (DX2 + DY2) w has symbol -nu Q, so it changes
-        // the mode's energy at -nu (A/Q) |w^|^2 and its enstrophy at -nu Q |w^|^2
+        // A damping term of symbol -sigma changes the mode's energy
+        // 1/2 A |psi^|^2 = 1/2 (A/Q^2) |w^|^2 at -sigma (A/Q^2) |w^|^2 and its
+        // enstrophy at -sigma |w^|^2. Viscosity has sigma = nu Q, the
+        // hyperviscosity nu_h Q^p, the drag alpha and the hypodrag alpha_h / Q.
         double c = s->weight[k] * inv, w2 = s->wh[k][0] * s->wh[k][0] + s->wh[k][1] * s->wh[k][1];
-        double Q = -s->lap[k];
-        if (DE) DE[s->bin[k]] += nu * c * s->ratio[k] * w2;
-        if (DZ) DZ[s->bin[k]] += nu * c * Q * w2;
+        double Q = -s->lap[k], small = nu * Q, large = fc->drag + fc->hypodrag / Q;
+        if (fc->hyperviscosity > 0.0) small += fc->hyperviscosity * pow(Q, fc->hyper_order);
+        if (DE) DE[s->bin[k]] += small * c * s->ratio[k] / Q * w2;
+        if (DZ) DZ[s->bin[k]] += small * c * w2;
+        if (FE) FE[s->bin[k]] += large * c * s->ratio[k] / Q * w2;
+        if (FZ) FZ[s->bin[k]] += large * c * w2;
     }
 }
 
@@ -287,23 +300,26 @@ void spectra_write(spectra *s, mtrx u, mtrx v, mtrx w, double t)
     double *PZ = (double *)calloc((size_t)s->bins, sizeof(double));
     double *DE = (double *)calloc((size_t)s->bins, sizeof(double));
     double *DZ = (double *)calloc((size_t)s->bins, sizeof(double));
+    double *FE = (double *)calloc((size_t)s->bins, sizeof(double));
+    double *FZ = (double *)calloc((size_t)s->bins, sizeof(double));
 
-    if (!E || !Z || !PE || !PZ || !DE || !DZ)
+    if (!E || !Z || !PE || !PZ || !DE || !DZ || !FE || !FZ)
     {
         printf("** Error: insufficient memory **\n");
         exit(1);
     }
     spectra_compute(s, u, v, w, E, Z, PE, PZ);
-    spectra_dissipation(s, w, DE, DZ);
+    spectra_dissipation(s, w, DE, DZ, FE, FZ);
     snprintf(name, sizeof(name), "./output/spectrum-1-%d.csv", frame);
     if (!(f = fopen(name, "w")))
     {
         printf("\nError while opening file\n");
         exit(1);
     }
-    fprintf(f, "# t = %.17g\nk,E,Z,Pi_E,Pi_Z,D_E,D_Z\n", t);
+    fprintf(f, "# t = %.17g\nk,E,Z,Pi_E,Pi_Z,D_E,D_Z,F_E,F_Z\n", t);
     for (b = 0; b < s->bins; b++)
-        fprintf(f, "%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g\n", b * s->dk, E[b], Z[b], PE[b], PZ[b], DE[b], DZ[b]);
+        fprintf(f, "%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g\n", b * s->dk, E[b], Z[b], PE[b], PZ[b],
+                DE[b], DZ[b], FE[b], FZ[b]);
     fclose(f);
     free(E);
     free(Z);
@@ -311,6 +327,8 @@ void spectra_write(spectra *s, mtrx u, mtrx v, mtrx w, double t)
     free(PZ);
     free(DE);
     free(DZ);
+    free(FE);
+    free(FZ);
 }
 
 void spectra_free(spectra *s)

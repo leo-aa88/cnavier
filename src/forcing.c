@@ -1,7 +1,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
+#include <fftw3.h>
 #include "forcing.h"
+#include "poisson.h"
 
 #define FORCING_PI 3.14159265358979323846
 
@@ -119,6 +121,23 @@ random_forcing *random_forcing_setup(const forcing_config *f, int nx, int ny, do
         Q = -(x2r + y2r);
         rf->amp[m] = 2.0 * Q * sqrt(f->random_rate * dt / (rf->modes * A));
     }
+    rf->nx = nx;
+    rf->ny = ny;
+    rf->cx = (double *)malloc((size_t)rf->modes * nx * sizeof(double));
+    rf->sx = (double *)malloc((size_t)rf->modes * nx * sizeof(double));
+    rf->cy = (double *)malloc((size_t)rf->modes * ny * sizeof(double));
+    rf->sy = (double *)malloc((size_t)rf->modes * ny * sizeof(double));
+    if (!rf->cx || !rf->sx || !rf->cy || !rf->sy)
+    {
+        printf("** Error: insufficient memory **\n");
+        exit(1);
+    }
+    for (m = 0; m < rf->modes; m++)
+        for (n = 0; n < nx; n++)
+        {
+            rf->cx[(size_t)m * nx + n] = rf->amp[m] * cos(rf->kx[m] * (n * dx));
+            rf->sx[(size_t)m * nx + n] = rf->amp[m] * sin(rf->kx[m] * (n * dx));
+        }
     rf->state = f->random_seed;
     return rf;
 }
@@ -130,6 +149,10 @@ void random_forcing_free(random_forcing *rf)
     free(rf->ky);
     free(rf->amp);
     free(rf->phase);
+    free(rf->cx);
+    free(rf->sx);
+    free(rf->cy);
+    free(rf->sy);
     free(rf);
 }
 
@@ -140,19 +163,111 @@ void random_forcing_draw(random_forcing *rf)
         rf->phase[m] = 2.0 * FORCING_PI * uniform(&rf->state);
 }
 
-void random_forcing_add(const random_forcing *rf, mtrx w, double dx, double dy)
+void random_forcing_add(random_forcing *rf, mtrx w, double dy)
 {
-    int i;
+    int i, m, nx = rf->nx, ny = rf->ny;
 
+    for (m = 0; m < rf->modes; m++)
+        for (i = 0; i < ny; i++)
+        {
+            rf->cy[(size_t)m * ny + i] = cos(rf->ky[m] * (i * dy) + rf->phase[m]);
+            rf->sy[(size_t)m * ny + i] = sin(rf->ky[m] * (i * dy) + rf->phase[m]);
+        }
 #ifdef _OPENMP
 #pragma omp parallel for schedule(static) if (w.m * w.n >= OMP_MIN_WORK)
 #endif
-    for (i = 0; i < w.m; i++)
-        for (int j = 0; j < w.n; j++)
+    for (i = 0; i < ny; i++)
+        for (int j = 0; j < nx; j++)
         {
             double s = 0.0;
-            for (int m = 0; m < rf->modes; m++)
-                s += rf->amp[m] * cos(rf->kx[m] * (j * dx) + rf->ky[m] * (i * dy) + rf->phase[m]);
+            for (int k = 0; k < rf->modes; k++)
+                s += rf->cx[(size_t)k * nx + j] * rf->cy[(size_t)k * ny + i] -
+                     rf->sx[(size_t)k * nx + j] * rf->sy[(size_t)k * ny + i];
             MAt(w, i, j) += s;
         }
+}
+
+// A phase in [0, 2 pi) for wavevector (m, n) and the seed, the same on every
+// grid that holds the mode
+static double mode_phase(unsigned long long seed, int m, int n)
+{
+    unsigned long long state = seed ^ ((unsigned long long)(unsigned)m * 0x9E3779B97F4A7C15ULL) ^
+                               ((unsigned long long)(unsigned)n * 0xC2B2AE3D27D4EB4FULL);
+    uniform(&state);
+    return 2.0 * FORCING_PI * uniform(&state);
+}
+
+void random_initial_field(mtrx w, mtrx u, mtrx v, double dx, double dy, double k0, double energy,
+                          unsigned long long seed)
+{
+    int i, j, nx = w.n, ny = w.m, h = nx / 2 + 1, n = nx * ny;
+    double Lx = nx * dx, Ly = ny * dy, dk0 = 2.0 * FORCING_PI / (Lx > Ly ? Lx : Ly), e = 0.0, scale;
+    double *real = fftw_alloc_real((size_t)n);
+    fftw_complex *psi = fftw_alloc_complex((size_t)ny * h), *tmp = fftw_alloc_complex((size_t)ny * h);
+    fftw_plan inv;
+    mtrx *out[3] = {&w, &u, &v};
+
+    if (!real || !psi || !tmp)
+    {
+        printf("** Error: insufficient memory **\n");
+        exit(1);
+    }
+    fftw_plans_hold();
+    inv = fftw_plan_dft_c2r_2d(ny, nx, tmp, real, FFTW_ESTIMATE);
+
+    // psi^ of mode (m, n) has the phase mode_phase(m, n), the same on every
+    // grid, and the amplitude of the spectrum: a shell of radius k holds ~k
+    // modes, each of energy k^2 |psi^|^2 / 2, so |psi^| ~ k^(1/2) exp(-(k/k0)^2)
+    // up to the constant fixed below. The column m = 0 of the half spectrum
+    // holds (0, n) and its conjugate (0, -n). No Nyquist modes.
+    for (i = 0; i < ny; i++)
+        for (j = 0; j < h; j++)
+        {
+            int jy = i <= ny / 2 ? i : i - ny;
+            double kx = 2.0 * FORCING_PI * j / Lx, ky = 2.0 * FORCING_PI * jy / Ly;
+            double k = sqrt(kx * kx + ky * ky) / dk0, *c = psi[i * h + j];
+            int nyquist = (nx % 2 == 0 && j == nx / 2) || (ny % 2 == 0 && i == ny / 2);
+            double a = (k == 0.0 || nyquist) ? 0.0 : sqrt(k) * exp(-(k / k0) * (k / k0));
+            double ph = (j == 0 && jy < 0) ? -mode_phase(seed, 0, -jy) : mode_phase(seed, j, jy);
+            c[0] = a * cos(ph);
+            c[1] = a * sin(ph);
+        }
+
+    // w = -lap psi, u = dpsi/dy, v = -dpsi/dx: multiply by k^2, i ky, -i kx
+    for (int f = 0; f < 3; f++)
+    {
+        for (i = 0; i < ny; i++)
+            for (j = 0; j < h; j++)
+            {
+                int jy = i <= ny / 2 ? i : i - ny;
+                double kx = 2.0 * FORCING_PI * j / Lx, ky = 2.0 * FORCING_PI * jy / Ly;
+                double *c = psi[i * h + j], *d = tmp[i * h + j];
+                if (f == 0)
+                {
+                    d[0] = (kx * kx + ky * ky) * c[0];
+                    d[1] = (kx * kx + ky * ky) * c[1];
+                }
+                else
+                {
+                    double s = f == 1 ? ky : -kx; // multiply by i s
+                    d[0] = -s * c[1];
+                    d[1] = s * c[0];
+                }
+            }
+        fftw_execute(inv);
+        for (i = 0; i < n; i++)
+            out[f]->M[i] = real[i];
+    }
+    for (i = 0; i < n; i++)
+        e += 0.5 * (u.M[i] * u.M[i] + v.M[i] * v.M[i]);
+    scale = e > 0.0 ? sqrt(energy / (e / n)) : 0.0;
+    for (int f = 0; f < 3; f++)
+        for (i = 0; i < n; i++)
+            out[f]->M[i] *= scale;
+
+    fftw_destroy_plan(inv);
+    fftw_plans_release();
+    fftw_free(real);
+    fftw_free(psi);
+    fftw_free(tmp);
 }

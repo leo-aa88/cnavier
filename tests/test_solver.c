@@ -106,6 +106,7 @@ static void problem_init_ext(problem *p, int nx, int ny, double Lx, double Ly, i
     p->cfg.poisson_tol = poisson_tol;
     p->cfg.beta = sor_beta(nx, ny, dx, dy);
     p->cfg.periodic = periodic;
+    p->cfg.advection = 0;
     p->cfg.bc = bc ? *bc : lid;
     p->cfg.DX = &p->DX;
     p->cfg.DY = &p->DY;
@@ -724,6 +725,17 @@ static void test_periodic_mms_order(void)
         snprintf(name, sizeof(name), "order %d: psi order %.2f", o, pp);
         check(name, isnan(pp) ? INFINITY : fabs(pp - o), 0.15);
     }
+    printf("Unit: ... with the skew-symmetric nonlinear term\n");
+    for (o = 2; o <= 6; o += 2)
+    {
+        // The products u w, v w carry twice the wavenumbers of the fields, so
+        // the asymptotic range starts on finer grids than for the advective form
+        mms_errors a = mms_run_periodic_advection(64, 64, 1.0, 1.0, 100.0, o, 1, 2.5E-3, 0.0, 0.25);
+        mms_errors b = mms_run_periodic_advection(128, 128, 1.0, 1.0, 100.0, o, 1, 2.5E-3, 0.0, 0.25);
+        double pw = log2(a.w.max / b.w.max);
+        snprintf(name, sizeof(name), "skew, order %d: w order %.2f (64 -> 128)", o, pw);
+        check(name, isnan(pw) ? INFINITY : fabs(pw - o), 0.15);
+    }
     // A 2 x 1 domain with dx != dy
     mms_errors a = mms_run_periodic(48, 32, 2.0, 1.0, 100.0, 6, 2, 2.5E-3, 0.0, 0.25);
     mms_errors b = mms_run_periodic(96, 64, 2.0, 1.0, 100.0, 6, 2, 2.5E-3, 0.0, 0.25);
@@ -1030,7 +1042,7 @@ static void discrete_budget(int n, int order, double out[2])
     PE = (double *)calloc(B, sizeof(double));
     DE = (double *)calloc(B, sizeof(double));
     spectra_compute(sp, p.u, p.v, p.w, NULL, NULL, PE, NULL);
-    spectra_dissipation(sp, p.w, DE, NULL);
+    spectra_dissipation(sp, p.w, DE, NULL, NULL, NULL);
     for (k = 0; k < B; k++)
         sumD += DE[k];
     rate = -PE[B - 1] - sumD;
@@ -1042,6 +1054,87 @@ static void discrete_budget(int n, int order, double out[2])
     free(DE);
     spectra_free(sp);
     problem_free(&p);
+}
+
+// The same with every damping term: drag, hypodrag and hyperviscosity of order
+// p. dE/dt = transfer - sum (D_E + F_E) and dZ/dt = transfer - sum (D_Z + F_Z),
+// each to the time-stepping error. out: the energy and the enstrophy residual.
+static void damped_budget(int n, int hyper_order, double out[2])
+{
+    int k, B, N = n * n;
+    double dt = 2E-5, nu = 0.01, rate[2] = {0.0, 0.0}, Em, Ep, Zm, Zp, *PE, *PZ, *D[4];
+    problem p;
+    spectra *sp;
+
+    problem_init_ext(&p, n, n, 1.0, 1.0, 1, 4, 1.0 / nu, 2, 3, dt, 1E-10, NULL, 0.0, NULL, NULL, 2, 0, 2);
+    rk4_free(&p.ctx);
+    p.cfg.forcing.drag = 0.3;
+    p.cfg.forcing.hypodrag = 20.0;
+    p.cfg.forcing.hyperviscosity = hyper_order == 2 ? 1E-6 : 1E-10;
+    p.cfg.forcing.hyper_order = hyper_order;
+    p.ctx = rk4_alloc(&p.cfg);
+    fill_pseudo_random(p.w.M, N, 5u);
+    step(p.w, p.u, p.v, &p.ctx);
+    flow_integrals fm = compute_integrals(&p.cfg, p.u, p.v, p.w, p.ctx.k1.M, p.ctx.k2.M);
+    Em = fm.E;
+    Zm = fm.Z;
+    step(p.w, p.u, p.v, &p.ctx);
+    sp = spectra_setup(&p.cfg);
+    B = spectra_bins(sp);
+    PE = (double *)calloc(B, sizeof(double));
+    PZ = (double *)calloc(B, sizeof(double));
+    for (k = 0; k < 4; k++)
+        D[k] = (double *)calloc(B, sizeof(double));
+    spectra_compute(sp, p.u, p.v, p.w, NULL, NULL, PE, PZ);
+    spectra_dissipation(sp, p.w, D[0], D[1], D[2], D[3]);
+    rate[0] = -PE[B - 1];
+    rate[1] = -PZ[B - 1];
+    for (k = 0; k < B; k++)
+    {
+        rate[0] -= D[0][k] + D[2][k];
+        rate[1] -= D[1][k] + D[3][k];
+    }
+    step(p.w, p.u, p.v, &p.ctx);
+    flow_integrals fp = compute_integrals(&p.cfg, p.u, p.v, p.w, p.ctx.k1.M, p.ctx.k2.M);
+    Ep = fp.E;
+    Zp = fp.Z;
+    out[0] = fabs((Ep - Em) / (2.0 * dt) - rate[0]) / fabs(rate[0]);
+    out[1] = fabs((Zp - Zm) / (2.0 * dt) - rate[1]) / fabs(rate[1]);
+    free(PE);
+    free(PZ);
+    for (k = 0; k < 4; k++)
+        free(D[k]);
+    spectra_free(sp);
+    problem_free(&p);
+}
+
+// The net nonlinear enstrophy transfer, -Pi_Z through the last shell, on a
+// random field, relative to the largest transfer in a shell: of order one for
+// the advective form, round-off for the skew-symmetric one
+static double enstrophy_defect(int nx, int ny, int order, int advection)
+{
+    int k, B, N = nx * ny;
+    double *PZ, peak = 0.0, net;
+    problem p;
+    spectra *sp;
+
+    problem_init_ext(&p, nx, ny, 1.0, 1.0, 1, order, 100.0, 2, 3, 1E-4, 1E-10, NULL, 0.0, NULL, NULL, 2, 0, 2);
+    rk4_free(&p.ctx);
+    p.cfg.advection = advection;
+    p.ctx = rk4_alloc(&p.cfg);
+    fill_pseudo_random(p.w.M, N, 9u);
+    step(p.w, p.u, p.v, &p.ctx);
+    sp = spectra_setup(&p.cfg);
+    B = spectra_bins(sp);
+    PZ = (double *)calloc(B, sizeof(double));
+    spectra_compute(sp, p.u, p.v, p.w, NULL, NULL, NULL, PZ);
+    for (k = 0; k < B; k++)
+        peak = fmax(peak, fabs(PZ[k] - (k ? PZ[k - 1] : 0.0)));
+    net = fabs(PZ[B - 1]) / peak;
+    free(PZ);
+    spectra_free(sp);
+    problem_free(&p);
+    return net;
 }
 
 static void test_budgets(void)
@@ -1068,6 +1161,23 @@ static void test_budgets(void)
         discrete_budget(24, o, r);
         snprintf(name, sizeof(name), "order %d, 24x24: discrete budget %.1e (continuum %.1e)", o, r[0], r[1]);
         check(name, r[0], 1E-5);
+    }
+
+    printf("Diagnostics: the skew-symmetric nonlinear term conserves enstrophy, random field\n");
+    for (int o = 2; o <= 6; o += 2)
+    {
+        double adv = enstrophy_defect(24, 20, o, 0), skew = enstrophy_defect(24, 20, o, 1);
+        snprintf(name, sizeof(name), "order %d, 24x20: net transfer %.1e (advective form %.1e)", o, skew, adv);
+        check(name, skew, 1E-13);
+    }
+
+    printf("Diagnostics: ... with drag, hypodrag and hyperviscosity, random field, order 4\n");
+    for (int hp = 2; hp <= 3; hp++)
+    {
+        double r[2];
+        damped_budget(24, hp, r);
+        snprintf(name, sizeof(name), "hyperviscosity order %d: energy %.1e, enstrophy %.1e", hp, r[0], r[1]);
+        check(name, fmax(r[0], r[1]), 2E-6);
     }
 
     printf("Diagnostics: spectra and budgets, unforced periodic flow, order 6, 32x32 -> 64x64\n");
@@ -1133,7 +1243,7 @@ static void test_kolmogorov_laminar(void)
     spectra *sp = spectra_setup(&p.cfg);
     int b, B = spectra_bins(sp);
     double *DE = (double *)calloc(B, sizeof(double)), sumD = 0.0;
-    spectra_dissipation(sp, p.w, DE, NULL);
+    spectra_dissipation(sp, p.w, DE, NULL, NULL, NULL);
     for (b = 0; b < B; b++)
         sumD += DE[b];
     snprintf(name, sizeof(name), "discrete balance I_disc = sum D_E + 2 drag E (I_disc / I = %.6f)", fi.I_disc / fi.I);
@@ -1141,6 +1251,59 @@ static void test_kolmogorov_laminar(void)
     free(DE);
     spectra_free(sp);
     problem_free(&p);
+}
+
+// The decaying-turbulence initial field: energy 1/2 <u^2 + v^2> as asked,
+// u, v the velocity of w (u_x + v_y = 0 and v_x - u_y = w, spectrally exact,
+// so to the order of the stencils with DX, DY), and the same field on a grid
+// twice as fine
+static void test_random_initial_field(void)
+{
+    int i, j, n = 64, N = n * n;
+    double err = 0.0, peak = 0.0, e = 0.0, div = 0.0, curl = 0.0, umax = 0.0;
+    mtrx w = initm(n, n), u = initm(n, n), v = initm(n, n);
+    mtrx w2 = initm(2 * n, 2 * n), u2 = initm(2 * n, 2 * n), v2 = initm(2 * n, 2 * n);
+    problem p;
+    char name[96];
+
+    printf("Initial field: decaying turbulence, %dx%d and %dx%d\n", n, n, 2 * n, 2 * n);
+    random_initial_field(w, u, v, 1.0 / n, 1.0 / n, 4.0, 0.5, 3);
+    random_initial_field(w2, u2, v2, 0.5 / n, 0.5 / n, 4.0, 0.5, 3);
+    for (i = 0; i < n; i++)
+        for (j = 0; j < n; j++)
+        {
+            err = fmax(err, fabs(MAt(w, i, j) - MAt(w2, 2 * i, 2 * j)));
+            peak = fmax(peak, fabs(MAt(w, i, j)));
+        }
+    for (i = 0; i < N; i++)
+        e += 0.5 * (u.M[i] * u.M[i] + v.M[i] * v.M[i]) / N;
+    check("energy 1/2 <u^2 + v^2> = 0.5", fabs(e - 0.5), 1E-13);
+    snprintf(name, sizeof(name), "same field on the grid twice as fine (max |w| %.0f)", peak);
+    check(name, err / peak, 1E-12);
+
+    problem_init_ext(&p, n, n, 1.0, 1.0, 1, 6, 100.0, 2, 3, 1E-3, 1E-10, NULL, 0.0, NULL, NULL, 2, 0, 2);
+    spmv(p.DX, u.M, p.ctx.k1.M);
+    spmv(p.DY, v.M, p.ctx.k2.M);
+    for (i = 0; i < N; i++)
+    {
+        div = fmax(div, fabs(p.ctx.k1.M[i] + p.ctx.k2.M[i]));
+        umax = fmax(umax, fabs(u.M[i]));
+    }
+    spmv(p.DX, v.M, p.ctx.k1.M);
+    spmv(p.DY, u.M, p.ctx.k2.M);
+    for (i = 0; i < N; i++)
+        curl = fmax(curl, fabs(p.ctx.k1.M[i] - p.ctx.k2.M[i] - w.M[i]));
+    snprintf(name, sizeof(name), "DX u + DY v = 0, DX v - DY u = w (order 6): %.1e, %.1e", div / umax, curl / peak);
+    // Truncation error of order 6 on the spectrum (2 % at |k|/2 pi = 12):
+    // this checks signs and axes, which would be wrong by O(1)
+    check(name, fmax(div / umax, curl / peak), 1E-2);
+    problem_free(&p);
+    freem(&w);
+    freem(&u);
+    freem(&v);
+    freem(&w2);
+    freem(&u2);
+    freem(&v2);
 }
 
 // Drag on the Taylor-Green vortex: E = 1/4 exp(-(4 nu k^2 + 2 drag) t)
@@ -1192,9 +1355,9 @@ static void test_random_kick(void)
     a = random_forcing_setup(&fc, n, n, p.cfg.dx, p.cfg.dy, dt, &p.DX, &p.DY, &p.DX2, &p.DY2);
     b = random_forcing_setup(&fc, n, n, p.cfg.dx, p.cfg.dy, dt, &p.DX, &p.DY, &p.DX2, &p.DY2);
     random_forcing_draw(a);
-    random_forcing_add(a, w, p.cfg.dx, p.cfg.dy);
+    random_forcing_add(a, w, p.cfg.dy);
     random_forcing_draw(b);
-    random_forcing_add(b, w2, p.cfg.dx, p.cfg.dy);
+    random_forcing_add(b, w2, p.cfg.dy);
     periodic_solver *ps = periodic_setup(n, n, &p.DX2, &p.DY2);
     negcpy(f, w);
     poisson_periodic(ps, f, psi);
@@ -2205,8 +2368,9 @@ static void test_gpu_integrals(void)
     }
 }
 
-// Drag, Kolmogorov forcing and random kicks on the GPU match the CPU (same
-// seed, so the same kicks), with RK4 and Euler, and so does the energy input
+// Drag, hypodrag, hyperviscosity, Kolmogorov forcing and random kicks, with the
+// skew-symmetric nonlinear term, on the GPU match the CPU (same seed, so the
+// same kicks), with RK4 and Euler, and so does the energy input
 static void test_gpu_forcing(int time_scheme, const char *label)
 {
     int t, nx = 48, ny = 40, N = nx * ny;
@@ -2221,12 +2385,18 @@ static void test_gpu_forcing(int time_scheme, const char *label)
     p.cfg.forcing.random_kf = 5.0;
     p.cfg.forcing.random_dk = 1.0;
     p.cfg.forcing.random_seed = 7;
+    p.cfg.forcing.hypodrag = 0.5;
+    p.cfg.forcing.hyperviscosity = 1E-10;
+    p.cfg.forcing.hyper_order = 2;
+    p.cfg.advection = 1;
     p.ctx = rk4_alloc(&p.cfg);
     gpu_solver *g = gpu_for(&p);
     mtrx u = initm(ny, nx), v = initm(ny, nx), w = initm(ny, nx);
     double E, Z, P, I;
 
-    printf("GPU: %s with drag, Kolmogorov and random forcing, %dx%d periodic grid\n", label, nx, ny);
+    printf("GPU: %s, skew-symmetric, with drag, hypodrag, hyperviscosity, Kolmogorov and random forcing, %dx%d "
+           "periodic grid\n",
+           label, nx, ny);
     gpu_set_fields(g, &p.u, &p.v, &p.w);
     for (t = 0; t < 40; t++)
     {
@@ -2403,6 +2573,7 @@ int main(int argc, char **argv)
     test_integrals_taylor_green();
     test_kolmogorov_laminar();
     test_drag_decay();
+    test_random_initial_field();
     test_random_kick();
     test_budgets();
     test_cpu_operator_axes(13, 9);

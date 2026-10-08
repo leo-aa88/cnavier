@@ -71,6 +71,17 @@ expect nonzero --case forced --forcing-rate -1
 expect nonzero --case forced --forcing-width 0
 expect nonzero --case forced --seed -1
 expect nonzero --case forced --forcing-k 1000
+expect nonzero --hyperviscosity 1e-12
+expect nonzero --case forced --hyperviscosity -1
+expect nonzero --case forced --hyper-order 1
+expect nonzero --case forced --hyper-order 9
+expect nonzero --case forced --hypodrag -1
+expect nonzero --case forced --n 32 --hyperviscosity 1
+expect nonzero --case decaying --peak-k 0
+expect nonzero --case decaying --spectrum-interval -1
+expect nonzero --spectrum-interval 5
+expect nonzero --advection skew
+expect nonzero --case forced --advection arakawa
 expect nonzero --n 9 --velocity-order 4
 expect nonzero --case taylor-green --velocity-order 4
 expect nonzero --case shear-layer --poisson-order 4
@@ -87,6 +98,8 @@ expect 0 --poisson-order 4 --wall-closure briley --velocity-order 4 --nx 33 --ny
 expect 0 --case kolmogorov --n 32 --re 50 --tf 0.01 --output-interval 0
 expect 0 --case forced --n 32 --tf 0.01 --output-interval 0
 expect 0 --case taylor-green --n 32 --drag 0.5 --forcing-rate 0.1 --tf 0.01 --output-interval 0
+expect 0 --case decaying --n 32 --tf 0.01 --output-interval 0 --spectrum-interval 2 --advection skew
+expect 0 --case forced --n 32 --hyperviscosity 1e-12 --hyper-order 3 --hypodrag 5 --tf 0.01 --output-interval 0
 
 echo
 echo "$count checks, $failed failed"

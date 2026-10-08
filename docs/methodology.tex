@@ -13,6 +13,8 @@
 \usepackage{microtype}
 \usepackage{amsmath,amssymb,bm}
 \usepackage{booktabs}
+\usepackage{graphicx}
+\graphicspath{{figures/}}
 \usepackage{longtable}
 \usepackage{array}
 \usepackage{enumitem}
@@ -370,6 +372,13 @@ Define the semi-discrete right-hand side
 \end{equation}
 where $\odot$ denotes pointwise multiplication.  This is exactly the operation implemented in the CPU \code{dwdt()} routine and in the CUDA \code{rhs\_kernel}.
 
+On a periodic grid the nonlinear term can instead take the skew-symmetric form (\code{--advection skew}, \code{solver_config.advection}),
+\begin{equation}
+N_s=-\tfrac12\left[u\odot D_x\omega+v\odot D_y\omega\right]-\tfrac12\left[D_x(u\odot\omega)+D_y(v\odot\omega)\right],
+\label{eq:skew}
+\end{equation}
+the average of the advective and the divergence forms, which are equal in the continuum because $\nabla\cdot\mathbf{u}=0$.  The periodic centred operators are antisymmetric, $D_x^{\mathsf T}=-D_x$, and the discrete velocity $u=D_y\psi$, $v=-D_x\psi$ is exactly divergence-free, $D_xu+D_yv=(D_xD_y-D_yD_x)\psi=0$, since circulant operators commute.  Then $\sum\omega\,D_x(u\omega)=-\sum u\,\omega\,D_x\omega$, the two halves cancel, and $\sum_{\text{grid}}\omega\odot N_s=0$: the nonlinear term conserves the discrete enstrophy $\tfrac12\langle\omega^2\rangle$ exactly, as the continuum one does.  The advective form does not.  Its error is of the order of the scheme on resolved fields, but in turbulence, where the spectrum reaches the grid cutoff, it creates enstrophy there: $40$--$45\,\%$ of the enstrophy input in the $512^2$ runs of \cref{sec:cascade}.  Neither form conserves the energy $\tfrac12\langle u^2+v^2\rangle$ exactly.  The energy conserved by an Arakawa-type Jacobian is $\tfrac12\langle\psi\omega\rangle$, which differs from it because the Poisson operator $D_{xx}+D_{yy}$ is not $D_x^2+D_y^2$ (\cref{sec:diagnostics}).  The skew-symmetric form costs two more sparse products per evaluation and keeps the order of the stencils (\cref{sec:periodic-verification}).  The advective form remains the default.
+
 The convective terms are centered in the interior for all three selectable orders.  Centered advection is nondissipative, which is attractive for accuracy but provides no built-in upwind damping.  Consequently, timestep choice and adequate viscous resolution become important, particularly as $\Rey$ increases.
 
 % =============================================================================
@@ -507,16 +516,16 @@ The FFT solver is ``direct'' with respect to the \emph{discrete second-order Poi
 \subsection{Forcing and drag}
 \label{sec:forcing}
 
-On the periodic grid three built-in terms drive and damp the flow,
+On the periodic grid five built-in terms drive and damp the flow,
 \begin{equation}
-\frac{\partial\omega}{\partial t}=-\mathbf{u}\cdot\nabla\omega+\nu\nabla^2\omega-\alpha\omega+f_K,
+\frac{\partial\omega}{\partial t}=-\mathbf{u}\cdot\nabla\omega+\nu\nabla^2\omega-\alpha\omega+f_K-\nu_h(-\nabla^2)^p\omega-\alpha_h\psi,
 \qquad f_K=-Ak\cos(ky),\quad k=2\pi n/L_y,
 \end{equation}
-plus a random kick before every step (\code{solver_config.forcing}, \code{src/forcing.c}).  The linear drag $-\alpha\omega$ removes the energy the inverse cascade carries to the largest scales.  $f_K$ is the curl of the Kolmogorov body force $A\sin(ky)\,\hat{\mathbf x}$; its laminar state is $\omega=f_K/(\nu k^2+\alpha)$, on which the nonlinear term vanishes.  The random kick adds
+plus a random kick before every step (\code{solver_config.forcing}, \code{src/forcing.c}).  The linear drag $-\alpha\omega$ removes the energy the inverse cascade carries to the largest scales.  The hyperviscosity $-\nu_h(-\nabla^2)^p\omega$ applies the discrete Laplacian $D_{xx}+D_{yy}$ $p$ times; its damping rate $\nu_hQ^p$ is negligible except near the grid cutoff, so it removes the enstrophy of the direct cascade there and leaves the range above almost inviscid, which plain viscosity at an affordable resolution cannot do.  The hypodrag $-\alpha_h\psi=-\alpha_h(-\nabla^2)^{-1}\omega$ uses the stream function of the stage; its damping rate $\alpha_h/Q$ confines it to the largest scales, where it stops the inverse cascade instead of damping it along the way as linear drag does.  The viscous time-step limit of \cref{sec:stability} includes the hyperviscosity, whose largest eigenvalue is $\nu_h\lambda^p$ with $\lambda$ that of $-(D_{xx}+D_{yy})$.  $f_K$ is the curl of the Kolmogorov body force $A\sin(ky)\,\hat{\mathbf x}$; its laminar state is $\omega=f_K/(\nu k^2+\alpha)$, on which the nonlinear term vanishes.  The random kick adds
 \begin{equation}
 \delta\omega=\sum_m a_m\cos(\mathbf{k}_m\cdot\mathbf{x}+\phi_m)
 \end{equation}
-over the wavevectors $\mathbf{k}_m$ of the half plane with $|\,|\mathbf{k}_m|/\Delta k-k_f|\le\delta_k$, with phases $\phi_m$ drawn anew each step.  With $A_m$ and $Q_m$ the symbols of \cref{sec:diagnostics}, a mode carries the discrete energy $A_ma_m^2/(4Q_m^2)$, and distinct modes are orthogonal on the grid, so $a_m=2Q_m\sqrt{\varepsilon\,\Delta t/(MA_m)}$ makes each kick carry exactly $\varepsilon\,\Delta t$ of the solver's own kinetic energy.  Since the phases are independent of the flow, the cross term with $\omega$ averages to zero and the energy is injected at rate $\varepsilon$: white-in-time forcing.  The phases come from a seeded generator on the host, so the CPU and GPU solvers make the same kicks; only the phases go to the GPU each step.  The integrals of \cref{sec:diagnostics} gain the energy input $I=\langle u\,A\sin(ky)\rangle+\varepsilon$.  For the random forcing, $\varepsilon$ is the \emph{expected} input: a kick also changes $E$ by $\langle\mathbf{u}\cdot\delta\mathbf{u}\rangle$, which averages to zero but not on a single step, and divided by $\Delta t$ it grows noisier as $\Delta t\to0$, as white noise does.  The energy budget therefore holds on average, and at a statistically steady state $I_{\mathrm{disc}}=\sum_bD_E+2\alpha E$, which is $I=2\nu Z+2\alpha E$ when the flow is resolved.  The Kolmogorov work is the physical, continuum expression.  The rate at which the implemented source $f_K$ changes the discrete energy differs from it: $f_K$ is a single mode, its stream function is $\psi_f=-(Ak/Q)\cos(ky)$ and $D_y$ gives it the velocity $(Ak\tilde k_1/Q)\sin(ky)$, with $\tilde k_1$ and $Q$ the symbols of $D_y$ and $-D_{yy}$ at $k$, so the discrete injection is $(k\tilde k_1/Q)\,\langle uA\sin(ky)\rangle=1+\Oh(h^p)$ times the work.  \code{integrals.csv} has both, $I$ and $I_{\mathrm{disc}}$; with $I_{\mathrm{disc}}$ the discrete budget $\mathrm{d}E/\mathrm{d}t=\sum T_E-\sum D_E-2\alpha E+I_{\mathrm{disc}}$ is exact.  With random forcing the time integration is RK4 for the deterministic terms plus an additive kick per step, so the trajectories are not fourth order in time.
+over the wavevectors $\mathbf{k}_m$ of the half plane with $|\,|\mathbf{k}_m|/\Delta k-k_f|\le\delta_k$, with phases $\phi_m$ drawn anew each step.  With $A_m$ and $Q_m$ the symbols of \cref{sec:diagnostics}, a mode carries the discrete energy $A_ma_m^2/(4Q_m^2)$, and distinct modes are orthogonal on the grid, so $a_m=2Q_m\sqrt{\varepsilon\,\Delta t/(MA_m)}$ makes each kick carry exactly $\varepsilon\,\Delta t$ of the solver's own kinetic energy.  Since the phases are independent of the flow, the cross term with $\omega$ averages to zero and the energy is injected at rate $\varepsilon$: white-in-time forcing.  The phases come from a seeded generator on the host, so the CPU and GPU solvers make the same kicks; only the phases go to the GPU each step.  The integrals of \cref{sec:diagnostics} gain the energy input $I=\langle u\,A\sin(ky)\rangle+\varepsilon$.  For the random forcing, $\varepsilon$ is the \emph{expected} input: a kick also changes $E$ by $\langle\mathbf{u}\cdot\delta\mathbf{u}\rangle$, which averages to zero but not on a single step, and divided by $\Delta t$ it grows noisier as $\Delta t\to0$, as white noise does.  The energy budget therefore holds on average, and at a statistically steady state $I_{\mathrm{disc}}=\sum_bD_E+2\alpha E$, which is $I=2\nu Z+2\alpha E$ when the flow is resolved.  The Kolmogorov work is the physical, continuum expression.  The rate at which the implemented source $f_K$ changes the discrete energy differs from it: $f_K$ is a single mode, its stream function is $\psi_f=-(Ak/Q)\cos(ky)$ and $D_y$ gives it the velocity $(Ak\tilde k_1/Q)\sin(ky)$, with $\tilde k_1$ and $Q$ the symbols of $D_y$ and $-D_{yy}$ at $k$, so the discrete injection is $(k\tilde k_1/Q)\,\langle uA\sin(ky)\rangle=1+\Oh(h^p)$ times the work.  \code{integrals.csv} has both, $I$ and $I_{\mathrm{disc}}$; with $I_{\mathrm{disc}}$ the discrete budget $\mathrm{d}E/\mathrm{d}t=\sum T_E-\sum(D_E+F_E)+I_{\mathrm{disc}}$ is exact.  With random forcing the time integration is RK4 for the deterministic terms plus an additive kick per step, so the trajectories are not fourth order in time.
 
 \subsection{Fourth-order compact Poisson operator}
 \label{sec:compact-poisson}
@@ -538,7 +547,7 @@ With \code{solver_config.periodic} set, the domain $[0,L_x)\times[0,L_y)$ is per
   \item \textbf{Poisson operator.}  The Laplacian is $D_{xx}+D_{yy}$, built from the same second-derivative operators as the transport, so the Poisson solve has the order of the derivatives rather than second order.  Both operators are circulant, so the two-dimensional discrete Fourier transform diagonalises them: mode $(k_x,k_y)$ has eigenvalue $\lambda_x(k_x)+\lambda_y(k_y)$, where $\lambda_x(k)=\sum_m c_m\cos(2\pi km/n_x)$ is the symbol of the stencil with coefficients $c_m$, read from the operator's first row.  The solver transforms $-\omega$ with a real-to-complex FFT (FFTW, or cuFFT on the GPU), divides by the eigenvalues, and transforms back.  The mean mode has eigenvalue zero: the mean of $\psi$ is set to zero and the mean of $\omega$ is ignored, as a periodic domain carries no net circulation.
   \item \textbf{No wall terms.}  The wall-velocity and wall-vorticity updates are skipped.  The periodic grids need the FFT solver; Gauss--Seidel and SOR are not offered.
 \end{itemize}
-The command line provides two periodic cases on the unit square: the Taylor--Green vortex $\psi=\sin(kx)\sin(ky)\,e^{-2k^2t/\Rey}/k$, $k=2\pi$, an exact solution whose error the program prints at the end, and the double shear layer of Bell, Colella and Glaz (1989), which rolls up into vortices at high Reynolds numbers.
+The command line provides periodic cases on the unit square, among them (with those of \cref{sec:forcing}) decaying turbulence from a random-phase field with the energy spectrum $(k/k_0)^4e^{-2(k/k_0)^2}$, normalised to $E=\tfrac12$ (\code{--case decaying}, \code{--peak-k}); the Taylor--Green vortex $\psi=\sin(kx)\sin(ky)\,e^{-2k^2t/\Rey}/k$, $k=2\pi$, an exact solution whose error the program prints at the end, and the double shear layer of Bell, Colella and Glaz (1989), which rolls up into vortices at high Reynolds numbers.
 
 % =============================================================================
 \section{Complete Timestep Algorithms}
@@ -611,6 +620,7 @@ for each timestep:
 
 % =============================================================================
 \section{Stability and Timestep Selection}
+\label{sec:stability}
 % =============================================================================
 
 Because both time integrators are explicit, the timestep is restricted by the spectra of the discrete advection and diffusion operators.
@@ -784,12 +794,12 @@ with the transforms normalised so that $\sum_bE(k_b)=E$ and $\sum_bZ(k_b)=Z$; a 
 \Pi_E(k_b)=-\sum_{b'\le b}\sum_{\mathbf{k}\in b'}\frac{A}{Q}\,\mathrm{Re}\left(\hat\psi^*_\mathbf{k}\hat N_\mathbf{k}\right),\qquad
 \Pi_Z(k_b)=-\sum_{b'\le b}\sum_{\mathbf{k}\in b'}\mathrm{Re}\left(\hat\omega^*_\mathbf{k}\hat N_\mathbf{k}\right),
 \end{equation}
-where $N=-(uD_x\omega+vD_y\omega)$ is the solver's own nonlinear term and $\hat\psi$ solves $(D_{xx}+D_{yy})\psi=-\omega$ with the solver's eigenvalues (\cref{sec:periodic}).  The factor $A/Q$ makes $\Pi_E$ the transfer of the same energy that $E(k)$ measures: summed over all shells, the transfers equal the rates at which $N$ changes $\tfrac12\langle u^2+v^2\rangle$ and $\tfrac12\langle\omega^2\rangle$ in the discrete equations, to round-off.  Without it ($\mathrm{Re}(\hat\psi^*\hat N)$, the continuum expression) the energy transfer is off by $0.5$--$5\,\%$ on a random field on $16^2$--$24^2$ grids.  A positive flux carries energy or enstrophy towards larger $k$.  The files also hold the viscous dissipation of each shell as the discrete equations have it: the viscous term $\nu(D_{xx}+D_{yy})\omega$ has symbol $-\nu Q$, so it removes
+where $N=-(uD_x\omega+vD_y\omega)$, or $N_s$ of \cref{eq:skew}, is the solver's own nonlinear term and $\hat\psi$ solves $(D_{xx}+D_{yy})\psi=-\omega$ with the solver's eigenvalues (\cref{sec:periodic}).  The factor $A/Q$ makes $\Pi_E$ the transfer of the same energy that $E(k)$ measures: summed over all shells, the transfers equal the rates at which $N$ changes $\tfrac12\langle u^2+v^2\rangle$ and $\tfrac12\langle\omega^2\rangle$ in the discrete equations, to round-off.  Without it ($\mathrm{Re}(\hat\psi^*\hat N)$, the continuum expression) the energy transfer is off by $0.5$--$5\,\%$ on a random field on $16^2$--$24^2$ grids.  A positive flux carries energy or enstrophy towards larger $k$.  The files also hold the viscous dissipation of each shell as the discrete equations have it: the viscous term $\nu(D_{xx}+D_{yy})\omega$ has symbol $-\nu Q$, so it removes
 \begin{equation}
 D_E(k_b)=\nu\sum_{\mathbf{k}\in b}\frac{A}{Q}|\hat\omega_\mathbf{k}|^2,\qquad
 D_Z(k_b)=\nu\sum_{\mathbf{k}\in b}Q|\hat\omega_\mathbf{k}|^2
 \end{equation}
-of energy and enstrophy, against the continuum $2\nu Z(k_b)$ and $2\nu P(k_b)$, which they approach where $A/Q\to1$.  Drag removes exactly $2\alpha E$.  The energy budget of the discrete equations is therefore $\mathrm{d}E/\mathrm{d}t=\sum_bT_E(k_b)-\sum_bD_E(k_b)-2\alpha E+I$ exactly.  In the continuum the nonlinear term conserves both, so $\Pi_E$ and $\Pi_Z$ vanish beyond the largest shell; in the discrete equations they do so up to the order of the derivatives (\cref{sec:diagnostics-verification}).
+of energy and enstrophy, against the continuum $2\nu Z(k_b)$ and $2\nu P(k_b)$, which they approach where $A/Q\to1$.  Drag removes exactly $2\alpha E$.  In general a damping term of symbol $-\sigma(\mathbf{k})$ removes $\sigma(A/Q^2)|\hat\omega|^2$ of energy and $\sigma|\hat\omega|^2$ of enstrophy per mode.  $D_E$ and $D_Z$ hold the small-scale terms, viscosity ($\sigma=\nu Q$) and hyperviscosity ($\nu_hQ^p$); $F_E$ and $F_Z$ hold the large-scale ones, drag ($\sigma=\alpha$, so $\sum F_E=2\alpha E$) and hypodrag ($\alpha_h/Q$).  The energy budget of the discrete equations is therefore $\mathrm{d}E/\mathrm{d}t=\sum_bT_E(k_b)-\sum_b(D_E+F_E)(k_b)+I_{\mathrm{disc}}$ exactly, and the enstrophy budget likewise without forcing.  The option \code{--spectrum-interval} writes the spectra more often than the VTK frames, for time averages.  In the continuum the nonlinear term conserves both, so $\Pi_E$ and $\Pi_Z$ vanish beyond the largest shell; in the discrete equations they do so up to the order of the derivatives on resolved fields (\cref{sec:diagnostics-verification}), and $\Pi_Z$ exactly with the skew-symmetric form.
 
 % =============================================================================
 \section{Verification and Validation}
@@ -995,7 +1005,71 @@ Order, grids & energy transfer & enstrophy transfer & $|\dot E+2\nu Z|/2\nu Z$ \
 
 \subsection{Forcing and drag}
 
-Kolmogorov forcing ($A=1$, $n=2$, $\nu=0.05$, $\alpha=0.1$, $32^2$, order 6) reaches the discrete laminar state $f_K/(\nu Q+\alpha)$, with $Q$ the symbol of $D_{yy}$, to $4\times10^{-11}$, and the continuum one to $6\times10^{-6}$; the physical input $I$ balances $2\nu Z+2\alpha E$ to $2.5\times10^{-5}$, the order of the scheme, and the discrete input $I_{\mathrm{disc}}$ balances $\sum D_E+2\alpha E$ to $4\times10^{-11}$, the convergence of the steady state ($I_{\mathrm{disc}}/I=0.999981$).  Drag on the Taylor--Green vortex gives $E=\tfrac14e^{-(4\nu k^2+2\alpha)t}$ to $6\times10^{-7}$.  A random kick carries $\varepsilon\,\Delta t$ of discrete energy to $5\times10^{-15}$, and two generators with the same seed make the same kick.  The GPU matches the CPU with all three terms to $3\times10^{-15}$, with RK4 and Euler.  \code{make regression} checks the laminar Kolmogorov energy and energy input from the command line.
+Kolmogorov forcing ($A=1$, $n=2$, $\nu=0.05$, $\alpha=0.1$, $32^2$, order 6) reaches the discrete laminar state $f_K/(\nu Q+\alpha)$, with $Q$ the symbol of $D_{yy}$, to $4\times10^{-11}$, and the continuum one to $6\times10^{-6}$; the physical input $I$ balances $2\nu Z+2\alpha E$ to $2.5\times10^{-5}$, the order of the scheme, and the discrete input $I_{\mathrm{disc}}$ balances $\sum D_E+2\alpha E$ to $4\times10^{-11}$, the convergence of the steady state ($I_{\mathrm{disc}}/I=0.999981$).  Drag on the Taylor--Green vortex gives $E=\tfrac14e^{-(4\nu k^2+2\alpha)t}$ to $6\times10^{-7}$.  A random kick carries $\varepsilon\,\Delta t$ of discrete energy to $5\times10^{-15}$, and two generators with the same seed make the same kick.  The GPU matches the CPU to $3\times10^{-15}$ with RK4 and Euler, with every term at once: drag, Kolmogorov and random forcing, hyperviscosity, hypodrag and the skew-symmetric nonlinear term.  With drag, hypodrag and hyperviscosity of order 2 and 3 on a random field ($24^2$, order 4), the energy and the enstrophy budgets $\mathrm{d}E/\mathrm{d}t=\sum T_E-\sum(D_E+F_E)$ and $\mathrm{d}Z/\mathrm{d}t=\sum T_Z-\sum(D_Z+F_Z)$ close to $4\times10^{-7}$ and $10^{-6}$, the time-stepping error (both fall by four when $\Delta t$ is halved).  On a random $24\times20$ field the net enstrophy transfer of the skew-symmetric form is below $3\times10^{-16}$ of the largest shell transfer for orders 2, 4 and 6, against $0.4$--$0.7$ for the advective form, and the skew-symmetric form converges at orders $2.00$, $3.97$ and $5.95$ on the manufactured solution ($64^2$ to $128^2$; on $32^2$ to $64^2$, $3.85$ and $5.72$ for orders 4 and 6, as the products $u\omega$, $v\omega$ carry twice the wavenumbers).  \code{make regression} checks the laminar Kolmogorov energy and energy input from the command line.
+
+\subsection{Two-dimensional turbulence}
+\label{sec:cascade}
+
+Forced two-dimensional turbulence has two inertial ranges \cite{kraichnan1967}: energy cascades to scales larger than the forcing scale, with $E(k)\propto\varepsilon^{2/3}k^{-5/3}$ and $\Pi_E=-\varepsilon$, and enstrophy to smaller scales, with $E(k)\propto\eta^{2/3}k^{-3}$ and $\Pi_Z=\eta$.  Ranges this clean need the dissipation confined to the two ends of the spectrum.  Plain viscosity and linear drag act at every scale: a first $256^2$ run with them ($\Rey=9000$, $\alpha=0.1$) gave the right signs of both fluxes but no plateau.  The runs below use hyperviscosity ($p=4$) and hypodrag (\cref{sec:forcing}) and no viscosity to speak of ($\Rey=10^7$).  All are on $512^2$ with order 6 and RK4, on the GPU.  Each injects $\varepsilon=0.1$ with the random forcing on the shell $|K-K_f|\le1$, with $K=|\mathbf{k}|/2\pi$, and writes the spectra every $0.25$ (direct) or $0.1$ (inverse) time units; \code{tools/cascade.py} averages them.
+
+\begin{center}\small
+\begin{tabular}{lcccccc}
+\toprule
+Run & $K_f$ & $\nu_h$ & $\alpha_h$ & $\Delta t$ & steps & mean over \\
+\midrule
+direct & 4 & $6.5\times10^{-24}$ & 40 & $5\times10^{-4}$ & 60\,000 & $t=10$--$30$ \\
+inverse & 40 & $1.6\times10^{-23}$ & 1200 & $4\times10^{-4}$ & 30\,000 & $t=4$--$12$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Direct cascade.}  With the skew-symmetric form (\cref{eq:skew}), $\Pi_Z=43.8$ on average over $K=10$--$100$ and stays within $42.7$--$46.3$ there, a plateau over a decade (\cref{fig:direct}).  Above the forcing $|\Pi_E|\le4\times10^{-4}$, $0.4\,\%$ of $\varepsilon$; below it $\Pi_E<0$.  The spectrum falls as $k^{-3.3}$ (fit over $K=8$--$100$), slightly steeper than $k^{-3}$, as is usual at this range.  The net nonlinear enstrophy transfer, $-\Pi_Z$ through the last shell, is $-3\times10^{-15}$.  Of the enstrophy input, $44$ is removed by the hyperviscosity and $17$ by the hypodrag; of the energy, $0.090$ by the hypodrag and $6\times10^{-5}$ by the hyperviscosity.  The rest of $\varepsilon$ is the sampling error of the 80 frames.  With the advective form the same run has a less flat flux ($45.5$--$51.3$), and near the cutoff the nonlinear term \emph{creates} enstrophy at $14.3$ per unit time, $23\,\%$ of the input, so that $\Pi_Z$ ends at $-14$ instead of $0$.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{cascade_direct.png}
+\caption{Direct cascade: time-mean energy spectrum (with $k^{-5/3}$ and $k^{-3}$ for reference) and fluxes, skew-symmetric form; dashed, the advective form.}
+\label{fig:direct}
+\end{figure}
+
+\paragraph{Inverse cascade.}  $\Pi_E$ lies between $-0.093$ and $-0.096$, about $-0.95\,\varepsilon$, over $K=20$--$38$ (\cref{fig:inverse}), and $k^{5/3}E(k)$ is flat to $\pm6\,\%$ over $K=12$--$30$.  The hypodrag, whose rate is $\alpha_h/k^2$, takes the energy out over $K\approx2$--$15$, which ends the plateau there.  The energy budget closes to $3\,\%$: $0.093$ removed by the hypodrag and $0.004$ by the hyperviscosity, against $\varepsilon=0.1$.  $E$ still drifts up by about $2\,\%$ of $\varepsilon$ per unit time, so the state is close to stationary but not exactly.  Above the forcing the enstrophy flux is $5.8$--$5.9\times10^3$ over $K=42$--$100$, and the net enstrophy transfer is $10^{-13}$.  With the advective form the nonlinear term creates $2.85\times10^3$ per unit time near the cutoff, $45\,\%$ of the input; the hyperviscosity then removes $8.8\times10^3$ instead of $5.9\times10^3$.  The implied Kolmogorov constant, $k^{5/3}E/|\Pi_E|^{2/3}\approx9$, is above the $\approx6$ of well-resolved studies \cite{boffetta2012}, which is not surprising for an inertial range of a factor of 2.5 squeezed between the forcing and the hypodrag.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{cascade_inverse.png}
+\caption{Inverse cascade: as \cref{fig:direct}, forced at $K=40$.}
+\label{fig:inverse}
+\end{figure}
+
+\paragraph{Decaying turbulence.}  \code{--case decaying} starts from random phases with the spectrum $E(k)\propto(k/k_0)^4e^{-2(k/k_0)^2}$ and $E=\tfrac12$ (\cref{sec:periodic}).  On $512^2$ with $k_0=10$, the hyperviscosity of the direct run ($\nu_h=10^{-23}$, $p=4$), $\Rey=10^7$ and the skew-symmetric form, run to $t=20$ (50\,000 steps), $E$ falls by $0.6\,\%$ while $Z$ falls by a factor of 15, as it should at high Reynolds number: the direct cascade carries enstrophy to the cutoff, where it is dissipated, and energy goes to large scales, where nothing removes it (\cref{fig:decaying}).  The peak of the spectrum moves from $K=9$ to $K=1$, which holds $59\,\%$ of the energy at the end.  Isolated coherent vortices emerge and merge \cite{mcwilliams1984}, and $Z$ drops in steps at the mergers.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.9\textwidth]{decaying.png}\\[1ex]
+\includegraphics[width=\textwidth]{decaying_vortices.png}
+\caption{Decaying turbulence on $512^2$: energy and enstrophy, energy spectra, and the vorticity at $t=0$, 5, 10 and 15.}
+\label{fig:decaying}
+\end{figure}
+
+\paragraph{Resolution.}  How much of the spectrum does each order resolve?  Decaying turbulence at $\Rey=2\times10^4$ (skew-symmetric form, $k_0=10$) was run on $256^2$ and $512^2$ with orders 2, 4 and 6 and on $1024^2$ with order 6, from the same initial field: the phases of the initial spectrum depend on the wavevector only, so every grid that resolves the spectrum gets the same field (\code{random\_initial\_field()}; \code{make test} checks it to $3\times10^{-16}$).  Turbulence is chaotic, so the runs decorrelate.  At $t=0.5$ the shell energies differ by tens of per cent even at $K=10$.  At $t=0.1$, about seven eddy turnovers, after the cascade has filled the spectrum, the large scales of all runs still agree with the $1024^2$ one to $1\,\%$ ($3\,\%$ for order 2 on $256^2$).  The spectra are compared there (\cref{fig:resolution}):
+\begin{center}\small
+\begin{tabular}{lccc}
+\toprule
+$E(k)$ within $10\,\%$ ($2\,\%$) of $1024^2$ up to $K=$ & order 6 & order 4 & order 2 \\
+\midrule
+$512^2$ ($K_{\mathrm{Nyq}}=255$) & 154 (108) & 132 (66) & 68 (26) \\
+$256^2$ ($K_{\mathrm{Nyq}}=127$) & 72 (42) & 66 (30) & 34 (1) \\
+\bottomrule
+\end{tabular}
+\end{center}
+Orders 6, 4 and 2 resolve the spectrum to $10\,\%$ up to about $60$, $52$ and $27\,\%$ of the Nyquist wavenumber, and to $2\,\%$ up to $33$--$42$, $24$--$26$ and at most $10\,\%$.  Beyond that the finite differences underestimate the derivatives, and the spectrum falls below the reference.  Order 6 on $256^2$ resolves as many shells as order 2 on $512^2$, at half the cost per step ($9.9$ against $18\,\mathrm{ms}$ on the GPU).
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.9\textwidth]{resolution.png}
+\caption{Decaying turbulence at $t=0.1$: energy spectra of $256^2$ and $512^2$ runs with orders 2, 4 and 6, and their ratio to a $1024^2$ order-6 run.}
+\label{fig:resolution}
+\end{figure}
 
 \subsection{Physical validation against Ghia et al.}
 \label{sec:ghia}
@@ -1101,7 +1175,12 @@ The current binary accepts:
 --drag A & Periodic cases: linear drag $-\alpha\omega$ (\cref{sec:forcing}). \\
 --kolmogorov-amp A & Periodic cases: Kolmogorov forcing amplitude; \texttt{--kolmogorov-n} its wavenumber. \\
 --forcing-rate EPS & Periodic cases: random forcing rate; \texttt{--forcing-k}, \texttt{--forcing-width} its shell, \texttt{--seed} its seed. \\
---case NAME & \texttt{cavity} (default), or on a doubly periodic unit square \texttt{taylor-green}, \texttt{shear-layer}, \texttt{kolmogorov} or \texttt{forced} (\cref{sec:periodic,sec:forcing}). \\
+--hyperviscosity NU & Periodic cases: hyperviscosity $\nu_h$; \texttt{--hyper-order} its order $p$ (default 4). \\
+--hypodrag A & Periodic cases: hypodrag $\alpha_h$ (\cref{sec:forcing}). \\
+--advection NAME & Periodic cases: \texttt{advective} (default) or \texttt{skew} nonlinear term (\cref{eq:skew}). \\
+--spectrum-interval N & Periodic cases: write the spectra every $N$ steps (default: with the VTK frames). \\
+--peak-k K0 & \texttt{decaying}: peak of the initial spectrum. \\
+--case NAME & \texttt{cavity} (default), or on a doubly periodic unit square \texttt{taylor-green}, \texttt{shear-layer}, \texttt{kolmogorov}, \texttt{forced} or \texttt{decaying} (\cref{sec:periodic,sec:forcing}). \\
 --cpu & In a CUDA build, force the CPU backend. \\
 --help & Print command-line help. \\
 \bottomrule
@@ -1208,7 +1287,7 @@ The current architecture makes several research-oriented extensions relatively n
   \item automated steady-state residual monitoring;
   \item automated Ghia interpolation and error norms in the test suite;
   \item grid-convergence-index (GCI) reporting;
-  \item alternative convection schemes, such as upwind-biased, compact, WENO, or skew-symmetric energy-conserving formulations;
+  \item alternative convection schemes, such as upwind-biased, compact or WENO, and with walls a skew-symmetric form (on periodic grids it is available, \cref{eq:skew});
   \item multigrid for the Poisson equation when boundary conditions or geometries no longer permit a separable sine transform;
   \item pressure reconstruction as a post-processing step;
 \end{itemize}
@@ -1286,6 +1365,21 @@ SIAM, 2007.
 M. Frigo and S. G. Johnson,
 ``The design and implementation of FFTW3,''
 \emph{Proceedings of the IEEE}, vol. 93, no. 2, pp. 216--231, 2005.
+
+\bibitem{kraichnan1967}
+R. H. Kraichnan,
+``Inertial ranges in two-dimensional turbulence,''
+\emph{Physics of Fluids}, vol. 10, no. 7, pp. 1417--1423, 1967.
+
+\bibitem{mcwilliams1984}
+J. C. McWilliams,
+``The emergence of isolated coherent vortices in turbulent flow,''
+\emph{Journal of Fluid Mechanics}, vol. 146, pp. 21--43, 1984.
+
+\bibitem{boffetta2012}
+G. Boffetta and R. E. Ecke,
+``Two-dimensional turbulence,''
+\emph{Annual Review of Fluid Mechanics}, vol. 44, pp. 427--451, 2012.
 
 \end{thebibliography}
 

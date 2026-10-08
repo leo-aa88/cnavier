@@ -41,6 +41,7 @@ typedef struct
     int wall_closure;                 // wall vorticity: 0 = D_x v - D_y u, 1 = third-order formula from psi
     double poisson_tol, beta;         // their tolerance and SOR parameter
     int periodic;                     // 0: four walls with velocities bc; 1: doubly periodic
+    int advection;                    // nonlinear term, see skew_correction(): 0 advective, 1 skew-symmetric
     wall_bc bc;                       // wall velocities (walls only)
     const smtrx *DX, *DY, *DX2, *DY2; // sparse derivative operators
 
@@ -81,6 +82,8 @@ typedef struct
     struct periodic_solver *periodic; // periodic Poisson solver (cfg.periodic), else NULL
     mtrx source;                      // vorticity source of the current stage (cfg.vorticity_source only)
     double *kolmogorov;               // Kolmogorov source -A k cos(k y) of each row, else NULL
+    mtrx hyp1, hyp2;                  // scratch for (-L)^p w (cfg.forcing.hyperviscosity only)
+    mtrx uw, vw;                      // scratch of the skew-symmetric form (cfg.advection 1 only)
     random_forcing *kicks;            // random forcing, else NULL
     long steps;                       // steps taken; the time is cfg.t0 + steps * cfg.dt
 } rk4_ctx;
@@ -125,6 +128,27 @@ typedef struct
                       // is conservative, so a dt above it only gets a warning,
                       // but a suggestion should not be one that is warned about
 } dt_limits;
+// The nonlinear term is N = -(u DX w + v DY w) (advection 0, the advective
+// form), or on a periodic grid (advection 1) the skew-symmetric form
+//   N = -1/2 (u DX w + v DY w) - 1/2 (DX(u w) + DY(v w)).
+// The periodic centred operators are antisymmetric and the velocity
+// u = DY psi, v = -DX psi is exactly divergence-free (DX and DY commute), so
+// the sum over the grid of w N vanishes for the skew-symmetric form: the
+// nonlinear term conserves the enstrophy 1/2 <w^2> to round-off. The
+// advective form does not; in under-resolved turbulence it makes enstrophy
+// near the grid cutoff. Neither conserves the energy 1/2 <u^2 + v^2> exactly.
+// out += (skew-symmetric N) - (advective N), from u, v, w and wx = DX w,
+// wy = DY w, all n values. s1, s2: scratch, which may be wx and wy.
+void skew_correction(const solver_config *cfg, const double *u, const double *v, const double *w,
+                     const double *wx, const double *wy, double *out, double *s1, double *s2);
+
+// max_stable_dt() with hyperviscosity -nu_h (-L)^p w as well: its largest
+// eigenvalue is nu_h lambda^p, with lambda that of -L
+double max_stable_dt_hyper(const smtrx *dxx, const smtrx *dyy, double Re, double hyper_nu, int hyper_p,
+                           int time_scheme);
+// time_step_limits() with that viscous limit
+dt_limits time_step_limits_hyper(const smtrx *dxx, const smtrx *dyy, double h, double Re, double u_max,
+                                 double max_co, int time_scheme, double hyper_nu, int hyper_p);
 dt_limits time_step_limits(const smtrx *dxx, const smtrx *dyy, double h, double Re, double u_max,
                            double max_co, int time_scheme);
 

@@ -58,7 +58,8 @@ enum flow_case
     CASE_TAYLOR_GREEN,
     CASE_SHEAR_LAYER,
     CASE_KOLMOGOROV,
-    CASE_FORCED
+    CASE_FORCED,
+    CASE_DECAYING
 };
 
 #define CASE_PI 3.14159265358979323846
@@ -96,6 +97,7 @@ static void usage(const char *prog)
     printf("  --tf TF              final time\n");
     printf("  --output-interval N  write VTK every N iterations (0 = never)\n");
     printf("  --re RE              Reynolds number\n");
+    printf("  --order N            order of the finite differences: 2, 4 or 6 (default 6)\n");
     printf("  --integrals-interval N  write E, Z, P to output/integrals.csv every N steps\n"
            "                       (default 1; 0 = never)\n");
     printf("  --poisson-order N    2 (5-point, default) or 4 (compact 9-point) Poisson\n"
@@ -109,7 +111,8 @@ static void usage(const char *prog)
            "                       vortex, compared with the exact solution at the end)\n"
            "                       shear-layer (double shear layer that rolls up),\n"
            "                       kolmogorov (Kolmogorov forcing from a small random\n"
-           "                       perturbation) or forced (random forcing from rest)\n");
+           "                       perturbation), forced (random forcing from rest) or\n"
+           "                       decaying (decaying turbulence from random phases)\n");
     printf("  --drag ALPHA         linear drag -ALPHA w (default 0; 0.1 for forced)\n");
     printf("  --kolmogorov-amp A   Kolmogorov body force A sin(k y) in x (default 1 for\n"
            "  --kolmogorov-n N     kolmogorov, else 0), k = 2 pi N (default 4)\n");
@@ -117,7 +120,16 @@ static void usage(const char *prog)
            "                       0.1 for forced, else 0) on the wavenumbers\n"
            "  --forcing-k KF       |k| / 2 pi within KF +- DK (defaults 8 and 1)\n"
            "  --forcing-width DK\n");
-    printf("  --seed S             seed of the random forcing and perturbation (default 1)\n");
+    printf("  --advection NAME     periodic cases: nonlinear term in advective (default)\n"
+           "                       or skew (skew-symmetric, conserves enstrophy) form\n");
+    printf("  --hyperviscosity NU  hyperviscosity -NU (-lap)^P w (default 0)\n"
+           "  --hyper-order P      its order P >= 2 (default 4)\n");
+    printf("  --hypodrag ALPHA     large-scale drag -ALPHA psi (default 0)\n");
+    printf("  --peak-k K0          decaying: initial spectrum (k/k0)^4 exp(-2 (k/k0)^2)\n"
+           "                       with |k| / 2 pi = K0 (default 10), energy 1/2\n");
+    printf("  --seed S             seed of the random forcing and initial field (default 1)\n");
+    printf("  --spectrum-interval N  periodic cases: write output/spectrum-1-<n>.csv every N\n"
+           "                       steps (default: with the VTK frames; 0 = never)\n");
 #ifdef USE_CUDA
     printf("  --cpu                run on the CPU instead of the GPU\n");
 #endif
@@ -155,6 +167,10 @@ int main(int argc, char *argv[])
     // Forcing and drag (forcing.h); negative: not given, take the case's default
     double drag = -1., kolmogorov_amp = -1., forcing_rate = -1., forcing_k = 8., forcing_width = 1.;
     int kolmogorov_n = 4;
+    double hyperviscosity = 0., hypodrag = 0., peak_k = 10.;
+    int hyper_order = 4;
+    int spectrum_interval = -1; // negative: with the VTK frames
+    int advection = 0;          // 0 = advective, 1 = skew-symmetric nonlinear term
     unsigned long long seed = 1;
     int forcing_given = 0;
 
@@ -179,6 +195,13 @@ int main(int argc, char *argv[])
         {"forcing-k", required_argument, 0, 'q'},
         {"forcing-width", required_argument, 0, 'W'},
         {"seed", required_argument, 0, 's'},
+        {"hyperviscosity", required_argument, 0, 'H'},
+        {"hyper-order", required_argument, 0, 'P'},
+        {"hypodrag", required_argument, 0, 'D'},
+        {"peak-k", required_argument, 0, 'g'},
+        {"spectrum-interval", required_argument, 0, 'S'},
+        {"advection", required_argument, 0, 'A'},
+        {"order", required_argument, 0, 'O'},
         {"cpu", no_argument, 0, 'c'},
         {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}};
@@ -221,6 +244,8 @@ int main(int argc, char *argv[])
                 flow = CASE_KOLMOGOROV;
             else if (strcmp(optarg, "forced") == 0)
                 flow = CASE_FORCED;
+            else if (strcmp(optarg, "decaying") == 0)
+                flow = CASE_DECAYING;
             else
                 ok = 0;
             break;
@@ -264,6 +289,35 @@ int main(int argc, char *argv[])
         case 'W':
             ok = parse_double(optarg, &forcing_width) && forcing_width > 0.;
             forcing_given = 1;
+            break;
+        case 'H':
+            ok = parse_double(optarg, &hyperviscosity) && hyperviscosity >= 0.;
+            forcing_given = 1;
+            break;
+        case 'P':
+            ok = parse_int(optarg, &hyper_order) && hyper_order >= 2 && hyper_order <= 8;
+            forcing_given = 1;
+            break;
+        case 'D':
+            ok = parse_double(optarg, &hypodrag) && hypodrag >= 0.;
+            forcing_given = 1;
+            break;
+        case 'g':
+            ok = parse_double(optarg, &peak_k) && peak_k > 0.;
+            break;
+        case 'O':
+            ok = parse_int(optarg, &order) && (order == 2 || order == 4 || order == 6);
+            break;
+        case 'A':
+            if (strcmp(optarg, "advective") == 0)
+                advection = 0;
+            else if (strcmp(optarg, "skew") == 0)
+                advection = 1;
+            else
+                ok = 0;
+            break;
+        case 'S':
+            ok = parse_int(optarg, &spectrum_interval) && spectrum_interval >= 0;
             break;
         case 's':
         {
@@ -348,6 +402,17 @@ int main(int argc, char *argv[])
         printf("** Error: the forcing and drag options apply to the periodic cases **\n");
         return 1;
     }
+    if (!periodic && spectrum_interval > 0)
+    {
+        printf("** Error: --spectrum-interval applies to the periodic cases **\n");
+        return 1;
+    }
+    if (!periodic && advection == 1)
+    {
+        printf("** Error: --advection skew applies to the periodic cases **\n");
+        return 1;
+    }
+    if (spectrum_interval < 0) spectrum_interval = output_interval;
     // The cases' defaults for what was not given
     if (drag < 0.) drag = flow == CASE_FORCED ? 0.1 : 0.;
     if (kolmogorov_amp < 0.) kolmogorov_amp = flow == CASE_KOLMOGOROV ? 1. : 0.;
@@ -379,11 +444,14 @@ int main(int argc, char *argv[])
 
     static const char *case_names[] = {"lid-driven cavity", "Taylor-Green vortex (periodic)",
                                        "double shear layer (periodic)", "Kolmogorov flow (periodic)",
-                                       "randomly forced flow (periodic)"};
+                                       "randomly forced flow (periodic)", "decaying turbulence (periodic)"};
     printf("Case: %s | Re: %g\n", case_names[flow], Re);
     if (drag > 0. || kolmogorov_amp != 0. || forcing_rate > 0.)
         printf("Forcing: drag %g | Kolmogorov A %g, k = 2 pi x %d | random rate %g, |k|/2pi in %g +- %g, seed %llu\n",
                drag, kolmogorov_amp, kolmogorov_n, forcing_rate, forcing_k, forcing_width, seed);
+    if (advection == 1) printf("Nonlinear term: skew-symmetric\n");
+    if (hyperviscosity > 0. || hypodrag > 0.)
+        printf("Damping: hyperviscosity %g, order %d | hypodrag %g\n", hyperviscosity, hyper_order, hypodrag);
     printf("Grid: %d x %d | dt: %lf | tf: %lf\n", nx, ny, dt, tf);
 #ifdef _OPENMP
     default_threads();
@@ -412,8 +480,9 @@ int main(int argc, char *argv[])
     // cases), or the speed the forcing drives: the laminar Kolmogorov speed
     // A / (nu k^2 + drag), and three times the r.m.s. speed sqrt(eps / drag)
     // where random forcing balances drag. Turbulence can exceed these; the
-    // check guards against the clear cases only.
-    double u_max = periodic ? 1.0 : 0.;
+    // check guards against the clear cases only. Decaying turbulence starts
+    // with r.m.s. speed 1 and peaks of a few times that.
+    double u_max = periodic ? (flow == CASE_DECAYING ? 4.0 : 1.0) : 0.;
     if (kolmogorov_amp != 0.)
     {
         double kk = 2.0 * CASE_PI * kolmogorov_n;
@@ -425,7 +494,8 @@ int main(int argc, char *argv[])
         if (fabs(bc.u[i]) > u_max) u_max = fabs(bc.u[i]);
         if (fabs(bc.v[i]) > u_max) u_max = fabs(bc.v[i]);
     }
-    dt_limits lim = time_step_limits(&sd_x2, &sd_y2, fmin(dx, dy), Re, u_max, max_co, time_scheme);
+    dt_limits lim = time_step_limits_hyper(&sd_x2, &sd_y2, fmin(dx, dy), Re, u_max, max_co, time_scheme,
+                                           hyperviscosity, hyper_order);
     if (dt > lim.accept)
     {
         printf("** Error: dt = %g is too large; use --dt %.3g or less. Limits: Courant number <= %g "
@@ -486,6 +556,7 @@ int main(int argc, char *argv[])
     cfg.poisson_tol = poisson_tol;
     cfg.beta = beta;
     cfg.periodic = periodic;
+    cfg.advection = advection;
     cfg.bc = bc;
     cfg.DX = &DX;
     cfg.DY = &DY;
@@ -504,6 +575,9 @@ int main(int argc, char *argv[])
     cfg.forcing.random_kf = forcing_k;
     cfg.forcing.random_dk = forcing_width;
     cfg.forcing.random_seed = seed;
+    cfg.forcing.hyperviscosity = hyperviscosity;
+    cfg.forcing.hyper_order = hyper_order;
+    cfg.forcing.hypodrag = hypodrag;
 
     int it_max = (int)((tf / dt) - 1);
 
@@ -521,6 +595,8 @@ int main(int argc, char *argv[])
                 MAt(*u, i, j) = ui;
                 MAt(*v, i, j) = vi;
             }
+    else if (flow == CASE_DECAYING)
+        random_initial_field(*w, *u, *v, dx, dy, peak_k, 0.5, seed);
     else
         for (i = 0; i < ny; i++)
             for (j = 0; j < nx; j++)
@@ -561,7 +637,7 @@ int main(int argc, char *argv[])
         fprintf(integrals, "step,t,E,Z,P,I,I_disc\n0,0,%.17g,%.17g,%.17g,%.17g,%.17g\n", fi.E, fi.Z, fi.P, fi.I,
                 fi.I_disc);
     }
-    spectra *spec = periodic && output_interval > 0 ? spectra_setup(&cfg) : NULL;
+    spectra *spec = periodic && spectrum_interval > 0 ? spectra_setup(&cfg) : NULL;
 
     struct timespec t_start, t_end;
     clock_gettime(CLOCK_MONOTONIC, &t_start);
@@ -590,9 +666,13 @@ int main(int argc, char *argv[])
 
         if (output_interval > 0 && t % output_interval == 0)
         {
-            backend_fields(solver, spec ? &u : NULL, spec ? &v : NULL, &w);
+            backend_fields(solver, NULL, NULL, &w);
             printvtk(*w, "vorticity", dx, dy);
-            if (spec) spectra_write(spec, *u, *v, *w, (double)(t + 1) * dt);
+        }
+        if (spec && t % spectrum_interval == 0)
+        {
+            backend_fields(solver, &u, &v, &w);
+            spectra_write(spec, *u, *v, *w, (double)(t + 1) * dt);
         }
     }
 
