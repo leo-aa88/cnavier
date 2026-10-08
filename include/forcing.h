@@ -71,9 +71,11 @@ void random_forcing_draw(random_forcing *rf);
 void random_forcing_add(random_forcing *rf, mtrx w, double dy);
 
 // Initial condition for decaying turbulence on the periodic grid of nx x ny
-// nodes spacing dx, dy: random phases and the energy spectrum
-// E(k) ~ (k/k0)^4 exp(-2 (k/k0)^2), which peaks at |k| = k0 dk0 (dk0 as for
-// the kicks), scaled to the energy 1/2 <u^2 + v^2> = energy. w, u and v from
+// nodes spacing dx, dy: random phases, and modal amplitudes whose shell
+// envelope is the energy spectrum E(k) ~ (k/k0)^4 exp(-2 (k/k0)^2), which
+// peaks at |k| = k0 dk0 (dk0 as for the kicks); the shell sums of the lattice
+// modes fluctuate about it with the number of modes per shell. Scaled to the
+// energy 1/2 <u^2 + v^2> = energy. w, u and v from
 // the stream function with exact (spectral) derivatives; no Nyquist modes.
 // The phase of each wavevector depends on the seed and the wavevector only,
 // so grids of the same domain that resolve the spectrum get the same field.

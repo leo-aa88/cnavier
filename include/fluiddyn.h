@@ -131,10 +131,12 @@ typedef struct
 // The nonlinear term is N = -(u DX w + v DY w) (advection 0, the advective
 // form), or on a periodic grid (advection 1) the skew-symmetric form
 //   N = -1/2 (u DX w + v DY w) - 1/2 (DX(u w) + DY(v w)).
-// The periodic centred operators are antisymmetric and the velocity
-// u = DY psi, v = -DX psi is exactly divergence-free (DX and DY commute), so
-// the sum over the grid of w N vanishes for the skew-symmetric form: the
-// nonlinear term conserves the enstrophy 1/2 <w^2> to round-off. The
+// The periodic centred operators are antisymmetric, so sum w DX(u w) =
+// -sum u w DX w for any u, and the sum over the grid of w N vanishes for the
+// skew-symmetric form: the nonlinear term conserves the enstrophy 1/2 <w^2>
+// to round-off. (The velocity u = DY psi, v = -DX psi is also exactly
+// divergence-free, DX and DY commuting, so the two forms agree to the order
+// of the stencils.) The
 // advective form does not; in under-resolved turbulence it makes enstrophy
 // near the grid cutoff. Neither conserves the energy 1/2 <u^2 + v^2> exactly.
 // out += (skew-symmetric N) - (advective N), from u, v, w and wx = DX w,
@@ -142,13 +144,20 @@ typedef struct
 void skew_correction(const solver_config *cfg, const double *u, const double *v, const double *w,
                      const double *wx, const double *wy, double *out, double *s1, double *s2);
 
-// max_stable_dt() with hyperviscosity -nu_h (-L)^p w as well: its largest
-// eigenvalue is nu_h lambda^p, with lambda that of -L
-double max_stable_dt_hyper(const smtrx *dxx, const smtrx *dyy, double Re, double hyper_nu, int hyper_p,
-                           int time_scheme);
-// time_step_limits() with that viscous limit
-dt_limits time_step_limits_hyper(const smtrx *dxx, const smtrx *dyy, double h, double Re, double u_max,
-                                 double max_co, int time_scheme, double hyper_nu, int hyper_p);
+// The largest damping rate of the linear terms: a periodic mode with
+// eigenvalue Q of -(DX2 + DY2) decays at
+//   sigma(Q) = Q/Re + nu_h Q^p + alpha + alpha_h/Q
+// (viscosity, hyperviscosity, drag, hypodrag; fc NULL: viscosity only). It is
+// convex in Q, so the maximum is at the largest Q, from the middle rows of
+// dxx and dyy (1-D operators), or with hypodrag possibly at the smallest
+// non-zero Q, their symbols at the lowest wavenumber (periodic operators).
+double damping_rate_max(const smtrx *dxx, const smtrx *dyy, double Re, const forcing_config *fc);
+// max_stable_dt() for all these terms: rho / damping_rate_max()
+double max_stable_dt_forced(const smtrx *dxx, const smtrx *dyy, double Re, const forcing_config *fc,
+                            int time_scheme);
+// time_step_limits() with that limit in place of the viscous one
+dt_limits time_step_limits_forced(const smtrx *dxx, const smtrx *dyy, double h, double Re, double u_max,
+                                  double max_co, int time_scheme, const forcing_config *fc);
 dt_limits time_step_limits(const smtrx *dxx, const smtrx *dyy, double h, double Re, double u_max,
                            double max_co, int time_scheme);
 

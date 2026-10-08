@@ -77,6 +77,8 @@ expect nonzero --case forced --hyper-order 1
 expect nonzero --case forced --hyper-order 9
 expect nonzero --case forced --hypodrag -1
 expect nonzero --case forced --n 32 --hyperviscosity 1
+expect nonzero --case forced --n 32 --hypodrag 1e6
+expect nonzero --case forced --n 32 --drag 1e5
 expect nonzero --case decaying --peak-k 0
 expect nonzero --case decaying --spectrum-interval -1
 expect nonzero --spectrum-interval 5

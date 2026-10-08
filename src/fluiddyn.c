@@ -421,25 +421,58 @@ void skew_correction(const solver_config *cfg, const double *u, const double *v,
         out[k] -= 0.5 * s2[k];
 }
 
-double max_stable_dt_hyper(const smtrx *dxx, const smtrx *dyy, double Re, double hyper_nu, int hyper_p,
-                           int time_scheme)
+// Smallest non-zero eigenvalue of -A, A a periodic second-derivative
+// operator of n points: its symbol at the lowest wavenumber, from the middle
+// row with the column offsets taken modulo n
+static double lowest_eigenvalue(const smtrx *A)
 {
-    double lap = row_abs_sum(dxx, dxx->m / 2) + row_abs_sum(dyy, dyy->m / 2);
-    double lambda = lap / Re + (hyper_nu > 0.0 ? hyper_nu * pow(lap, hyper_p) : 0.0);
-    return (time_scheme == 1 ? 2.0 : 2.785293563405282) / lambda;
+    int k, r = A->m / 2, n = A->m;
+    double s = 0.0;
+    for (k = A->row_ptr[r]; k < A->row_ptr[r + 1]; k++)
+    {
+        int off = A->col_idx[k] - r;
+        if (2 * off > n) off -= n;
+        if (2 * off < -n) off += n;
+        s -= A->values[k] * cos(2.0 * 3.14159265358979323846 * off / n);
+    }
+    return s;
+}
+
+double damping_rate_max(const smtrx *dxx, const smtrx *dyy, double Re, const forcing_config *fc)
+{
+    // Largest eigenvalue of -(DX2 + DY2), from the middle rows. The interior
+    // stencils are centered with coefficients of alternating sign, so the sum
+    // of their magnitudes is the value of the stencil's symbol at the highest
+    // grid frequency.
+    double qmax = row_abs_sum(dxx, dxx->m / 2) + row_abs_sum(dyy, dyy->m / 2);
+    double rate = qmax / Re;
+
+    if (!fc) return rate;
+    // sigma(Q) = Q/Re + nu_h Q^p + alpha + alpha_h/Q is convex for Q > 0, so
+    // its maximum over the eigenvalues lies at the largest or the smallest
+    rate += fc->drag;
+    if (fc->hyperviscosity > 0.0) rate += fc->hyperviscosity * pow(qmax, fc->hyper_order);
+    if (fc->hypodrag > 0.0)
+    {
+        double qmin = fmin(lowest_eigenvalue(dxx), lowest_eigenvalue(dyy));
+        double low = qmin / Re + fc->drag + fc->hypodrag / qmin;
+        if (fc->hyperviscosity > 0.0) low += fc->hyperviscosity * pow(qmin, fc->hyper_order);
+        rate = fmax(rate + fc->hypodrag / qmax, low);
+    }
+    return rate;
+}
+
+double max_stable_dt_forced(const smtrx *dxx, const smtrx *dyy, double Re, const forcing_config *fc,
+                            int time_scheme)
+{
+    // Forward Euler is stable for real eigenvalues in [-2, 0], classical RK4
+    // down to -2.785293...
+    return (time_scheme == 1 ? 2.0 : 2.785293563405282) / damping_rate_max(dxx, dyy, Re, fc);
 }
 
 double max_stable_dt(const smtrx *dxx, const smtrx *dyy, double Re, int time_scheme)
 {
-    // Largest |eigenvalue| of each second-derivative operator, taken from the
-    // middle row. The interior stencils are centered with coefficients of
-    // alternating sign, so the sum of their magnitudes is the value of the
-    // stencil's symbol at the highest grid frequency.
-    double lambda = (row_abs_sum(dxx, dxx->m / 2) + row_abs_sum(dyy, dyy->m / 2)) / Re;
-
-    // Forward Euler is stable for real eigenvalues in [-2, 0], classical RK4
-    // down to -2.785293...
-    return (time_scheme == 1 ? 2.0 : 2.785293563405282) / lambda;
+    return max_stable_dt_forced(dxx, dyy, Re, NULL, time_scheme);
 }
 
 double euler_advection_dt(double Re, double u_max)
@@ -450,16 +483,15 @@ double euler_advection_dt(double Re, double u_max)
 dt_limits time_step_limits(const smtrx *dxx, const smtrx *dyy, double h, double Re, double u_max,
                            double max_co, int time_scheme)
 {
-    return time_step_limits_hyper(dxx, dyy, h, Re, u_max, max_co, time_scheme, 0.0, 2);
+    return time_step_limits_forced(dxx, dyy, h, Re, u_max, max_co, time_scheme, NULL);
 }
 
-dt_limits time_step_limits_hyper(const smtrx *dxx, const smtrx *dyy, double h, double Re, double u_max,
-                                 double max_co, int time_scheme, double hyper_nu, int hyper_p)
+dt_limits time_step_limits_forced(const smtrx *dxx, const smtrx *dyy, double h, double Re, double u_max,
+                                  double max_co, int time_scheme, const forcing_config *fc)
 {
     dt_limits l;
     l.courant = u_max > 0. ? max_co * h / u_max : HUGE_VAL;
-    l.viscous = hyper_nu > 0.0 ? max_stable_dt_hyper(dxx, dyy, Re, hyper_nu, hyper_p, time_scheme)
-                               : max_stable_dt(dxx, dyy, Re, time_scheme);
+    l.viscous = max_stable_dt_forced(dxx, dyy, Re, fc, time_scheme);
     l.advection = time_scheme == 1 ? euler_advection_dt(Re, u_max) : HUGE_VAL;
     l.accept = fmin(l.courant, l.viscous);
     l.suggest = fmin(l.accept, l.advection);

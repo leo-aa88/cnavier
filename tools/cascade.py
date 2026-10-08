@@ -11,11 +11,14 @@
         fluxes of a second run (dashed), averaged over the same times, with
         legend labels S2 and S1
     tools/cascade.py check OUTPUT_DIR --kf K [--from T] [--below a,b] [--above c,d] [--conserves-enstrophy]
+                     [--min-pi-e X] [--min-pi-z Y] [--spread-e S] [--spread-z S]
         print the mean budget, and check the dual cascade: the energy flux
         negative for K in [a, b] and the enstrophy flux positive for K in
         [c, d], with K = |k| / (2 pi / L); with --conserves-enstrophy (runs
         with --advection skew) also that the net nonlinear enstrophy transfer
-        is round-off; exit status 1 if not
+        is round-off. Plateaus, optionally: -Pi_E >= X on every shell of
+        [a, b], Pi_Z >= Y on every shell of [c, d], and (max - min) / mean of
+        the flux over its range at most S. Exit status 1 if any check fails
     tools/cascade.py compare REF_DIR DIR [DIR ...] --at T [--names a,b,...] [--png FILE]
         the energy spectra of runs of the same flow at the frame nearest to
         time T, and their ratio to the reference run's, against K / K_Nyquist
@@ -25,6 +28,14 @@
         E(t) and Z(t) from integrals.csv, relative to their initial values,
         and the energy spectra at the frames nearest to the given times
         (needs matplotlib)
+    tools/cascade.py budget OUTPUT_DIR --from T --eps EPS --kf K [--dk DK]
+        the energy budget of a randomly forced run over t >= T: the drift
+        dE/dt from integrals.csv, the time-mean dissipation at small and large
+        scales and the net nonlinear transfer from the spectra (with standard
+        errors from block averages), the input they imply, and how far that
+        may differ from EPS because the kicks inject EPS only on average: over
+        a window T_w the realized input has a standard deviation of about
+        sqrt(2 EPS E_f / (M T_w)), E_f the energy of the M forced modes
 
 Wavenumbers are printed and compared in units of 2 pi / L (shell index).
 Needs only the Python standard library, except `plot`.
@@ -114,7 +125,7 @@ def budget(mean):
     return out
 
 
-def cmd_check(directory, t_from, kf, below, above, conserves):
+def cmd_check(directory, t_from, kf, below, above, conserves, plateau):
     mean, _, dk, count, t0, t1 = average(directory, t_from)
     ok = True
     print(f"Mean over {count} frames, t = {t0:g} .. {t1:g}; K = |k| dk^-1, forcing at K = {kf:g}")
@@ -138,9 +149,24 @@ def cmd_check(directory, t_from, kf, below, above, conserves):
         if above[0] <= b <= above[1] and not row["Pi_Z"] > 0.0:
             print(f"  [FAIL] Pi_Z(K = {b}) = {row['Pi_Z']:.3e}, expected > 0 (direct enstrophy cascade)")
             ok = False
+    e = [mean[b]["Pi_E"] for b in range(below[0], below[1] + 1)]
+    z = [mean[b]["Pi_Z"] for b in range(above[0], above[1] + 1)]
+    for name, flux, sign, rng, low, spread in (("Pi_E", e, -1.0, below, plateau["--min-pi-e"], plateau["--spread-e"]),
+                                               ("Pi_Z", z, 1.0, above, plateau["--min-pi-z"], plateau["--spread-z"])):
+        mag = [sign * x for x in flux]
+        if low is not None:
+            good = min(mag) >= low
+            print(f"  [{' ok ' if good else 'FAIL'}] |{name}| >= {low:g} for K = {rng[0]}..{rng[1]} "
+                  f"(smallest {min(mag):.4g})")
+            ok = ok and good
+        if spread is not None:
+            m = sum(mag) / len(mag)
+            sp = (max(mag) - min(mag)) / abs(m) if m else math.inf
+            good = sp <= spread
+            print(f"  [{' ok ' if good else 'FAIL'}] {name} over K = {rng[0]}..{rng[1]}: mean {sign * m:.4g}, "
+                  f"spread (max - min) / mean {sp:.3f} <= {spread:g}")
+            ok = ok and good
     if ok:
-        e = [mean[b]["Pi_E"] for b in range(below[0], below[1] + 1)]
-        z = [mean[b]["Pi_Z"] for b in range(above[0], above[1] + 1)]
         print(f"  [ ok ] Pi_E < 0 for K = {below[0]}..{below[1]} ({min(e):.3e} .. {max(e):.3e})")
         print(f"  [ ok ] Pi_Z > 0 for K = {above[0]}..{above[1]} ({min(z):.3e} .. {max(z):.3e})")
     return ok
@@ -288,8 +314,57 @@ def cmd_evolution(directory, times, png):
         print(f"  t = {r['t']:8.3f}  E = {r['E']:.6g}  Z = {r['Z']:.6g}")
 
 
+def block_error(x):
+    """Mean and its standard error, from the variance of block means: blocks
+    of increasing size until the estimate stops growing (correlated samples)"""
+    n = len(x)
+    m = sum(x) / n
+    best = 0.0
+    size = 1
+    while n // size >= 8:
+        blocks = [sum(x[i * size:(i + 1) * size]) / size for i in range(n // size)]
+        nb = len(blocks)
+        var = sum((b - m) ** 2 for b in blocks) / (nb - 1)
+        best = max(best, math.sqrt(var / nb))
+        size *= 2
+    return m, best
+
+
+def cmd_budget(directory, t_from, eps, kf, dk):
+    with open(os.path.join(directory, "integrals.csv")) as f:
+        rows = [list(map(float, line.split(","))) for line in f.read().split("\n")[1:] if line]
+    rows = [r for r in rows if r[1] >= t_from]
+    fr = frames(directory, t_from)
+    t0, t1 = fr[0][0], fr[-1][0]
+    e0 = min(rows, key=lambda r: abs(r[1] - t0))
+    e1 = min(rows, key=lambda r: abs(r[1] - t1))
+    drift = (e1[2] - e0[2]) / (e1[1] - e0[1])
+    series = {q: [sum(r[q] for r in rows_) for _, rows_ in fr] for q in ("D_E", "F_E")}
+    series["T_E"] = [-rows_[-1]["Pi_E"] for _, rows_ in fr]
+    stats = {q: block_error(v) for q, v in series.items()}
+    implied = drift + stats["D_E"][0] + stats["F_E"][0] - stats["T_E"][0]
+    # The forced modes: the half plane of the square lattice within kf +- dk
+    nyq = nyquist(fr[0][1])
+    modes = sum(1 for n in range(0, nyq + 1) for m in range(-nyq + 1, nyq)
+                if not (n == 0 and m <= 0) and abs(math.hypot(m, n) - kf) <= dk)
+    mean = [sum(rows_[b]["E"] for _, rows_ in fr) / len(fr) for b in range(len(fr[0][1]))]
+    e_forced = sum(mean[b] for b in range(len(mean)) if abs(b - kf) <= dk)
+    sd_input = math.sqrt(2.0 * eps * e_forced / (modes * (t1 - t0)))
+    se = math.sqrt(stats["D_E"][1] ** 2 + stats["F_E"][1] ** 2 + stats["T_E"][1] ** 2 + sd_input ** 2)
+    print(f"Energy budget over t = {t0:g} .. {t1:g} ({len(fr)} spectrum frames)")
+    print(f"  drift dE/dt                   {drift:+.4g}   (E = {e0[2]:.4g} -> {e1[2]:.4g})")
+    print(f"  small-scale dissipation D_E   {stats['D_E'][0]:.4g} +- {stats['D_E'][1]:.2g}")
+    print(f"  large-scale dissipation F_E   {stats['F_E'][0]:.4g} +- {stats['F_E'][1]:.2g}")
+    print(f"  net nonlinear transfer T_E    {stats['T_E'][0]:+.3g} +- {stats['T_E'][1]:.2g}")
+    print(f"  implied input dE/dt + D + F - T = {implied:.4g}, against eps = {eps:g}: "
+          f"difference {implied - eps:+.3g} ({100 * (implied - eps) / eps:+.1f} %)")
+    print(f"  realized input of the kicks: std about {sd_input:.2g} ({modes} forced modes, "
+          f"E_f = {e_forced:.3g} in shells {kf - dk:g}..{kf + dk:g})")
+    print(f"  difference / combined standard error = {(implied - eps) / se:+.2f}")
+
+
 def main(argv):
-    if len(argv) < 3 or argv[1] not in ("average", "plot", "check", "compare", "evolution"):
+    if len(argv) < 3 or argv[1] not in ("average", "plot", "check", "compare", "evolution", "budget"):
         print(__doc__)
         return 1
     if argv[1] == "evolution":
@@ -323,6 +398,9 @@ def main(argv):
     directory = argv[2]
     opts = {"--from": "0", "--kf": "0", "--below": None, "--above": None, "--png": None, "--title": None,
             "--compare": None, "--label": None, "--name": None}
+    plateau = {"--min-pi-e": None, "--min-pi-z": None, "--spread-e": None, "--spread-z": None}
+    opts.update({"--eps": None, "--dk": "1"})
+    opts.update(plateau)
     conserves = "--conserves-enstrophy" in argv
     argv = [a for a in argv if a != "--conserves-enstrophy"]
     i = 3
@@ -333,6 +411,12 @@ def main(argv):
         opts[argv[i]] = argv[i + 1]
         i += 2
     t_from, kf = float(opts["--from"]), float(opts["--kf"])
+    if argv[1] == "budget":
+        if not kf or opts["--eps"] is None:
+            print("budget needs --kf and --eps")
+            return 1
+        cmd_budget(directory, t_from, float(opts["--eps"]), kf, float(opts["--dk"]))
+        return 0
     if argv[1] == "average":
         cmd_average(directory, t_from)
     elif argv[1] == "plot":
@@ -344,7 +428,8 @@ def main(argv):
             return 1
         below = [int(x) for x in (opts["--below"] or f"1,{max(1, int(kf) // 2)}").split(",")]
         above = [int(x) for x in (opts["--above"] or f"{int(kf) + 2},{2 * int(kf)}").split(",")]
-        return 0 if cmd_check(directory, t_from, kf, below, above, conserves) else 1
+        plateau = {k: (float(opts[k]) if opts[k] is not None else None) for k in plateau}
+        return 0 if cmd_check(directory, t_from, kf, below, above, conserves, plateau) else 1
     return 0
 
 

@@ -232,8 +232,8 @@ A few numerical parameters can be overridden without recompiling; anything not g
 | `--forcing-rate EPS`, `--forcing-k KF`, `--forcing-width DK` | Periodic cases: random forcing injecting energy at rate `EPS` on the wavevectors with `\|k\|/2π` in `KF ± DK` (defaults: EPS = 0.1 for `forced`, else 0; KF = 8; DK = 1) |
 | `--hyperviscosity NU`, `--hyper-order P` | Periodic cases: hyperviscosity `−ν_h(−∇²)^P ω` (defaults: `ν_h` = 0; P = 4, from 2 to 8) |
 | `--hypodrag ALPHA` | Periodic cases: large-scale drag `−α_h ψ` (default 0) |
-| `--advection NAME` | Periodic cases: nonlinear term in `advective` form (default) or `skew`-symmetric form, which conserves enstrophy exactly (see [2-D turbulence](#two-dimensional-turbulence)) |
-| `--peak-k K0` | `decaying`: the initial energy spectrum `(k/k₀)⁴ exp(−2(k/k₀)²)` peaks at `\|k\|/2π = K0` (default 10) |
+| `--advection NAME` | Periodic cases: nonlinear term in `advective` form or `skew`-symmetric form, which conserves enstrophy exactly (default: `skew` for `forced` and `decaying`, else `advective`; see [2-D turbulence](#two-dimensional-turbulence)) |
+| `--peak-k K0` | `decaying`: the envelope `(k/k₀)⁴ exp(−2(k/k₀)²)` of the initial energy spectrum peaks at `\|k\|/2π = K0` (default 10) |
 | `--seed S` | Seed of the random forcing and of the initial fields of `kolmogorov` and `decaying` (default 1) |
 | `--spectrum-interval N` | Periodic cases: write the spectra every N steps (default: with the VTK frames; `0` never) |
 | `--poisson-order N` | `2` (five-point, default) or `4` (compact nine-point) Poisson operator of the FFT solver with walls (see [Higher order with walls](#higher-order-with-walls)) |
@@ -246,7 +246,7 @@ A few numerical parameters can be overridden without recompiling; anything not g
 Both time schemes are explicit, so `dt` has to shrink with the grid spacing. Before anything is computed, `dt` is checked against two limits, and the run stops if it is above either. The message gives both limits and a `dt` that passes (the smaller limit, rounded down):
 
 - the Courant number `u dt/dx` must not exceed 1 (`u` is the fastest wall, or 1 for the periodic cases, their largest initial speed);
-- the viscous stability limit of the chosen scheme. It is computed from the actual second-derivative operator, so it follows the grid, `Re` and the finite-difference order; it scales with `dx²`.
+- the viscous stability limit of the chosen scheme. It is computed from the actual second-derivative operator, so it follows the grid, `Re` and the finite-difference order; it scales with `dx²`. With the damping terms of the periodic cases it is the limit for all of them together: a mode with eigenvalue `Q` of `−∇²` decays at `σ(Q) = Q/Re + ν_h Q^p + α + α_h/Q`, which is convex, so its largest value is at the largest `Q` or, with hypodrag, at the smallest non-zero one. Each term's limit is sharp: the mode that sets it decays at 0.95× and grows at 1.05× (`make test`).
 
 For Euler there is a third limit, `dt ≤ 2/(Re·u²)` (that is `2ν/u²`), the stability limit of forward Euler for centered advection. It assumes the wall speed everywhere and is conservative for the cavity (at Re=1000 runs stayed stable up to about 3× it), so exceeding it only prints a warning. When an Euler run is refused, the suggested `dt` respects this limit as well, so following the suggestion does not lead to the warning.
 
@@ -284,7 +284,7 @@ On the periodic grid the solver has five built-in terms, `dω/dt = … − αω 
 - **Drag** `−αω` (`--drag`): linear (Ekman) drag, which removes the energy the inverse cascade carries to the largest scales.
 - **Kolmogorov forcing** (`--kolmogorov-amp A`, `--kolmogorov-n N`): the body force `A sin(k y)` in x, `k = 2πN`, enters as its curl `f_K = −A k cos(k y)`. Its laminar state is `ω = f_K / (νk² + α)`; above a critical Reynolds number it becomes unstable.
 - **Random forcing** (`--forcing-rate ε`, `--forcing-k`, `--forcing-width`): before every step, a vorticity kick on the wavevectors of a shell, with fresh random phases. Each kick carries exactly `ε dt` of the solver's discrete kinetic energy (its amplitude per mode uses the operators' own symbols), so the energy is injected at rate `ε` (white-in-time forcing). The phases come from a seeded generator on the host, so the CPU and the GPU make the same kicks; only the phases go to the GPU each step.
-- **Hyperviscosity** `−ν_h(−∇²)^p ω` (`--hyperviscosity`, `--hyper-order`): `p` applications of the discrete Laplacian `DX2 + DY2`. It removes enstrophy close to the grid cutoff and leaves the scales above it almost inviscid, which plain viscosity at an affordable resolution cannot do. The time-step check includes it: its largest eigenvalue is `ν_h λ^p`, with `λ` that of `−∇²`.
+- **Hyperviscosity** `−ν_h(−∇²)^p ω` (`--hyperviscosity`, `--hyper-order`): `p` applications of the discrete Laplacian `DX2 + DY2`. It removes enstrophy close to the grid cutoff and leaves the scales above it almost inviscid, which plain viscosity at an affordable resolution cannot do. The time-step check includes it, as it does the drag and the hypodrag (see [Command-line options](#command-line-options)).
 - **Hypodrag** `−α_h ψ` (`--hypodrag`), that is `−α_h(−∇²)⁻¹ω`: a drag that acts on the largest scales only (damping rate `α_h/k²`), so that the inverse cascade is stopped there instead of being damped along the way as linear drag does.
 
 `integrals.csv` has two more columns: `I`, the energy input, the physical work `⟨u A sin(k y)⟩` of the Kolmogorov force plus `ε`; and `I_disc`, the same with the Kolmogorov part replaced by the exact rate at which the implemented source changes the discrete energy, `(k k̃₁/Q)·⟨u A sin(k y)⟩` (one constant from the operators' symbols, `1 + O(h^p)`). For the random forcing `ε` is the *expected* input: a kick also changes `E` by `⟨u·δu⟩`, which averages to zero but not on any single step, so the energy budget holds on average, not step by step. At a statistically steady state `I_disc = Σ (D_E + F_E)` exactly, with `D_E` and `F_E` the discrete small- and large-scale dissipation of the spectra (with linear drag only, `Σ F_E = 2αE`); the physical `I = 2νZ + 2αE` holds to the order of the scheme. For laminar Kolmogorov flow (32², order 6) the first closes to 4e-11, the second to 2.5e-5. With random forcing the time integration is RK4 for the deterministic terms plus an additive kick per step; the trajectories are not fourth order in time.
@@ -296,7 +296,7 @@ On the periodic grid the solver has five built-in terms, `dω/dt = … − αω 
 
 ### Two-dimensional turbulence
 
-Forced 2-D turbulence has two cascades: energy goes to scales larger than the forcing (inverse cascade, `E(k) ∝ k^−5/3`, `Π_E < 0`) and enstrophy to smaller ones (direct cascade, `E(k) ∝ k^−3`, `Π_Z > 0`). Seeing them needs dissipation at the two ends of the spectrum only. Hyperviscosity removes the enstrophy near the grid cutoff, and hypodrag removes the energy at the largest scales. It also needs a nonlinear term that conserves enstrophy, which the default advective form `u·∇ω` does not do in turbulence: on a grid whose spectrum reaches the cutoff, it creates enstrophy there. `--advection skew` uses the skew-symmetric form `−½[u·∇ω + ∇·(uω)]`. On the periodic grid its net enstrophy transfer is zero to round-off, because the centred stencils are antisymmetric and the discrete velocity is exactly divergence-free. Neither form conserves the energy `½⟨u² + v²⟩` exactly; the defects were 0.01–1 % of `ε` in the runs below. Two 512² runs on the GPU, with the time-mean spectra and fluxes from `tools/cascade.py`:
+Forced 2-D turbulence has two cascades: energy goes to scales larger than the forcing (inverse cascade, `E(k) ∝ k^−5/3`, `Π_E < 0`) and enstrophy to smaller ones (direct cascade, `E(k) ∝ k^−3`, `Π_Z > 0`). Seeing them needs dissipation at the two ends of the spectrum only. Hyperviscosity removes the enstrophy near the grid cutoff, and hypodrag removes the energy at the largest scales. It also needs a nonlinear term that conserves enstrophy, which the default advective form `u·∇ω` does not do in turbulence: on a grid whose spectrum reaches the cutoff, it creates enstrophy there. `--advection skew` uses the skew-symmetric form `−½[u·∇ω + ∇·(uω)]`. On the periodic grid its net enstrophy transfer is zero to round-off, because the centred stencils are antisymmetric. It is the default for `forced` and `decaying`; the other cases keep the advective form. Neither form conserves the energy `½⟨u² + v²⟩` exactly; the defects were 0.01–1 % of `ε` in the runs below. Two 512² runs on the GPU, with the time-mean spectra and fluxes from `tools/cascade.py`:
 
 ```bash
 # direct cascade: forced at |k|/2π = 4, 60 000 steps (25 min on an RTX 3050 laptop GPU)
@@ -304,7 +304,9 @@ Forced 2-D turbulence has two cascades: energy goes to scales larger than the fo
     --advection skew --forcing-rate 0.1 --forcing-k 4 --dt 5e-4 --tf 30 --output-interval 20000 \
     --spectrum-interval 500 --integrals-interval 100
 python3 tools/cascade.py plot output --kf 4 --from 10
-python3 tools/cascade.py check output --kf 4 --from 10 --below 1,2 --above 6,120 --conserves-enstrophy
+python3 tools/cascade.py check output --kf 4 --from 10 --below 1,2 --above 10,100 --conserves-enstrophy \
+    --min-pi-z 40 --spread-z 0.1    # the plateau: Pi_Z >= 40 and flat to 10 % over K = 10..100
+python3 tools/cascade.py budget output --from 10 --eps 0.1 --kf 4
 
 # inverse cascade: forced at |k|/2π = 40
 ./cnavier --case forced --n 512 --re 1e7 --drag 0 --hypodrag 1200 --hyperviscosity 1.6e-23 --hyper-order 4 \
@@ -316,11 +318,13 @@ python3 tools/cascade.py check output --kf 4 --from 10 --below 1,2 --above 6,120
 
 *Direct cascade, mean over t = 10–30. The enstrophy flux has a plateau, `Π_Z` = 43.8 (42.7–46.3) over K = 10–100, where K = |k|/2π. The energy flux is negative below the forcing and below 4e-4 in magnitude (0.4 % of ε) above it. The spectrum falls as `k^−3.3`, close to `k^−3`. Dashed: the same run with the advective form. Its flux is less flat (45.5–51.3), and near the cutoff the nonlinear term creates enstrophy at 23 % of the input rate, so `Π_Z` ends at −14 instead of 0.*
 
+*Energy budget (`tools/cascade.py budget`). E barely drifts over the window (−4e-4 per unit time). The dissipation it implies is 10 % below ε. That is 1.5 standard errors, mostly from the realized input of the kicks: ε is only the expected input, and with 28 forced modes the realized one scatters by about ±0.006 over 20 time units. Four 128² runs with other seeds, over t = 10–60, close the budget to −0.4 to +1.7 %. In the inverse run (248 forced modes) E still rises at 2.3 % of ε per unit time; with that drift included the budget closes to 0.5 %.*
+
 ![Inverse cascade](docs/figures/cascade_inverse.png)
 
 *Inverse cascade, mean over t = 4–12. `Π_E` ≈ −0.093 to −0.096 (−0.95ε) over K = 20–38, and `k^5/3 E(k)` is flat to ±6 % over K = 12–30. The hypodrag takes the energy out over K ≈ 2–15. The forward enstrophy flux is 5.8–5.9e3 over K = 42–100. With the advective form (dashed) the nonlinear term creates enstrophy at 45 % of the input rate near the cutoff. E still drifts up by about 2 % of ε per unit time, so the state is close to stationary but not exactly.*
 
-**Decaying turbulence.** `--case decaying` starts from random phases with the energy spectrum `(k/k₀)⁴ exp(−2(k/k₀)²)` (`--peak-k`, default 10) and `E = ½`. On 512² with the hyperviscosity, at `Re = 10⁷`, the energy falls by 0.6 % by t = 20 while the enstrophy falls by a factor of 15. The spectrum peak moves from |k|/2π = 9 to 1, and isolated vortices emerge and merge (McWilliams 1984):
+**Decaying turbulence.** `--case decaying` starts from random phases, with modal amplitudes whose shell envelope is the spectrum `(k/k₀)⁴ exp(−2(k/k₀)²)` (`--peak-k`, default 10), and `E = ½`. The shell energies of the field follow it up to the fluctuations in the number of lattice modes per shell. On 512² with the hyperviscosity, at `Re = 10⁷`, the energy falls by 0.6 % by t = 20 while the enstrophy falls by a factor of 15. The spectrum peak moves from |k|/2π = 9 to 1, and isolated vortices emerge and merge (McWilliams 1984):
 
 ```bash
 ./cnavier --case decaying --n 512 --re 1e7 --hyperviscosity 1e-23 --hyper-order 4 --advection skew \
@@ -538,7 +542,8 @@ cnavier/
 │   ├── regression.sh   # Stored-result and Ghia et al. checks
 │   └── reference/      # Stored results and the Ghia et al. data
 ├── tools/
-│   └── cascade.py      # Time averages, plots and flux-sign checks of the spectra
+│   ├── cascade.py      # Spectra: time averages, plots, flux and budget checks, comparisons
+│   └── snapshots.py    # Vorticity frames side by side
 ├── output/             # VTK output files
 ├── Re1000_cavity_flow_example.png
 ├── Re1000_cavity_flow_example.mp4

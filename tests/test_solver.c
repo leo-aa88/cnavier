@@ -1253,6 +1253,67 @@ static void test_kolmogorov_laminar(void)
     problem_free(&p);
 }
 
+// Growth of max |w| over 300 steps of a single Fourier mode (on which the
+// nonlinear term vanishes) at `factor` times the stability limit of the
+// damping terms in f: (mx, my) = (1, 0) is the mode of the smallest
+// eigenvalue, (n/2, n/2) that of the largest
+static double damped_mode_growth(forcing_config f, int checkerboard, int time_scheme, double factor)
+{
+    int i, j, t, n = 16;
+    double h = 1.0 / n, Re = 1E8, w0 = 0.0, w1 = 0.0;
+    smtrx d2 = SDiff2_periodic(n, 6, h);
+    double dt = factor * max_stable_dt_forced(&d2, &d2, Re, &f, time_scheme);
+    problem p;
+
+    problem_init_ext(&p, n, n, 1.0, 1.0, 1, 6, Re, time_scheme, 3, dt, 1E-10, NULL, 0.0, NULL, NULL, 2, 0, 2);
+    rk4_free(&p.ctx);
+    p.cfg.forcing = f;
+    p.ctx = rk4_alloc(&p.cfg);
+    for (i = 0; i < n; i++)
+        for (j = 0; j < n; j++)
+        {
+            MAt(p.w, i, j) = checkerboard ? ((i + j) % 2 ? -1.0 : 1.0) : sin(2.0 * PI * j * h);
+            MAt(p.u, i, j) = MAt(p.v, i, j) = 0.0;
+            w0 = fmax(w0, fabs(MAt(p.w, i, j)));
+        }
+    for (t = 0; t < 300; t++)
+        step(p.w, p.u, p.v, &p.ctx);
+    // Past the limit every mode grows, and the round-off in the others soon
+    // makes the nonlinear term blow the field up to inf or NaN
+    for (i = 0; i < n * n; i++)
+        w1 = isfinite(p.w.M[i]) ? fmax(w1, fabs(p.w.M[i])) : INFINITY;
+    freesm(d2);
+    problem_free(&p);
+    return w1 / w0;
+}
+
+// The stability limit includes drag, hypodrag and hyperviscosity, each sharp:
+// the mode that sets it decays at 0.95 times the limit and grows at 1.05
+static void test_damping_stability(void)
+{
+    static const char *names[] = {"drag", "hypodrag", "hyperviscosity"};
+    char name[96];
+
+    printf("Stability: the time-step limit of the drag, hypodrag and hyperviscosity\n");
+    for (int term = 0; term < 3; term++)
+        for (int scheme = 1; scheme <= 2; scheme++)
+        {
+            forcing_config f = {0};
+            if (term == 0) f.drag = 1000.0;
+            if (term == 1) f.hypodrag = 1E4;
+            if (term == 2)
+            {
+                f.hyperviscosity = 1E-6;
+                f.hyper_order = 3;
+            }
+            double below = damped_mode_growth(f, term == 2, scheme, 0.95);
+            double above = damped_mode_growth(f, term == 2, scheme, 1.05);
+            snprintf(name, sizeof(name), "%s, %s: growth %.1e at 0.95x the limit, %.1e at 1.05x", names[term],
+                     scheme == 1 ? "Euler" : "RK4", below, above);
+            check(name, below <= 1.0 && above > 1E3 ? 0.0 : 1.0, 0.0);
+        }
+}
+
 // The decaying-turbulence initial field: energy 1/2 <u^2 + v^2> as asked,
 // u, v the velocity of w (u_x + v_y = 0 and v_x - u_y = w, spectrally exact,
 // so to the order of the stencils with DX, DY), and the same field on a grid
@@ -2574,6 +2635,7 @@ int main(int argc, char **argv)
     test_kolmogorov_laminar();
     test_drag_decay();
     test_random_initial_field();
+    test_damping_stability();
     test_random_kick();
     test_budgets();
     test_cpu_operator_axes(13, 9);

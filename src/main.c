@@ -120,13 +120,15 @@ static void usage(const char *prog)
            "                       0.1 for forced, else 0) on the wavenumbers\n"
            "  --forcing-k KF       |k| / 2 pi within KF +- DK (defaults 8 and 1)\n"
            "  --forcing-width DK\n");
-    printf("  --advection NAME     periodic cases: nonlinear term in advective (default)\n"
-           "                       or skew (skew-symmetric, conserves enstrophy) form\n");
+    printf("  --advection NAME     periodic cases: nonlinear term in advective or skew\n"
+           "                       (skew-symmetric, conserves enstrophy) form (default:\n"
+           "                       skew for forced and decaying, else advective)\n");
     printf("  --hyperviscosity NU  hyperviscosity -NU (-lap)^P w (default 0)\n"
            "  --hyper-order P      its order P >= 2 (default 4)\n");
     printf("  --hypodrag ALPHA     large-scale drag -ALPHA psi (default 0)\n");
-    printf("  --peak-k K0          decaying: initial spectrum (k/k0)^4 exp(-2 (k/k0)^2)\n"
-           "                       with |k| / 2 pi = K0 (default 10), energy 1/2\n");
+    printf("  --peak-k K0          decaying: the initial spectrum envelope\n"
+           "                       (k/k0)^4 exp(-2 (k/k0)^2) peaks at |k| / 2 pi = K0\n"
+           "                       (default 10); energy 1/2\n");
     printf("  --seed S             seed of the random forcing and initial field (default 1)\n");
     printf("  --spectrum-interval N  periodic cases: write output/spectrum-1-<n>.csv every N\n"
            "                       steps (default: with the VTK frames; 0 = never)\n");
@@ -170,7 +172,7 @@ int main(int argc, char *argv[])
     double hyperviscosity = 0., hypodrag = 0., peak_k = 10.;
     int hyper_order = 4;
     int spectrum_interval = -1; // negative: with the VTK frames
-    int advection = 0;          // 0 = advective, 1 = skew-symmetric nonlinear term
+    int advection = -1;         // 0 = advective, 1 = skew-symmetric nonlinear term; -1: the case's default
     unsigned long long seed = 1;
     int forcing_given = 0;
 
@@ -412,6 +414,9 @@ int main(int argc, char *argv[])
         printf("** Error: --advection skew applies to the periodic cases **\n");
         return 1;
     }
+    // Turbulence cases default to the skew-symmetric form: in under-resolved
+    // turbulence the advective form makes enstrophy at the grid cutoff
+    if (advection < 0) advection = flow == CASE_FORCED || flow == CASE_DECAYING;
     if (spectrum_interval < 0) spectrum_interval = output_interval;
     // The cases' defaults for what was not given
     if (drag < 0.) drag = flow == CASE_FORCED ? 0.1 : 0.;
@@ -449,7 +454,7 @@ int main(int argc, char *argv[])
     if (drag > 0. || kolmogorov_amp != 0. || forcing_rate > 0.)
         printf("Forcing: drag %g | Kolmogorov A %g, k = 2 pi x %d | random rate %g, |k|/2pi in %g +- %g, seed %llu\n",
                drag, kolmogorov_amp, kolmogorov_n, forcing_rate, forcing_k, forcing_width, seed);
-    if (advection == 1) printf("Nonlinear term: skew-symmetric\n");
+    if (periodic) printf("Nonlinear term: %s\n", advection == 1 ? "skew-symmetric" : "advective");
     if (hyperviscosity > 0. || hypodrag > 0.)
         printf("Damping: hyperviscosity %g, order %d | hypodrag %g\n", hyperviscosity, hyper_order, hypodrag);
     printf("Grid: %d x %d | dt: %lf | tf: %lf\n", nx, ny, dt, tf);
@@ -494,13 +499,17 @@ int main(int argc, char *argv[])
         if (fabs(bc.u[i]) > u_max) u_max = fabs(bc.u[i]);
         if (fabs(bc.v[i]) > u_max) u_max = fabs(bc.v[i]);
     }
-    dt_limits lim = time_step_limits_hyper(&sd_x2, &sd_y2, fmin(dx, dy), Re, u_max, max_co, time_scheme,
-                                           hyperviscosity, hyper_order);
+    forcing_config damping = {0};
+    damping.drag = drag;
+    damping.hyperviscosity = hyperviscosity;
+    damping.hyper_order = hyper_order;
+    damping.hypodrag = hypodrag;
+    dt_limits lim = time_step_limits_forced(&sd_x2, &sd_y2, fmin(dx, dy), Re, u_max, max_co, time_scheme, &damping);
     if (dt > lim.accept)
     {
         printf("** Error: dt = %g is too large; use --dt %.3g or less. Limits: Courant number <= %g "
-               "gives dt <= %.3g, the viscous stability limit of the %s scheme for this grid, Re and "
-               "order gives dt <= %.3g",
+               "gives dt <= %.3g, the stability limit of the %s scheme for the viscous and damping "
+               "terms on this grid gives dt <= %.3g",
                dt, round_down_3(lim.suggest), max_co, round_down_3(lim.courant),
                time_scheme == 1 ? "Euler" : "RK4", round_down_3(lim.viscous));
         if (time_scheme == 1)
