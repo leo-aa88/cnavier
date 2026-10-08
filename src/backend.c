@@ -177,7 +177,8 @@ flow_integrals backend_integrals(backend *b)
     if (b->gpu)
     {
         flow_integrals r;
-        gpu_integrals(b->gpu, &r.E, &r.Z, &r.P);
+        gpu_integrals(b->gpu, &r.E, &r.Z, &r.P, &r.I);
+        r.I_disc = kolmogorov_factor(&b->cfg) * (r.I - b->cfg.forcing.random_rate) + b->cfg.forcing.random_rate;
         return r;
     }
 #endif

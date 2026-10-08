@@ -33,7 +33,7 @@ extern "C"
 
     // Energy, enstrophy and palinstrophy, as compute_integrals() in
     // diagnostics.c, by reductions on the device
-    void gpu_integrals(gpu_solver *g, double *E, double *Z, double *P);
+    void gpu_integrals(gpu_solver *g, double *E, double *Z, double *P, double *I);
 
     // Copy fields between host and device. NULL arguments are skipped.
     void gpu_set_fields(gpu_solver *g, const mtrx *u, const mtrx *v, const mtrx *w);

@@ -4,6 +4,7 @@
 #define FLUIDDYN_H_INCLUDED
 
 #include "linearalg.h"
+#include "forcing.h"
 
 // Forward Euler update of w with the given derivatives and velocity; f is the
 // vorticity source at the start of the step, or NULL for none
@@ -58,6 +59,10 @@ typedef struct
     // to the device, so a run with a source is slow there.
     void (*vorticity_source)(double t, mtrx f, void *data);
     void *source_data;
+
+    // Built-in drag, Kolmogorov forcing and random forcing (forcing.h); all
+    // zero for none
+    forcing_config forcing;
 } solver_config;
 
 // CPU workspace: everything needed to advance a timestep without allocating
@@ -75,6 +80,8 @@ typedef struct
     struct fft_solver *fft;           // FFT Poisson solver (poisson_type 3, walls), else NULL
     struct periodic_solver *periodic; // periodic Poisson solver (cfg.periodic), else NULL
     mtrx source;                      // vorticity source of the current stage (cfg.vorticity_source only)
+    double *kolmogorov;               // Kolmogorov source -A k cos(k y) of each row, else NULL
+    random_forcing *kicks;            // random forcing, else NULL
     long steps;                       // steps taken; the time is cfg.t0 + steps * cfg.dt
 } rk4_ctx;
 

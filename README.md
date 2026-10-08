@@ -224,11 +224,15 @@ A few numerical parameters can be overridden without recompiling; anything not g
 | `--tf TF` | Final time |
 | `--output-interval N` | Write VTK every N iterations (`0` disables VTK output) |
 | `--re RE` | Reynolds number |
-| `--integrals-interval N` | Write `E`, `Z`, `P` to `output/integrals.csv` every N steps (default 1; `0` never) |
+| `--integrals-interval N` | Write `E`, `Z`, `P`, `I` to `output/integrals.csv` every N steps (default 1; `0` never) |
+| `--drag ALPHA` | Periodic cases: linear drag `−αω` (default 0; 0.1 for `forced`) |
+| `--kolmogorov-amp A`, `--kolmogorov-n N` | Periodic cases: Kolmogorov body force `A sin(2πN y)` in x (defaults: A = 1 for `kolmogorov`, else 0; N = 4) |
+| `--forcing-rate EPS`, `--forcing-k KF`, `--forcing-width DK` | Periodic cases: random forcing injecting energy at rate `EPS` on the wavevectors with `\|k\|/2π` in `KF ± DK` (defaults: EPS = 0.1 for `forced`, else 0; KF = 8; DK = 1) |
+| `--seed S` | Seed of the random forcing and of the Kolmogorov case's initial perturbation (default 1) |
 | `--poisson-order N` | `2` (five-point, default) or `4` (compact nine-point) Poisson operator of the FFT solver with walls (see [Higher order with walls](#higher-order-with-walls)) |
 | `--wall-closure NAME` | Wall vorticity: `velocity` (`dv/dx − du/dy`, default) or `briley` (third order, from the stream function) |
 | `--velocity-order N` | `2` (default) or `4`: fourth-order derivative rows next to the walls for `u`, `v` from the stream function. These three options apply to walls only |
-| `--case NAME` | `cavity` (default): the lid-driven cavity. On a doubly periodic unit square: `taylor-green`, a decaying vortex compared with the exact solution at the end, or `shear-layer`, a double shear layer that rolls up (see [Periodic boundaries](#periodic-boundaries)) |
+| `--case NAME` | `cavity` (default): the lid-driven cavity. On a doubly periodic unit square: `taylor-green`, a decaying vortex compared with the exact solution at the end; `shear-layer`, a double shear layer that rolls up; `kolmogorov`, Kolmogorov forcing from a small random perturbation; or `forced`, random forcing with drag from rest (see [Periodic boundaries](#periodic-boundaries) and [Forcing and drag](#forcing-and-drag)) |
 | `--cpu` | CUDA builds only: run on the CPU instead of the GPU |
 | `--help` | Show the option list |
 
@@ -266,6 +270,21 @@ The periodic cases need the FFT solver (`poisson_type = 3`). The Taylor-Green vo
 
 The error falls by 64 per doubling of the grid (sixth order), and `make regression` checks that. The double shear layer of Bell, Colella and Glaz (1989) rolls up into vortices at high Reynolds numbers; for example `--case shear-layer --n 128 --re 10000 --dt 0.0005 --tf 1.2 --output-interval 800`.
 
+### Forcing and drag
+
+On the periodic grid the solver has three built-in terms, `dω/dt = … − αω + f_K` plus a random kick before every step. They run on the GPU like the rest of the step.
+
+- **Drag** `−αω` (`--drag`): linear (Ekman) drag, which removes the energy the inverse cascade carries to the largest scales.
+- **Kolmogorov forcing** (`--kolmogorov-amp A`, `--kolmogorov-n N`): the body force `A sin(k y)` in x, `k = 2πN`, enters as its curl `f_K = −A k cos(k y)`. Its laminar state is `ω = f_K / (νk² + α)`; above a critical Reynolds number it becomes unstable.
+- **Random forcing** (`--forcing-rate ε`, `--forcing-k`, `--forcing-width`): before every step, a vorticity kick on the wavevectors of a shell, with fresh random phases. Each kick carries exactly `ε dt` of the solver's discrete kinetic energy (its amplitude per mode uses the operators' own symbols), so the energy is injected at rate `ε` (white-in-time forcing). The phases come from a seeded generator on the host, so the CPU and the GPU make the same kicks; only the phases go to the GPU each step.
+
+`integrals.csv` has two more columns: `I`, the energy input, the physical work `⟨u A sin(k y)⟩` of the Kolmogorov force plus `ε`; and `I_disc`, the same with the Kolmogorov part replaced by the exact rate at which the implemented source changes the discrete energy, `(k k̃₁/Q)·⟨u A sin(k y)⟩` (one constant from the operators' symbols, `1 + O(h^p)`). For the random forcing `ε` is the *expected* input: a kick also changes `E` by `⟨u·δu⟩`, which averages to zero but not on any single step, so the energy budget holds on average, not step by step. At a statistically steady state `I_disc = Σ D_E + 2αE` exactly, with `D_E` the discrete viscous dissipation of the spectra; the physical `I = 2νZ + 2αE` holds to the order of the scheme. For laminar Kolmogorov flow (32², order 6) the first closes to 4e-11, the second to 2.5e-5. With random forcing the time integration is RK4 for the deterministic terms plus an additive kick per step; the trajectories are not fourth order in time.
+
+```bash
+./cnavier --case kolmogorov --n 128 --re 1000 --dt 5e-4 --tf 50 --output-interval 1000
+./cnavier --case forced --n 256 --re 10000 --dt 2e-4 --tf 100 --output-interval 5000
+```
+
 ### Grid
 The grid is nodal: node `j` sits at `x = j·Lx/(nx−1)` and node `i` at `y = i·Ly/(ny−1)`, so the first and last row and column of nodes lie on the walls. `nx` and `ny` are independent. Fields are stored as `ny` rows of `nx` values (`x` varies fastest), which is also the layout of the VTK files. Wall velocities are imposed on those nodes, ψ = 0 there for every Poisson solver, and the centerline CSVs are written at the node coordinates (interpolated onto `x = Lx/2` or `y = Ly/2` when no node lies on the centerline, i.e. for an even number of nodes).
 
@@ -278,7 +297,7 @@ VTK files are written to `output/` and can be opened in [ParaView](https://www.p
 
 At the end of a run the velocity profiles along the two centerlines are written to `output/centerline_u_sim.csv` and `output/centerline_v_sim.csv`, next to the Ghia et al. (1982) reference data in `centerline_*_ghia.csv`. The `_sim` files are results and are not tracked by git.
 
-**Diagnostics.** After every step (or every `--integrals-interval N` steps; `0` turns it off), `output/integrals.csv` gets a line `step,t,E,Z,P`: the domain means of the kinetic energy `½(u² + v²)`, the enstrophy `½ω²` and the palinstrophy `½|∇ω|²` (with walls, a trapezoidal mean with the wall velocities on the wall nodes). The GPU computes them on the device. On a periodic grid, every VTK frame also writes `output/spectrum-1-<n>.csv` with the energy and enstrophy spectra `E(k)`, `Z(k)`, summed over shells of `|k|` (divide by `dk` for a spectral density), and the fluxes `Pi_E(k)`, `Pi_Z(k)` through each wavenumber (positive: towards larger `k`). The fluxes are those of the discrete equations: they use the solver's own nonlinear term, and the energy flux weights each mode by `A/Q`, the ratio of the first-derivative symbols that give `u`, `v` to the Laplacian's, so that summed over all shells it equals the rate at which the nonlinear term changes `½⟨u² + v²⟩`, to round-off. The spectra sum to `E` and `Z` (Parseval). In an unforced periodic flow `dE/dt = −2νZ`; with order 6 at 128² the computed integrals satisfy it to 7e-8, and the nonlinear term conserves energy and enstrophy to the order of the scheme.
+**Diagnostics.** After every step (or every `--integrals-interval N` steps; `0` turns it off), `output/integrals.csv` gets a line `step,t,E,Z,P,I,I_disc` (`I`, `I_disc`: the physical and the discrete energy input of the [forcing](#forcing-and-drag)): the domain means of the kinetic energy `½(u² + v²)`, the enstrophy `½ω²` and the palinstrophy `½|∇ω|²` (with walls, a trapezoidal mean with the wall velocities on the wall nodes). The GPU computes them on the device. On a periodic grid, every VTK frame also writes `output/spectrum-1-<n>.csv` with the energy and enstrophy spectra `E(k)`, `Z(k)`, summed over shells of `|k|` (divide by `dk` for a spectral density), and the fluxes `Pi_E(k)`, `Pi_Z(k)` through each wavenumber (positive: towards larger `k`). The fluxes are those of the discrete equations: they use the solver's own nonlinear term, and the energy flux weights each mode by `A/Q`, the ratio of the first-derivative symbols that give `u`, `v` to the Laplacian's, so that summed over all shells it equals the rate at which the nonlinear term changes `½⟨u² + v²⟩`, to round-off. The spectra sum to `E` and `Z` (Parseval). The files also hold `D_E(k)` and `D_Z(k)`, the energy and enstrophy the viscous term removes in each shell as the discrete equations have it, `ν Σ (A/Q)|ω̂|²` and `ν Σ Q|ω̂|²`. Their continuum values `2νZ(k)` and `2νP(k)` are reached only where `A/Q ≈ 1`. With them the energy budget of the discrete equations closes exactly: `dE/dt = Σ T_E − Σ D_E − 2αE + I`. The continuum budget `dE/dt = −2νZ` holds to the order of the scheme on resolved flows (7e-8 with order 6 at 128²), but on a field with energy up to the grid cutoff it can be off by order one (75–180 % on a random 24² field, where the discrete budget closes to 1e-6).
 
 ## Tests
 
@@ -294,6 +313,7 @@ builds and runs `test_cnavier`:
 - **Spatial accuracy**: a manufactured solution (see [Spatial convergence](#spatial-convergence)) on 17², 33² and 65² grids: ψ, `u` and `v` converge at second order and ω at least at second order, and the errors themselves are within fixed bounds. On a periodic grid, a second manufactured solution converges at the nominal order 2, 4 and 6 (also on a 2×1 domain).
 - **Higher order with walls**: the compact Poisson operator converges at least at fourth order (on a test with a non-zero Laplacian on the walls); with the third-order wall closure the manufactured solution converges at fourth order, and the wall closure alone stays at two. The fourth-order velocity rows are exact on quartics, and with all three options `u` converges at fourth order.
 - **Diagnostics**: the Taylor-Green integrals and spectrum against the exact solution; Parseval; the summed spectral transfers equal to the physical-space nonlinear rates of `E` and `Z` to round-off; the net nonlinear energy and enstrophy transfer and the residual of `dE/dt = −2νZ` falling at the order of the scheme; the GPU integrals against the CPU.
+- **Forcing and drag**: Kolmogorov forcing with drag reaches the discrete laminar state to 4e-11 (and the continuum one to O(h⁶)), with `I = 2νZ + 2αE`; drag on the Taylor-Green vortex gives `E = ¼ exp(−(4νk² + 2α)t)`; a random kick carries exactly `ε dt` of discrete energy on the shell's modes, and the same seed gives the same kicks; the GPU matches the CPU with all three, RK4 and Euler.
 - **Periodic boundaries**: the periodic operators differentiate at their nominal order and annihilate constants; the periodic Poisson solver solves `(DX2 + DY2) ψ = f` to round-off on odd and even grid sizes, with zero-mean ψ.
 - **Backends**: driving the solver through `backend.c` gives exactly what calling it directly gives, and every solver ignores changes to the caller's configuration after it is created.
 - **OpenMP** (with `OPENMP=1`): results on 1 and on 4 threads are bitwise identical above the size where loops go parallel.
@@ -437,6 +457,7 @@ cnavier/
 │   ├── poisson.c       # Gauss-Seidel, SOR, and FFT Poisson solvers
 │   ├── threads.c       # Default number of OpenMP threads
 │   ├── diagnostics.c   # Energy, enstrophy, palinstrophy; spectra and fluxes
+│   ├── forcing.c       # Kolmogorov and random forcing
 │   ├── cudasolver.cu   # CUDA backend (built only with CUDA=1)
 │   └── utils.c         # VTK output, random utilities
 ├── include/
@@ -448,6 +469,7 @@ cnavier/
 │   ├── cudasolver.h
 │   ├── threads.h
 │   ├── diagnostics.h
+│   ├── forcing.h
 │   └── utils.h
 ├── tests/
 │   ├── test_solver.c   # Unit and solver tests, GPU-vs-CPU checks

@@ -128,6 +128,7 @@ static void problem_init_ext(problem *p, int nx, int ny, double Lx, double Ly, i
     p->cfg.t0 = t0;
     p->cfg.vorticity_source = vorticity_source;
     p->cfg.source_data = source_data;
+    p->cfg.forcing = (forcing_config){0};
     p->ctx = rk4_alloc(&p->cfg);
 
     p->u = initm(ny, nx);
@@ -1006,6 +1007,43 @@ static void flux_consistency(int nx, int ny, int order, double out[2])
     problem_free(&p);
 }
 
+// The energy budget of the discrete equations closes: on a coarse grid with a
+// random field, where A/Q is far from 1, the centred difference of E over two
+// RK4 steps equals the nonlinear transfer minus the discrete viscous
+// dissipation sum D_E to the time-stepping error, while the continuum budget
+// dE/dt = -2 nu Z is off by far more
+static void discrete_budget(int n, int order, double out[2])
+{
+    int k, B, N = n * n;
+    double dt = 5E-5, nu = 0.01, rate, Em, Ep, sumD = 0.0, *PE, *DE;
+    problem p;
+    spectra *sp;
+
+    problem_init_ext(&p, n, n, 1.0, 1.0, 1, order, 1.0 / nu, 2, 3, dt, 1E-10, NULL, 0.0, NULL, NULL, 2, 0, 2);
+    fill_pseudo_random(p.w.M, N, 3u);
+    step(p.w, p.u, p.v, &p.ctx); // makes u, v consistent with w
+    Em = compute_integrals(&p.cfg, p.u, p.v, p.w, p.ctx.k1.M, p.ctx.k2.M).E;
+    step(p.w, p.u, p.v, &p.ctx);
+    flow_integrals f0 = compute_integrals(&p.cfg, p.u, p.v, p.w, p.ctx.k1.M, p.ctx.k2.M);
+    sp = spectra_setup(&p.cfg);
+    B = spectra_bins(sp);
+    PE = (double *)calloc(B, sizeof(double));
+    DE = (double *)calloc(B, sizeof(double));
+    spectra_compute(sp, p.u, p.v, p.w, NULL, NULL, PE, NULL);
+    spectra_dissipation(sp, p.w, DE, NULL);
+    for (k = 0; k < B; k++)
+        sumD += DE[k];
+    rate = -PE[B - 1] - sumD;
+    step(p.w, p.u, p.v, &p.ctx);
+    Ep = compute_integrals(&p.cfg, p.u, p.v, p.w, p.ctx.k1.M, p.ctx.k2.M).E;
+    out[0] = fabs((Ep - Em) / (2.0 * dt) - rate) / fabs(rate);
+    out[1] = fabs((Ep - Em) / (2.0 * dt) + 2.0 * nu * f0.Z) / fabs(rate);
+    free(PE);
+    free(DE);
+    spectra_free(sp);
+    problem_free(&p);
+}
+
 static void test_budgets(void)
 {
     double a[4], b[4], o;
@@ -1023,6 +1061,15 @@ static void test_budgets(void)
         check(name, r[0] + r[1], 1E-12);
     }
 
+    printf("Diagnostics: the discrete energy budget closes, random field\n");
+    for (int o = 2; o <= 6; o += 4)
+    {
+        double r[2];
+        discrete_budget(24, o, r);
+        snprintf(name, sizeof(name), "order %d, 24x24: discrete budget %.1e (continuum %.1e)", o, r[0], r[1]);
+        check(name, r[0], 1E-5);
+    }
+
     printf("Diagnostics: spectra and budgets, unforced periodic flow, order 6, 32x32 -> 64x64\n");
     budget_run(32, a);
     budget_run(64, b);
@@ -1036,6 +1083,147 @@ static void test_budgets(void)
     o = log2(a[3] / b[3]);
     snprintf(name, sizeof(name), "dE/dt + 2 nu Z, relative %.1e, order %.2f", b[3], o);
     check(name, isnan(o) ? INFINITY : 5.0 - o, 0.0);
+}
+
+// Kolmogorov forcing with drag reaches the laminar state, a single mode in y on
+// which the nonlinear term vanishes: w = f_K / (nu Q + drag), Q = -(symbol of
+// DY2). The energy input balances the dissipation, I = 2 nu Z + 2 drag E.
+static void test_kolmogorov_laminar(void)
+{
+    int i, j, t, n = 32, kn = 2;
+    double A = 1.0, nu = 0.05, drag = 0.1, k = 2.0 * PI * kn, err_d = 0.0, err_c = 0.0, peak = 0.0, Q;
+    problem p;
+    char name[96];
+
+    printf("Forcing: laminar Kolmogorov flow, %dx%d periodic grid, order 6\n", n, n);
+    problem_init_ext(&p, n, n, 1.0, 1.0, 1, 6, 1.0 / nu, 2, 3, 2E-3, 1E-10, NULL, 0.0, NULL, NULL, 2, 0, 2);
+    // The forcing is part of the copied configuration, so set it before the
+    // workspace is made: reallocate the workspace with it
+    rk4_free(&p.ctx);
+    p.cfg.forcing.kolmogorov_amp = A;
+    p.cfg.forcing.kolmogorov_n = kn;
+    p.cfg.forcing.drag = drag;
+    p.ctx = rk4_alloc(&p.cfg);
+    for (t = 0; t < 1500; t++)
+        step(p.w, p.u, p.v, &p.ctx);
+
+    // Q from the operator itself: DY2 cos(k y) = -Q cos(k y)
+    for (i = 0; i < n; i++)
+        for (j = 0; j < n; j++)
+            p.ctx.k3.M[i * n + j] = cos(k * i * p.cfg.dy);
+    spmv(p.DY2, p.ctx.k3.M, p.ctx.k4.M);
+    Q = -p.ctx.k4.M[0];
+    for (i = 0; i < n; i++)
+        for (j = 0; j < n; j++)
+        {
+            double f = -A * k * cos(k * i * p.cfg.dy);
+            err_d = fmax(err_d, fabs(MAt(p.w, i, j) - f / (nu * Q + drag)));
+            err_c = fmax(err_c, fabs(MAt(p.w, i, j) - f / (nu * k * k + drag)));
+            peak = fmax(peak, fabs(f / (nu * k * k + drag)));
+        }
+    check("steady w = f / (nu Q + drag), Q of the discrete operator", err_d / peak, 1E-10);
+    check("... and within O(h^6) of the continuum f / (nu k^2 + drag)", err_c / peak, 1E-5);
+    flow_integrals fi = compute_integrals(&p.cfg, p.u, p.v, p.w, p.ctx.k1.M, p.ctx.k2.M);
+    // I is the continuum work <u A sin(k y)> and 2 nu Z the continuum
+    // dissipation, so this balance holds to the order of the scheme
+    snprintf(name, sizeof(name), "continuum balance I = 2 nu Z + 2 drag E (I = %.4f)", fi.I);
+    check(name, fabs(fi.I - 2.0 * nu * fi.Z - 2.0 * drag * fi.E) / fi.I, 1E-4);
+    // With the discrete injection and dissipation it holds to the steady
+    // state's convergence
+    spectra *sp = spectra_setup(&p.cfg);
+    int b, B = spectra_bins(sp);
+    double *DE = (double *)calloc(B, sizeof(double)), sumD = 0.0;
+    spectra_dissipation(sp, p.w, DE, NULL);
+    for (b = 0; b < B; b++)
+        sumD += DE[b];
+    snprintf(name, sizeof(name), "discrete balance I_disc = sum D_E + 2 drag E (I_disc / I = %.6f)", fi.I_disc / fi.I);
+    check(name, fabs(fi.I_disc - sumD - 2.0 * drag * fi.E) / fi.I_disc, 1E-9);
+    free(DE);
+    spectra_free(sp);
+    problem_free(&p);
+}
+
+// Drag on the Taylor-Green vortex: E = 1/4 exp(-(4 nu k^2 + 2 drag) t)
+static void test_drag_decay(void)
+{
+    int i, j, t, n = 32, steps = 200;
+    double k = 2.0 * PI, nu = 0.01, drag = 0.5, dt = 1E-3;
+    problem p;
+
+    printf("Forcing: linear drag on the Taylor-Green vortex\n");
+    problem_init_ext(&p, n, n, 1.0, 1.0, 1, 6, 1.0 / nu, 2, 3, dt, 1E-10, NULL, 0.0, NULL, NULL, 2, 0, 2);
+    rk4_free(&p.ctx);
+    p.cfg.forcing.drag = drag;
+    p.ctx = rk4_alloc(&p.cfg);
+    for (i = 0; i < n; i++)
+        for (j = 0; j < n; j++)
+        {
+            double x = j * p.cfg.dx, y = i * p.cfg.dy;
+            MAt(p.w, i, j) = 2.0 * k * sin(k * x) * sin(k * y);
+            MAt(p.u, i, j) = sin(k * x) * cos(k * y);
+            MAt(p.v, i, j) = -cos(k * x) * sin(k * y);
+        }
+    for (t = 0; t < steps; t++)
+        step(p.w, p.u, p.v, &p.ctx);
+    flow_integrals fi = compute_integrals(&p.cfg, p.u, p.v, p.w, p.ctx.k1.M, p.ctx.k2.M);
+    check("E against 1/4 exp(-(4 nu k^2 + 2 drag) t)",
+          fabs(fi.E - 0.25 * exp(-(4.0 * nu * k * k + 2.0 * drag) * steps * dt)) / fi.E, 1E-6);
+    problem_free(&p);
+}
+
+// A random kick carries exactly eps dt of the solver's discrete energy, its
+// modes lie in the shell, and two generators with the same seed agree
+static void test_random_kick(void)
+{
+    int k, n = 48, N = n * n;
+    double eps = 0.7, dt = 1E-3, kmin = INFINITY, kmax = 0.0;
+    forcing_config fc = {0};
+    problem p;
+    random_forcing *a, *b;
+    mtrx f = initm(n, n), psi = initm(n, n), u = initm(n, n), v = initm(n, n), w = initm(n, n), w2 = initm(n, n);
+    double E = 0.0;
+
+    printf("Forcing: random kicks, %dx%d periodic grid\n", n, n);
+    problem_init_ext(&p, n, n, 1.0, 1.0, 1, 6, 100., 2, 3, dt, 1E-10, NULL, 0.0, NULL, NULL, 2, 0, 2);
+    fc.random_rate = eps;
+    fc.random_kf = 6.0;
+    fc.random_dk = 1.0;
+    fc.random_seed = 42;
+    a = random_forcing_setup(&fc, n, n, p.cfg.dx, p.cfg.dy, dt, &p.DX, &p.DY, &p.DX2, &p.DY2);
+    b = random_forcing_setup(&fc, n, n, p.cfg.dx, p.cfg.dy, dt, &p.DX, &p.DY, &p.DX2, &p.DY2);
+    random_forcing_draw(a);
+    random_forcing_add(a, w, p.cfg.dx, p.cfg.dy);
+    random_forcing_draw(b);
+    random_forcing_add(b, w2, p.cfg.dx, p.cfg.dy);
+    periodic_solver *ps = periodic_setup(n, n, &p.DX2, &p.DY2);
+    negcpy(f, w);
+    poisson_periodic(ps, f, psi);
+    spmv(p.DY, psi.M, u.M);
+    spmv(p.DX, psi.M, v.M);
+    for (k = 0; k < N; k++)
+        E += 0.5 * (u.M[k] * u.M[k] + v.M[k] * v.M[k]) / N;
+    for (k = 0; k < a->modes; k++)
+    {
+        double kk = sqrt(a->kx[k] * a->kx[k] + a->ky[k] * a->ky[k]) / (2.0 * PI);
+        kmin = fmin(kmin, kk);
+        kmax = fmax(kmax, kk);
+    }
+    check("one kick carries eps dt of discrete energy", fabs(E - eps * dt) / (eps * dt), 1E-12);
+    check("its modes lie in the shell 5 <= |k| / 2 pi <= 7", (kmin < 5.0 - 1E-12) + (kmax > 7.0 + 1E-12), 0.0);
+    check("same seed, same kick", rel_diff(w.M, w2.M, N), 0.0);
+    random_forcing_draw(a);
+    check("the next kick has new phases", a->phase[0] == b->phase[0], 0.0);
+
+    random_forcing_free(a);
+    random_forcing_free(b);
+    periodic_cleanup(ps);
+    freem(&f);
+    freem(&psi);
+    freem(&u);
+    freem(&v);
+    freem(&w);
+    freem(&w2);
+    problem_free(&p);
 }
 
 // Wall velocities go to the right nodes; at the corners the walls x = 0 and
@@ -2008,12 +2196,58 @@ static void test_gpu_integrals(void)
             gpu_step(g);
         }
         flow_integrals f = compute_integrals(&p.cfg, p.u, p.v, p.w, p.ctx.k1.M, p.ctx.k2.M);
-        gpu_integrals(g, &E, &Z, &P);
+        double I;
+        gpu_integrals(g, &E, &Z, &P, &I);
         snprintf(name, sizeof(name), "%s: E, Z, P vs CPU", periodic ? "periodic" : "walls");
         check(name, fabs(E - f.E) / f.E + fabs(Z - f.Z) / f.Z + fabs(P - f.P) / f.P, 1E-11);
         gpu_free(g);
         problem_free(&p);
     }
+}
+
+// Drag, Kolmogorov forcing and random kicks on the GPU match the CPU (same
+// seed, so the same kicks), with RK4 and Euler, and so does the energy input
+static void test_gpu_forcing(int time_scheme, const char *label)
+{
+    int t, nx = 48, ny = 40, N = nx * ny;
+    char name[96];
+    problem p;
+    problem_init_ext(&p, nx, ny, 1.0, 1.0, 1, 6, 1000., time_scheme, 3, 5E-4, 1E-10, NULL, 0.0, NULL, NULL, 2, 0, 2);
+    rk4_free(&p.ctx);
+    p.cfg.forcing.drag = 0.1;
+    p.cfg.forcing.kolmogorov_amp = 0.5;
+    p.cfg.forcing.kolmogorov_n = 3;
+    p.cfg.forcing.random_rate = 0.2;
+    p.cfg.forcing.random_kf = 5.0;
+    p.cfg.forcing.random_dk = 1.0;
+    p.cfg.forcing.random_seed = 7;
+    p.ctx = rk4_alloc(&p.cfg);
+    gpu_solver *g = gpu_for(&p);
+    mtrx u = initm(ny, nx), v = initm(ny, nx), w = initm(ny, nx);
+    double E, Z, P, I;
+
+    printf("GPU: %s with drag, Kolmogorov and random forcing, %dx%d periodic grid\n", label, nx, ny);
+    gpu_set_fields(g, &p.u, &p.v, &p.w);
+    for (t = 0; t < 40; t++)
+    {
+        step(p.w, p.u, p.v, &p.ctx);
+        gpu_step(g);
+    }
+    gpu_get_fields(g, &u, &v, &w);
+    snprintf(name, sizeof(name), "%s, forced: w vs CPU", label);
+    check(name, rel_diff(w.M, p.w.M, N), 1E-11);
+    snprintf(name, sizeof(name), "%s, forced: u, v vs CPU", label);
+    check(name, rel_diff(u.M, p.u.M, N) + rel_diff(v.M, p.v.M, N), 1E-11);
+    flow_integrals f = compute_integrals(&p.cfg, p.u, p.v, p.w, p.ctx.k1.M, p.ctx.k2.M);
+    gpu_integrals(g, &E, &Z, &P, &I);
+    snprintf(name, sizeof(name), "%s, forced: energy input I vs CPU", label);
+    check(name, fabs(I - f.I) / fabs(f.I), 1E-11);
+
+    freem(&u);
+    freem(&v);
+    freem(&w);
+    gpu_free(g);
+    problem_free(&p);
 }
 
 // Fields written to the device must come back unchanged, and the continuity
@@ -2105,6 +2339,8 @@ static void run_gpu_tests(void)
     GPU_TEST(test_gpu_source(33, 33, 50, 2, "RK4 + FFT"));
     GPU_TEST(test_gpu_periodic(48, 33, 50, 2, "RK4"));
     GPU_TEST(test_gpu_integrals());
+    GPU_TEST(test_gpu_forcing(2, "RK4"));
+    GPU_TEST(test_gpu_forcing(1, "Euler"));
     GPU_TEST(test_gpu_closures(40, 25, 30, 2, "RK4"));
     GPU_TEST(test_gpu_closures(32, 32, 30, 1, "Euler"));
     GPU_TEST(test_gpu_periodic(32, 32, 50, 1, "Euler"));
@@ -2165,6 +2401,9 @@ int main(int argc, char **argv)
     test_periodic_poisson(16, 16, 2);
     test_periodic_mms_order();
     test_integrals_taylor_green();
+    test_kolmogorov_laminar();
+    test_drag_decay();
+    test_random_kick();
     test_budgets();
     test_cpu_operator_axes(13, 9);
     test_cpu_operator_axes(9, 13);

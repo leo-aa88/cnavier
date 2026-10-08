@@ -53,8 +53,22 @@ fi
 # E = 1/4 exp(-4 nu k^2 t), k = 2 pi, nu = 1/Re = 0.01
 echo "Regression: Taylor-Green energy in output/integrals.csv"
 last=$(tail -1 output/integrals.csv)
-if echo "$last" | awk -F, '{ e = 0.25 * exp(-4 * 0.01 * (2 * 3.14159265358979) ^ 2 * $2); r = ($3 - e) / e; if (r < 0) r = -r; exit !(NF == 5 && r < 1e-6) }'; then
+if echo "$last" | awk -F, '{ e = 0.25 * exp(-4 * 0.01 * (2 * 3.14159265358979) ^ 2 * $2); r = ($3 - e) / e; if (r < 0) r = -r; exit !(NF == 7 && r < 1e-6) }'; then
     echo "  [ ok ] E = $(echo "$last" | cut -d, -f3) at t = $(echo "$last" | cut -d, -f2), within 1e-6 of the exact decay"
+else
+    echo "  [FAIL] last line of integrals.csv: '$last'"
+    exit 1
+fi
+
+# Kolmogorov flow at Re = 50 settles to the laminar state: with u_L =
+# A / (nu k^2), A = 1, k = 8 pi, E = u_L^2 / 4 and the energy input I = u_L / 2
+echo "Regression: laminar Kolmogorov flow (energy and energy input)"
+"$bin" --case kolmogorov --n 64 --re 50 --dt 0.002 --tf 2 --output-interval 0 > kolmogorov.txt
+last=$(tail -1 output/integrals.csv)
+if echo "$last" | awk -F, '{ ul = 1 / (0.02 * (8 * 3.14159265358979) ^ 2); e = ul * ul / 4; i = ul / 2;
+                             re = ($3 - e) / e; ri = ($6 - i) / i; if (re < 0) re = -re; if (ri < 0) ri = -ri;
+                             exit !(NF == 7 && re < 1e-4 && ri < 1e-4) }'; then
+    echo "  [ ok ] E = $(echo "$last" | cut -d, -f3), I = $(echo "$last" | cut -d, -f6): the laminar values"
 else
     echo "  [FAIL] last line of integrals.csv: '$last'"
     exit 1
