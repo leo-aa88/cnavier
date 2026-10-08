@@ -22,6 +22,28 @@ static void velocity_at(const solver_config *cfg, mtrx u, mtrx v, int i, int j, 
     *vv = wall < 0 ? MAt(v, i, j) : cfg->bc.v[wall];
 }
 
+double kolmogorov_factor(const solver_config *cfg)
+{
+    int e, n = cfg->forcing.kolmogorov_n, ny = cfg->ny, nx = cfg->nx;
+    double k, k1 = 0.0, Q = 0.0;
+
+    if (!cfg->periodic || cfg->forcing.kolmogorov_amp == 0.0) return 1.0;
+    k = 2.0 * PI * n / (ny * cfg->dy);
+    // DY = dyy (x) I and DY2 likewise: their first rows hold the y stencils
+    // in columns m*nx. DY e^{iky} = i k1 e^{iky}, DY2 e^{iky} = -Q e^{iky}.
+    for (e = cfg->DY->row_ptr[0]; e < cfg->DY->row_ptr[1]; e++)
+    {
+        int m = cfg->DY->col_idx[e] / nx; // whole rows: the offset along y
+        k1 += cfg->DY->values[e] * sin(2.0 * PI * n * (double)m / ny);
+    }
+    for (e = cfg->DY2->row_ptr[0]; e < cfg->DY2->row_ptr[1]; e++)
+    {
+        int m = cfg->DY2->col_idx[e] / nx;
+        Q -= cfg->DY2->values[e] * cos(2.0 * PI * n * (double)m / ny);
+    }
+    return k * k1 / Q;
+}
+
 flow_integrals compute_integrals(const solver_config *cfg, mtrx u, mtrx v, mtrx w, double *wx, double *wy)
 {
     int i, j, nx = cfg->nx, ny = cfg->ny;
@@ -51,6 +73,7 @@ flow_integrals compute_integrals(const solver_config *cfg, mtrx u, mtrx v, mtrx 
     // Energy input: the work of the Kolmogorov force A sin(k y) on u, and the
     // rate the random kicks inject by construction
     r.I = cfg->forcing.kolmogorov_amp * sI / norm + cfg->forcing.random_rate;
+    r.I_disc = kolmogorov_factor(cfg) * cfg->forcing.kolmogorov_amp * sI / norm + cfg->forcing.random_rate;
     return r;
 }
 

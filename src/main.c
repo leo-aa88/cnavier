@@ -558,7 +558,8 @@ int main(int argc, char *argv[])
             exit(1);
         }
         fi = backend_integrals(solver);
-        fprintf(integrals, "step,t,E,Z,P,I\n0,0,%.17g,%.17g,%.17g,%.17g\n", fi.E, fi.Z, fi.P, fi.I);
+        fprintf(integrals, "step,t,E,Z,P,I,I_disc\n0,0,%.17g,%.17g,%.17g,%.17g,%.17g\n", fi.E, fi.Z, fi.P, fi.I,
+                fi.I_disc);
     }
     spectra *spec = periodic && output_interval > 0 ? spectra_setup(&cfg) : NULL;
 
@@ -583,8 +584,8 @@ int main(int argc, char *argv[])
         if (integrals && (t + 1) % integrals_interval == 0)
         {
             fi = backend_integrals(solver);
-            fprintf(integrals, "%d,%.17g,%.17g,%.17g,%.17g,%.17g\n", t + 1, (double)(t + 1) * dt, fi.E, fi.Z, fi.P,
-                    fi.I);
+            fprintf(integrals, "%d,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g\n", t + 1, (double)(t + 1) * dt, fi.E, fi.Z,
+                    fi.P, fi.I, fi.I_disc);
         }
 
         if (output_interval > 0 && t % output_interval == 0)

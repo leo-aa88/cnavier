@@ -20,7 +20,19 @@ typedef struct
     // <u . du>, which averages to zero but not on any one step, so a
     // step-by-step energy budget holds only on average.
     double I;
+    // The same with the Kolmogorov part replaced by the exact rate at which
+    // the source f_K changes the discrete energy, (k k1 / Q) <u A sin(k y)>,
+    // with k1 and Q the symbols of DY and -DY2 at k (kolmogorov_factor());
+    // on a periodic grid the discrete energy budget closes with it exactly
+    double I_disc;
 } flow_integrals;
+
+// k k1 / Q for the Kolmogorov mode: the ratio of the exact rate at which f_K
+// changes the discrete energy to the work <u A sin(k y)>. f_K is a single
+// mode, so psi_f = (A k / Q) cos(k y) up to sign and DY gives it a velocity
+// (A k k1 / Q) sin(k y), with k1 the first-derivative symbol. 1 + O(h^p) for a
+// resolved mode; 1 with walls, where it is not defined.
+double kolmogorov_factor(const solver_config *cfg);
 
 // wx, wy: scratch of nx*ny values each
 flow_integrals compute_integrals(const solver_config *cfg, mtrx u, mtrx v, mtrx w, double *wx, double *wy);

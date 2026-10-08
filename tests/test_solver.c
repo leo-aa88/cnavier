@@ -1124,10 +1124,22 @@ static void test_kolmogorov_laminar(void)
     check("steady w = f / (nu Q + drag), Q of the discrete operator", err_d / peak, 1E-10);
     check("... and within O(h^6) of the continuum f / (nu k^2 + drag)", err_c / peak, 1E-5);
     flow_integrals fi = compute_integrals(&p.cfg, p.u, p.v, p.w, p.ctx.k1.M, p.ctx.k2.M);
-    // I is the continuum work <u A sin(k y)>, so the balance holds to the
-    // order of the scheme
-    snprintf(name, sizeof(name), "energy balance I = 2 nu Z + 2 drag E (I = %.4f)", fi.I);
+    // I is the continuum work <u A sin(k y)> and 2 nu Z the continuum
+    // dissipation, so this balance holds to the order of the scheme
+    snprintf(name, sizeof(name), "continuum balance I = 2 nu Z + 2 drag E (I = %.4f)", fi.I);
     check(name, fabs(fi.I - 2.0 * nu * fi.Z - 2.0 * drag * fi.E) / fi.I, 1E-4);
+    // With the discrete injection and dissipation it holds to the steady
+    // state's convergence
+    spectra *sp = spectra_setup(&p.cfg);
+    int b, B = spectra_bins(sp);
+    double *DE = (double *)calloc(B, sizeof(double)), sumD = 0.0;
+    spectra_dissipation(sp, p.w, DE, NULL);
+    for (b = 0; b < B; b++)
+        sumD += DE[b];
+    snprintf(name, sizeof(name), "discrete balance I_disc = sum D_E + 2 drag E (I_disc / I = %.6f)", fi.I_disc / fi.I);
+    check(name, fabs(fi.I_disc - sumD - 2.0 * drag * fi.E) / fi.I_disc, 1E-9);
+    free(DE);
+    spectra_free(sp);
     problem_free(&p);
 }
 
