@@ -185,6 +185,18 @@ flow_integrals backend_integrals(backend *b)
     return compute_integrals(&b->cfg, b->u, b->v, b->w, b->dudx.M, b->dvdy.M);
 }
 
+void backend_spectra(backend *b, spectra *s, double *out)
+{
+#ifdef USE_CUDA
+    if (b->gpu)
+    {
+        gpu_spectra(b->gpu, s, out);
+        return;
+    }
+#endif
+    spectra_all(s, b->u, b->v, b->w, out);
+}
+
 void backend_fields(backend *b, mtrx **u, mtrx **v, mtrx **w)
 {
 #ifdef USE_CUDA

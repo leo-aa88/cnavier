@@ -521,7 +521,7 @@ On the periodic grid five built-in terms drive and damp the flow,
 \frac{\partial\omega}{\partial t}=-\mathbf{u}\cdot\nabla\omega+\nu\nabla^2\omega-\alpha\omega+f_K-\nu_h(-\nabla^2)^p\omega-\alpha_h\psi,
 \qquad f_K=-Ak\cos(ky),\quad k=2\pi n/L_y,
 \end{equation}
-plus a random kick before every step (\code{solver_config.forcing}, \code{src/forcing.c}).  The linear drag $-\alpha\omega$ removes the energy the inverse cascade carries to the largest scales.  The hyperviscosity $-\nu_h(-\nabla^2)^p\omega$ applies the discrete Laplacian $D_{xx}+D_{yy}$ $p$ times; its damping rate $\nu_hQ^p$ is negligible except near the grid cutoff, so it removes the enstrophy of the direct cascade there and leaves the range above almost inviscid, which plain viscosity at an affordable resolution cannot do.  The hypodrag $-\alpha_h\psi=-\alpha_h(-\nabla^2)^{-1}\omega$ uses the stream function of the stage; its damping rate $\alpha_h/Q$ confines it to the largest scales, where it stops the inverse cascade instead of damping it along the way as linear drag does.  The time-step limit of \cref{sec:stability} includes all the damping terms.  A periodic mode with eigenvalue $Q$ of $-(D_{xx}+D_{yy})$ decays at $\sigma(Q)=Q/\Rey+\nu_hQ^p+\alpha+\alpha_h/Q$, which is convex for $Q>0$, so its maximum over the modes is at the largest $Q$, the $\lambda_{\max}$ of \cref{sec:stability}, or with hypodrag possibly at the smallest non-zero one, the symbol of $D_{xx}$ or $D_{yy}$ at the lowest wavenumber.  The run is refused unless $\Delta t\le\rho/\max\sigma$.  For each term the limit is sharp: the single mode that sets it (on which the nonlinear term vanishes) decays at $0.95$ times the limit and grows at $1.05$ times, with Euler and RK4.  $f_K$ is the curl of the Kolmogorov body force $A\sin(ky)\,\hat{\mathbf x}$; its laminar state is $\omega=f_K/(\nu k^2+\alpha)$, on which the nonlinear term vanishes.  The random kick adds
+plus a random kick before every step (\code{solver_config.forcing}, \code{src/forcing.c}).  The linear drag $-\alpha\omega$ removes the energy the inverse cascade carries to the largest scales.  The hyperviscosity $-\nu_h(-\nabla^2)^p\omega$ applies the discrete Laplacian $D_{xx}+D_{yy}$ $p$ times (on the GPU in Fourier space, \cref{sec:cuda}); its damping rate $\nu_hQ^p$ is negligible except near the grid cutoff, so it removes the enstrophy of the direct cascade there and leaves the range above almost inviscid, which plain viscosity at an affordable resolution cannot do.  The hypodrag $-\alpha_h\psi=-\alpha_h(-\nabla^2)^{-1}\omega$ uses the stream function of the stage; its damping rate $\alpha_h/Q$ confines it to the largest scales, where it stops the inverse cascade instead of damping it along the way as linear drag does.  The time-step limit of \cref{sec:stability} includes all the damping terms.  A periodic mode with eigenvalue $Q$ of $-(D_{xx}+D_{yy})$ decays at $\sigma(Q)=Q/\Rey+\nu_hQ^p+\alpha+\alpha_h/Q$, which is convex for $Q>0$, so its maximum over the modes is at the largest $Q$, the $\lambda_{\max}$ of \cref{sec:stability}, or with hypodrag possibly at the smallest non-zero one, the symbol of $D_{xx}$ or $D_{yy}$ at the lowest wavenumber.  The run is refused unless $\Delta t\le\rho/\max\sigma$.  For each term the limit is sharp: the single mode that sets it (on which the nonlinear term vanishes) decays at $0.95$ times the limit and grows at $1.05$ times, with Euler and RK4.  $f_K$ is the curl of the Kolmogorov body force $A\sin(ky)\,\hat{\mathbf x}$; its laminar state is $\omega=f_K/(\nu k^2+\alpha)$, on which the nonlinear term vanishes.  The random kick adds
 \begin{equation}
 \delta\omega=\sum_m a_m\cos(\mathbf{k}_m\cdot\mathbf{x}+\phi_m)
 \end{equation}
@@ -714,6 +714,7 @@ enables shared-memory parallel loops in the principal CSR operations, explicit r
 Changing the sweep order is numerically relevant when the solver is stopped before convergence.  Therefore, at a loose iterate-change tolerance, serial Gauss--Seidel/SOR and OpenMP red--black Gauss--Seidel/SOR can return slightly different intermediate approximations even though they converge to the same discrete solution when the tolerance is sufficiently tight.
 
 \subsection{CUDA}
+\label{sec:cuda}
 
 Building with
 \begin{lstlisting}[language=bash]
@@ -727,8 +728,11 @@ adds a GPU backend.  The four CSR derivative matrices and all primary fields are
   \item velocity recovery;
   \item red--black Gauss--Seidel/SOR;
   \item the FFT-based Poisson solver;
-  \item the divergence diagnostic and reductions.
+  \item the divergence diagnostic and reductions;
+  \item on periodic grids, the forcing and damping terms and the skew-symmetric nonlinear term, and the spectra and fluxes of \cref{sec:diagnostics}.
 \end{itemize}
+
+Two of these use the periodic transforms the Poisson solver already plans.  The hyperviscosity $(-L)^p\omega$ is $Q^p\hat\omega$ in Fourier space, with $Q$ the eigenvalues of $-(D_{xx}+D_{yy})$ the solver holds.  One real-to-complex and one complex-to-real transform replace the $2p$ sparse products per stage the CPU does.  The operator is the same circulant matrix, so the two agree to round-off: $3\times10^{-15}$ after 20 steps in which the hyperviscosity damps $\langle\omega^2\rangle$ to $9\,\%$ ($p=2$) and $32\,\%$ ($p=4$).  The spectra transform $u$, $v$, $\omega$ and $N$ with cuFFT and sum each shell in one thread block, over a list of the shell's modes, with a reduction in a fixed order, so the result is deterministic.  Only the $8\times$(number of shells) sums are copied to the host, not the fields; they match the host computation to $3\times10^{-15}$ for both nonlinear forms with every damping term.  On $512^2$ forced turbulence (hyperviscosity of order 4, spectra every 50 steps) a step takes $16.2\,\mathrm{ms}$ instead of $23.1$, and a spectrum frame about $5\,\mathrm{ms}$ instead of $20$.
 
 All solver arithmetic is double precision.
 

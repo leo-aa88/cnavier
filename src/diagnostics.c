@@ -289,27 +289,28 @@ void spectra_dissipation(spectra *s, mtrx w, double *DE, double *DZ, double *FE,
     }
 }
 
-void spectra_write(spectra *s, mtrx u, mtrx v, mtrx w, double t)
+void spectra_all(spectra *s, mtrx u, mtrx v, mtrx w, double *out)
 {
-    int b, frame = output_frame("spectrum", ".csv");
+    size_t B = (size_t)s->bins;
+    spectra_compute(s, u, v, w, out, out + B, out + 2 * B, out + 3 * B);
+    spectra_dissipation(s, w, out + 4 * B, out + 5 * B, out + 6 * B, out + 7 * B);
+}
+
+void spectra_tables(const spectra *s, const int **bin, const double **weight, const double **lap,
+                    const double **ratio)
+{
+    *bin = s->bin;
+    *weight = s->weight;
+    *lap = s->lap;
+    *ratio = s->ratio;
+}
+
+void spectra_write_frame(const spectra *s, const double *out, double t)
+{
+    int b, q, B = s->bins, frame = output_frame("spectrum", ".csv");
     char name[96];
     FILE *f;
-    double *E = (double *)calloc((size_t)s->bins, sizeof(double));
-    double *Z = (double *)calloc((size_t)s->bins, sizeof(double));
-    double *PE = (double *)calloc((size_t)s->bins, sizeof(double));
-    double *PZ = (double *)calloc((size_t)s->bins, sizeof(double));
-    double *DE = (double *)calloc((size_t)s->bins, sizeof(double));
-    double *DZ = (double *)calloc((size_t)s->bins, sizeof(double));
-    double *FE = (double *)calloc((size_t)s->bins, sizeof(double));
-    double *FZ = (double *)calloc((size_t)s->bins, sizeof(double));
 
-    if (!E || !Z || !PE || !PZ || !DE || !DZ || !FE || !FZ)
-    {
-        printf("** Error: insufficient memory **\n");
-        exit(1);
-    }
-    spectra_compute(s, u, v, w, E, Z, PE, PZ);
-    spectra_dissipation(s, w, DE, DZ, FE, FZ);
     snprintf(name, sizeof(name), "./output/spectrum-1-%d.csv", frame);
     if (!(f = fopen(name, "w")))
     {
@@ -317,18 +318,27 @@ void spectra_write(spectra *s, mtrx u, mtrx v, mtrx w, double t)
         exit(1);
     }
     fprintf(f, "# t = %.17g\nk,E,Z,Pi_E,Pi_Z,D_E,D_Z,F_E,F_Z\n", t);
-    for (b = 0; b < s->bins; b++)
-        fprintf(f, "%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g\n", b * s->dk, E[b], Z[b], PE[b], PZ[b],
-                DE[b], DZ[b], FE[b], FZ[b]);
+    for (b = 0; b < B; b++)
+    {
+        fprintf(f, "%.17g", b * s->dk);
+        for (q = 0; q < SPECTRA_COLUMNS; q++)
+            fprintf(f, ",%.17g", out[q * B + b]);
+        fprintf(f, "\n");
+    }
     fclose(f);
-    free(E);
-    free(Z);
-    free(PE);
-    free(PZ);
-    free(DE);
-    free(DZ);
-    free(FE);
-    free(FZ);
+}
+
+void spectra_write(spectra *s, mtrx u, mtrx v, mtrx w, double t)
+{
+    double *out = (double *)malloc((size_t)SPECTRA_COLUMNS * s->bins * sizeof(double));
+    if (!out)
+    {
+        printf("** Error: insufficient memory **\n");
+        exit(1);
+    }
+    spectra_all(s, u, v, w, out);
+    spectra_write_frame(s, out, t);
+    free(out);
 }
 
 void spectra_free(spectra *s)

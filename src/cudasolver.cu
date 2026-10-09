@@ -17,6 +17,7 @@ extern "C"
 #include "linearalg.h"
 #include "fluiddyn.h"
 #include "poisson.h"
+#include "diagnostics.h"
 }
 #include "cudasolver.h"
 
@@ -101,6 +102,14 @@ struct gpu_solver
     // Periodic Poisson solver (cfg.periodic): 2D real FFT of the whole field
     cufftHandle plan_r2c, plan_c2r;
     double *plam_x, *plam_y; // eigenvalues of DX2 (nx/2+1 of them) and DY2 (ny)
+
+    // Spectra on the device (gpu_spectra()), set up on first use for sp_of
+    const spectra *sp_of;
+    int sp_bins;
+    int *sp_bin_ptr, *sp_modes;            // the modes of each shell, in index order
+    double *sp_weight, *sp_lap, *sp_ratio; // spectra_tables()
+    cufftDoubleComplex *sp_hat;            // spectra of u, v, w and N
+    double *sp_nl, *sp_out;                // nonlinear term; shell sums
 };
 
 // ---------------------------------------------------------------------------
@@ -683,6 +692,89 @@ static void add_skew_correction(gpu_solver *g, const double *w, double *out)
     LAUNCH(skew_kernel, g->n, g->DX, g->DY, g->u, g->v, w, g->uw, g->vw, out, g->n);
 }
 
+// spec *= -scale Q^p, with Q = -(lx + ly) the eigenvalue of -(DX2 + DY2):
+// (-L)^p in spectral space, times -scale
+__global__ void hyper_multiply_kernel(cufftDoubleComplex *spec, const double *lx, const double *ly, int p,
+                                      double scale, int kx, int ny)
+{
+    int k = blockIdx.x * blockDim.x + threadIdx.x;
+    if (k < kx * ny)
+    {
+        double q = -(lx[k % kx] + ly[k / kx]), f = -scale;
+        for (int i = 0; i < p; i++)
+            f *= q;
+        spec[k].x *= f;
+        spec[k].y *= f;
+    }
+}
+
+// out = -(u DX w + v DY w), the advective nonlinear term
+__global__ void nonlinear_kernel(csr_dev DX, csr_dev DY, const double *w, const double *u, const double *v,
+                                 double *out, int n)
+{
+    int k = blockIdx.x * blockDim.x + threadIdx.x;
+    if (k < n)
+        out[k] = -(u[k] * csr_row(DX, w, k) + v[k] * csr_row(DY, w, k));
+}
+
+#define SP_THREADS 128 // threads per shell in spectra_kernel (power of two)
+
+// The shell sums of spectra_all() for shell blockIdx.x, into out[q * bins + b]
+// for q = E, Z, TE, TZ, DE, DZ, FE, FZ (TE, TZ: the nonlinear transfer into
+// the shell, which the host turns into fluxes). Each block sums its shell's
+// modes and reduces them in a fixed order, so the result is deterministic.
+__global__ void spectra_kernel(const cufftDoubleComplex *uh, const cufftDoubleComplex *vh,
+                               const cufftDoubleComplex *wh, const cufftDoubleComplex *nh, const int *bin_ptr,
+                               const int *modes, const double *weight, const double *lap, const double *ratio,
+                               double inv, double nu, double drag, double nu_h, int p, double alpha_h, int bins,
+                               double *out)
+{
+    __shared__ double sh[SPECTRA_COLUMNS][SP_THREADS];
+    double acc[SPECTRA_COLUMNS] = {0.0};
+    int b = blockIdx.x, t = threadIdx.x;
+
+    for (int e = bin_ptr[b] + t; e < bin_ptr[b + 1]; e += SP_THREADS)
+    {
+        int k = modes[e];
+        double c = weight[k] * inv, wr = wh[k].x, wi = wh[k].y, w2 = wr * wr + wi * wi;
+        acc[0] += 0.5 * c * (uh[k].x * uh[k].x + uh[k].y * uh[k].y + vh[k].x * vh[k].x + vh[k].y * vh[k].y);
+        acc[1] += 0.5 * c * w2;
+        acc[3] += c * (wr * nh[k].x + wi * nh[k].y);
+        if (k == 0)
+        {
+            // The mean vorticity carries no energy and feels only the drag
+            acc[7] += drag * w2 * inv;
+            continue;
+        }
+        // psi^ = -w^ / lap; energy transfer (A/Q) Re(psi^* N^); a damping of
+        // symbol -sigma removes sigma (A/Q^2) |w^|^2 and sigma |w^|^2
+        double Q = -lap[k], pr = wr / Q, pi = wi / Q, small = nu * Q, large = drag + alpha_h / Q;
+        acc[2] += c * ratio[k] * (pr * nh[k].x + pi * nh[k].y);
+        if (nu_h > 0.0)
+        {
+            double qp = 1.0;
+            for (int i = 0; i < p; i++)
+                qp *= Q;
+            small += nu_h * qp;
+        }
+        acc[4] += small * c * ratio[k] / Q * w2;
+        acc[5] += small * c * w2;
+        acc[6] += large * c * ratio[k] / Q * w2;
+        acc[7] += large * c * w2;
+    }
+    for (int q = 0; q < SPECTRA_COLUMNS; q++)
+        sh[q][t] = acc[q];
+    __syncthreads();
+    for (int half = SP_THREADS / 2; half > 0; half /= 2)
+    {
+        if (t < half)
+            for (int q = 0; q < SPECTRA_COLUMNS; q++)
+                sh[q][t] += sh[q][t + half];
+        __syncthreads();
+    }
+    if (t < SPECTRA_COLUMNS) out[t * bins + b] = sh[t][0];
+}
+
 // out = -(DX2 + DY2) in
 __global__ void neg_laplacian_kernel(csr_dev DX2, csr_dev DY2, const double *in, double *out, int n)
 {
@@ -696,7 +788,21 @@ __global__ void neg_laplacian_kernel(csr_dev DX2, csr_dev DY2, const double *in,
 static void add_forcing_terms(gpu_solver *g, double *out, const double *w)
 {
     const forcing_config *fc = &g->cfg.forcing;
-    if (fc->hyperviscosity > 0.0)
+    if (fc->hyperviscosity > 0.0 && g->cfg.periodic)
+    {
+        // DX2 + DY2 is circulant, so (-L)^p is diagonal in Fourier space with
+        // eigenvalue Q^p: one transform each way instead of 2p sparse products
+        // (cuFFT may overwrite the input of a multidimensional transform, so
+        // w is copied first)
+        int kx = g->nx / 2 + 1;
+        CUDA_CHECK(cudaMemcpy(g->hyp1, w, g->n * sizeof(double), cudaMemcpyDeviceToDevice));
+        CUFFT_CHECK(cufftExecD2Z(g->plan_r2c, g->hyp1, g->spec));
+        LAUNCH(hyper_multiply_kernel, kx * g->ny, g->spec, g->plam_x, g->plam_y, fc->hyper_order,
+               fc->hyperviscosity / g->n, kx, g->ny);
+        CUFFT_CHECK(cufftExecZ2D(g->plan_c2r, g->spec, g->hyp2));
+        LAUNCH(axpy_kernel, g->n, out, 1.0, g->hyp2, out, g->n);
+    }
+    else if (fc->hyperviscosity > 0.0)
     {
         const double *a = w;
         double *bufs[2] = {g->hyp1, g->hyp2};
@@ -952,6 +1058,14 @@ void gpu_free(gpu_solver *g)
         cudaFree(g->spec);
         cudaFree(g->plam_x);
         cudaFree(g->plam_y);
+        cudaFree(g->sp_bin_ptr);
+        cudaFree(g->sp_modes);
+        cudaFree(g->sp_weight);
+        cudaFree(g->sp_lap);
+        cudaFree(g->sp_ratio);
+        cudaFree(g->sp_hat);
+        cudaFree(g->sp_nl);
+        cudaFree(g->sp_out);
     }
     else if (g->cfg.poisson_type == 3)
     {
@@ -1100,6 +1214,97 @@ void gpu_integrals(gpu_solver *g, double *E, double *Z, double *P, double *I)
         LAUNCH(integrand_kernel, g->n, g->DX, g->DY, g->u, g->v, g->w, g->cfg.bc, g->cfg.periodic, 3, g->nx, g->ny,
                g->cfg.dy, kk, g->scratch);
         *I += g->cfg.forcing.kolmogorov_amp * reduce(g, g->scratch, g->n, RED_SUM) / norm;
+    }
+}
+
+// Upload the mode tables of s, with the modes of each shell listed together
+static void spectra_upload(gpu_solver *g, const spectra *s)
+{
+    int kx = g->nx / 2 + 1, modes = kx * g->ny, bins = spectra_bins(s), b, k;
+    const int *bin;
+    const double *weight, *lap, *ratio;
+    int *ptr = (int *)calloc(bins + 1, sizeof(int)), *list = (int *)malloc(modes * sizeof(int));
+    int *fill = (int *)malloc(bins * sizeof(int));
+
+    if (!ptr || !list || !fill)
+    {
+        printf("** Error: insufficient memory **\n");
+        exit(1);
+    }
+    spectra_tables(s, &bin, &weight, &lap, &ratio);
+    for (k = 0; k < modes; k++)
+        ptr[bin[k] + 1]++;
+    for (b = 0; b < bins; b++)
+    {
+        ptr[b + 1] += ptr[b];
+        fill[b] = ptr[b];
+    }
+    for (k = 0; k < modes; k++)
+        list[fill[bin[k]]++] = k;
+    if (!g->sp_hat)
+    {
+        CUDA_CHECK(cudaMalloc((void **)&g->sp_hat, 4 * (size_t)modes * sizeof(cufftDoubleComplex)));
+        g->sp_nl = dev_alloc(g->n);
+        g->sp_weight = dev_alloc(modes);
+        g->sp_lap = dev_alloc(modes);
+        g->sp_ratio = dev_alloc(modes);
+        CUDA_CHECK(cudaMalloc((void **)&g->sp_modes, modes * sizeof(int)));
+    }
+    cudaFree(g->sp_bin_ptr);
+    cudaFree(g->sp_out);
+    CUDA_CHECK(cudaMalloc((void **)&g->sp_bin_ptr, (bins + 1) * sizeof(int)));
+    g->sp_out = dev_alloc(SPECTRA_COLUMNS * bins);
+    CUDA_CHECK(cudaMemcpy(g->sp_bin_ptr, ptr, (bins + 1) * sizeof(int), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(g->sp_modes, list, modes * sizeof(int), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(g->sp_weight, weight, modes * sizeof(double), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(g->sp_lap, lap, modes * sizeof(double), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(g->sp_ratio, ratio, modes * sizeof(double), cudaMemcpyHostToDevice));
+    g->sp_of = s;
+    g->sp_bins = bins;
+    free(ptr);
+    free(list);
+    free(fill);
+}
+
+void gpu_spectra(gpu_solver *g, const spectra *s, double *out)
+{
+    int kx = g->nx / 2 + 1, modes = kx * g->ny, B, b, q;
+    const forcing_config *fc = &g->cfg.forcing;
+    double inv = 1.0 / ((double)g->n * g->n);
+    const double *fields[3] = {g->u, g->v, g->w};
+
+    if (!g->cfg.periodic)
+    {
+        printf("** Error: spectra need a periodic grid **\n");
+        exit(1);
+    }
+    if (g->sp_of != s) spectra_upload(g, s);
+    B = g->sp_bins;
+
+    // The nonlinear term of the current fields, in the solver's form
+    LAUNCH(nonlinear_kernel, g->n, g->DX, g->DY, g->w, g->u, g->v, g->sp_nl, g->n);
+    add_skew_correction(g, g->w, g->sp_nl);
+
+    // Spectra of u, v, w (copied first: cuFFT may overwrite the input) and N
+    for (q = 0; q < 3; q++)
+    {
+        CUDA_CHECK(cudaMemcpy(g->scratch, fields[q], g->n * sizeof(double), cudaMemcpyDeviceToDevice));
+        CUFFT_CHECK(cufftExecD2Z(g->plan_r2c, g->scratch, g->sp_hat + (size_t)q * modes));
+    }
+    CUFFT_CHECK(cufftExecD2Z(g->plan_r2c, g->sp_nl, g->sp_hat + 3 * (size_t)modes));
+
+    spectra_kernel<<<B, SP_THREADS>>>(g->sp_hat, g->sp_hat + modes, g->sp_hat + 2 * (size_t)modes,
+                                      g->sp_hat + 3 * (size_t)modes, g->sp_bin_ptr, g->sp_modes, g->sp_weight,
+                                      g->sp_lap, g->sp_ratio, inv, 1.0 / g->cfg.Re, fc->drag, fc->hyperviscosity,
+                                      fc->hyper_order, fc->hypodrag, B, g->sp_out);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaMemcpy(out, g->sp_out, SPECTRA_COLUMNS * B * sizeof(double), cudaMemcpyDeviceToHost));
+
+    // Fluxes: what the nonlinear term removes from all shells up to k
+    for (b = 0; b < B; b++)
+    {
+        out[2 * B + b] = (b ? out[2 * B + b - 1] : 0.0) - out[2 * B + b];
+        out[3 * B + b] = (b ? out[3 * B + b - 1] : 0.0) - out[3 * B + b];
     }
 }
 

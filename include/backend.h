@@ -39,6 +39,10 @@ void backend_continuity(backend *b, double *cmax, double *cmin);
 // on the GPU by reductions on the device
 flow_integrals backend_integrals(backend *b);
 
+// spectra_all() of the current fields (periodic grids), on the GPU computed on
+// the device without copying the fields to the host
+void backend_spectra(backend *b, spectra *s, double *out);
+
 // A read view of the current fields on the host; NULL arguments are skipped.
 // On the CPU these are the solver's own arrays, on the GPU host arrays
 // filled from the device by this call. They stay allocated until

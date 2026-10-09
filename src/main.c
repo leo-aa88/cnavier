@@ -647,6 +647,12 @@ int main(int argc, char *argv[])
                 fi.I_disc);
     }
     spectra *spec = periodic && spectrum_interval > 0 ? spectra_setup(&cfg) : NULL;
+    double *spec_out = spec ? (double *)malloc((size_t)SPECTRA_COLUMNS * spectra_bins(spec) * sizeof(double)) : NULL;
+    if (spec && !spec_out)
+    {
+        printf("** Error: insufficient memory **\n");
+        exit(1);
+    }
 
     struct timespec t_start, t_end;
     clock_gettime(CLOCK_MONOTONIC, &t_start);
@@ -680,8 +686,8 @@ int main(int argc, char *argv[])
         }
         if (spec && t % spectrum_interval == 0)
         {
-            backend_fields(solver, &u, &v, &w);
-            spectra_write(spec, *u, *v, *w, (double)(t + 1) * dt);
+            backend_spectra(solver, spec, spec_out);
+            spectra_write_frame(spec, spec_out, (double)(t + 1) * dt);
         }
     }
 
@@ -690,6 +696,7 @@ int main(int argc, char *argv[])
 
     if (integrals) fclose(integrals);
     spectra_free(spec);
+    free(spec_out);
     backend_fields(solver, &u, &v, &w);
 
     if (flow == CASE_CAVITY)

@@ -2481,6 +2481,104 @@ static void test_gpu_forcing(int time_scheme, const char *label)
     problem_free(&p);
 }
 
+// Hyperviscosity strong enough to dominate near the cutoff: the GPU applies it
+// in spectral space, the CPU by p sparse products, and the two agree
+static void test_gpu_hyperviscosity(int p_order)
+{
+    int t, nx = 32, ny = 24, N = nx * ny;
+    char name[96];
+    problem p;
+    problem_init_ext(&p, nx, ny, 1.0, 1.0, 1, 6, 1000., 2, 3, 2E-4, 1E-10, NULL, 0.0, NULL, NULL, 2, 0, 2);
+    rk4_free(&p.ctx);
+    p.cfg.forcing.hyper_order = p_order;
+    // Damping rate 2/dt at the largest eigenvalue: a tenth of the stability limit
+    smtrx dx2 = SDiff2_periodic(nx, 6, 1.0 / nx), dy2 = SDiff2_periodic(ny, 6, 1.0 / ny);
+    p.cfg.forcing.hyperviscosity = 1.0;
+    double rate = damping_rate_max(&dx2, &dy2, 1E300, &p.cfg.forcing);
+    p.cfg.forcing.hyperviscosity = 2.0 / (p.cfg.dt * rate);
+    freesm(dx2);
+    freesm(dy2);
+    p.ctx = rk4_alloc(&p.cfg);
+    fill_pseudo_random(p.w.M, N, 11u);
+    gpu_solver *g = gpu_for(&p);
+    mtrx w = initm(ny, nx);
+    double w0 = 0.0, w1 = 0.0;
+
+    printf("GPU: hyperviscosity of order %d in spectral space, %dx%d periodic grid\n", p_order, nx, ny);
+    for (t = 0; t < N; t++)
+        w0 += p.w.M[t] * p.w.M[t];
+    gpu_set_fields(g, &p.u, &p.v, &p.w);
+    for (t = 0; t < 20; t++)
+    {
+        step(p.w, p.u, p.v, &p.ctx);
+        gpu_step(g);
+    }
+    gpu_get_fields(g, NULL, NULL, &w);
+    for (t = 0; t < N; t++)
+        w1 += p.w.M[t] * p.w.M[t];
+    snprintf(name, sizeof(name), "w vs CPU (<w^2> fell to %.2f of its start)", w1 / w0);
+    check(name, rel_diff(w.M, p.w.M, N), 1E-12);
+    freem(&w);
+    gpu_free(g);
+    problem_free(&p);
+}
+
+// The spectra, fluxes and dissipation computed on the device match
+// spectra_all() on the host, column by column, with either nonlinear term and
+// every damping term
+static void test_gpu_spectra(int advection)
+{
+    static const char *cols[SPECTRA_COLUMNS] = {"E", "Z", "Pi_E", "Pi_Z", "D_E", "D_Z", "F_E", "F_Z"};
+    int t, q, b, nx = 40, ny = 32, N = nx * ny;
+    char name[96];
+    problem p;
+    problem_init_ext(&p, nx, ny, 1.0, 1.0, 1, 6, 500., 2, 3, 5E-4, 1E-10, NULL, 0.0, NULL, NULL, 2, 0, 2);
+    rk4_free(&p.ctx);
+    p.cfg.advection = advection;
+    p.cfg.forcing.drag = 0.2;
+    p.cfg.forcing.hypodrag = 3.0;
+    p.cfg.forcing.hyperviscosity = 1E-12;
+    p.cfg.forcing.hyper_order = 3;
+    p.ctx = rk4_alloc(&p.cfg);
+    fill_pseudo_random(p.w.M, N, 13u);
+    for (t = 0; t < N; t++)
+        p.w.M[t] += 0.3; // a mean vorticity, which only the drag damps
+    gpu_solver *g = gpu_for(&p);
+    spectra *sp = spectra_setup(&p.cfg);
+    int B = spectra_bins(sp);
+    double *dev = (double *)malloc((size_t)SPECTRA_COLUMNS * B * sizeof(double));
+    double *host = (double *)malloc((size_t)SPECTRA_COLUMNS * B * sizeof(double));
+    mtrx u = initm(ny, nx), v = initm(ny, nx), w = initm(ny, nx);
+
+    printf("GPU: spectra and fluxes on the device, %s form, %dx%d periodic grid\n",
+           advection ? "skew-symmetric" : "advective", nx, ny);
+    gpu_set_fields(g, &p.u, &p.v, &p.w);
+    for (t = 0; t < 5; t++)
+        gpu_step(g);
+    gpu_spectra(g, sp, dev);
+    gpu_get_fields(g, &u, &v, &w);
+    spectra_all(sp, u, v, w, host);
+    for (q = 0; q < SPECTRA_COLUMNS; q++)
+    {
+        double diff = 0.0, peak = 0.0;
+        for (b = 0; b < B; b++)
+        {
+            diff = fmax(diff, fabs(dev[q * B + b] - host[q * B + b]));
+            peak = fmax(peak, fabs(host[q * B + b]));
+        }
+        snprintf(name, sizeof(name), "%s vs host (largest %.2e)", cols[q], peak);
+        check(name, peak > 0.0 ? diff / peak : INFINITY, 1E-12);
+    }
+    freem(&u);
+    freem(&v);
+    freem(&w);
+    free(dev);
+    free(host);
+    spectra_free(sp);
+    gpu_free(g);
+    problem_free(&p);
+}
+
 // Fields written to the device must come back unchanged, and the continuity
 // diagnostic (a max and a min reduction) must match the CPU on a field that
 // is far from divergence-free.
@@ -2570,6 +2668,10 @@ static void run_gpu_tests(void)
     GPU_TEST(test_gpu_source(33, 33, 50, 2, "RK4 + FFT"));
     GPU_TEST(test_gpu_periodic(48, 33, 50, 2, "RK4"));
     GPU_TEST(test_gpu_integrals());
+    GPU_TEST(test_gpu_spectra(0));
+    GPU_TEST(test_gpu_spectra(1));
+    GPU_TEST(test_gpu_hyperviscosity(2));
+    GPU_TEST(test_gpu_hyperviscosity(4));
     GPU_TEST(test_gpu_forcing(2, "RK4"));
     GPU_TEST(test_gpu_forcing(1, "Euler"));
     GPU_TEST(test_gpu_closures(40, 25, 30, 2, "RK4"));
