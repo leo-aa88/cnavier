@@ -4,6 +4,7 @@
 #include <string.h>
 #include "fluiddyn.h"
 #include "linearalg.h"
+#include "fourier.h"
 
 void euler(mtrx w, mtrx dwdx, mtrx dwdy, mtrx d2wdx2, mtrx d2wdy2, mtrx u, mtrx v, const double *f,
            double Re, double dt)
@@ -70,7 +71,15 @@ rk4_ctx rk4_alloc(const solver_config *cfg)
         exit(1);
     }
     ctx.fft = cfg->poisson_type == 3 && !cfg->periodic ? fft_setup(nx, ny) : NULL;
-    ctx.periodic = cfg->periodic ? periodic_setup(nx, ny, cfg->DX2, cfg->DY2) : NULL;
+    if ((cfg->fourier && !cfg->periodic) || (cfg->dealias && !cfg->fourier))
+    {
+        printf("** Error: the Fourier operators need a periodic grid, and dealiasing the Fourier operators **\n");
+        exit(1);
+    }
+    // The operators in Fourier space, or the periodic Poisson solver for the
+    // sparse ones
+    ctx.fourier = cfg->fourier ? fourier_setup(cfg) : NULL;
+    ctx.periodic = cfg->periodic && !cfg->fourier ? periodic_setup(nx, ny, cfg->DX2, cfg->DY2) : NULL;
     ctx.source = cfg->vorticity_source ? initm(ny, nx) : (mtrx){0};
     ctx.kolmogorov = kolmogorov_rows(&cfg->forcing, ny, cfg->dy, cfg->dy * (cfg->periodic ? ny : ny - 1));
     if (cfg->forcing.random_rate > 0.0 && !cfg->periodic)
@@ -92,8 +101,14 @@ rk4_ctx rk4_alloc(const solver_config *cfg)
         printf("** Error: the hyperviscosity order must be at least 2 **\n");
         exit(1);
     }
-    ctx.kicks = random_forcing_setup(&cfg->forcing, nx, ny, cfg->dx, cfg->dy, cfg->dt, cfg->DX, cfg->DY, cfg->DX2,
-                                     cfg->DY2);
+    ctx.kicks = NULL;
+    if (cfg->forcing.random_rate > 0.0)
+    {
+        periodic_symbols sym;
+        periodic_symbols_of(cfg, &sym);
+        ctx.kicks = random_forcing_setup(&cfg->forcing, nx, ny, cfg->dx, cfg->dy, cfg->dt, &sym);
+        periodic_symbols_free(&sym);
+    }
     ctx.steps = 0;
     return ctx;
 }
@@ -117,6 +132,8 @@ void rk4_free(rk4_ctx *ctx)
     ctx->fft = NULL;
     periodic_cleanup(ctx->periodic);
     ctx->periodic = NULL;
+    fourier_free(ctx->fourier);
+    ctx->fourier = NULL;
     if (ctx->source.M) freem(&ctx->source);
     free(ctx->kolmogorov);
     ctx->kolmogorov = NULL;
@@ -186,6 +203,20 @@ static void solve_psi(mtrx w, int remember, rk4_ctx *ctx)
 
 static void velocity_from_vorticity(mtrx w, mtrx u, mtrx v, int remember, rk4_ctx *ctx)
 {
+    if (ctx->fourier)
+    {
+        // The solve and the velocity in one pass through Fourier space
+        if (psi_is_current(w, ctx))
+            fourier_velocity(ctx->fourier, ctx->psi.M, u.M, v.M);
+        else
+        {
+            fourier_poisson(ctx->fourier, w.M, ctx->psi.M, u.M, v.M);
+            if (remember) mtrxcpy(ctx->w_solved, w);
+            ctx->psi_valid = remember;
+            ctx->solves++;
+        }
+        return;
+    }
     if (!psi_is_current(w, ctx)) solve_psi(w, remember, ctx);
 
     // Recover u = dpsi/dy, v = -dpsi/dx
@@ -197,6 +228,12 @@ static void velocity_from_vorticity(mtrx w, mtrx u, mtrx v, int remember, rk4_ct
 // First and second derivatives of w into the workspace
 static void derivatives(mtrx w, rk4_ctx *ctx)
 {
+    if (ctx->fourier)
+    {
+        // The Laplacian whole into d2wdx2; d2wdy2 stays zero
+        fourier_derivatives(ctx->fourier, w.M, ctx->dwdx.M, ctx->dwdy.M, ctx->d2wdx2.M);
+        return;
+    }
     spmv(*ctx->cfg.DX, w.M, ctx->dwdx.M);
     spmv(*ctx->cfg.DY, w.M, ctx->dwdy.M);
     spmv(*ctx->cfg.DX2, w.M, ctx->d2wdx2.M);
@@ -292,7 +329,13 @@ static void add_forcing_terms(mtrx out, mtrx w, rk4_ctx *ctx)
     const forcing_config *fc = &ctx->cfg.forcing;
     double drag = fc->drag;
 
-    if (fc->hyperviscosity > 0.0)
+    if (fc->hyperviscosity > 0.0 && ctx->fourier)
+    {
+        fourier_power(ctx->fourier, w.M, fc->hyper_order, ctx->hyp1.M);
+        for (k = 0; k < n; k++)
+            out.M[k] -= fc->hyperviscosity * ctx->hyp1.M[k];
+    }
+    else if (fc->hyperviscosity > 0.0)
     {
         // (-L)^p w by p applications of -L = -(DX2 + DY2), alternating between
         // hyp1 and hyp2; rhs is free scratch outside the Poisson solve
@@ -352,7 +395,8 @@ void dwdt(mtrx w, mtrx u, mtrx v, mtrx out, double t, rk4_ctx *ctx)
             MAt(out, i, j) = -MAt(u, i, j) * MAt(ctx->dwdx, i, j) - MAt(v, i, j) * MAt(ctx->dwdy, i, j) + (1.0 / ctx->cfg.Re) * (MAt(ctx->d2wdx2, i, j) + MAt(ctx->d2wdy2, i, j));
     }
     if (ctx->cfg.advection == 1)
-        skew_correction(&ctx->cfg, u.M, v.M, w.M, ctx->dwdx.M, ctx->dwdy.M, out.M, ctx->uw.M, ctx->vw.M);
+        skew_correction(&ctx->cfg, ctx->fourier, u.M, v.M, w.M, ctx->dwdx.M, ctx->dwdy.M, out.M, ctx->uw.M,
+                        ctx->vw.M);
 
     const double *f = vorticity_source_at(t, ctx);
     if (f)
@@ -421,6 +465,9 @@ void rk4(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx)
             MAt(w, i, j) += (dt / 6.0) * (MAt(ctx->k1, i, j) + 2.0 * MAt(ctx->k2, i, j) + 2.0 * MAt(ctx->k3, i, j) + MAt(ctx->k4, i, j));
     }
 
+    // With dealiasing, w_{n+1} without the modes the 2/3 rule cuts
+    if (ctx->fourier && ctx->cfg.dealias) fourier_filter(ctx->fourier, w.M);
+
     // Final Poisson solve so u, v are consistent with w_{n+1}; the next
     // step's first stage can reuse it unless a kick changes w first
     velocity_from_vorticity(w, u, v, !ctx->kicks, ctx);
@@ -440,14 +487,27 @@ static double row_abs_sum(const smtrx *A, int r)
     return s;
 }
 
-void skew_correction(const solver_config *cfg, const double *u, const double *v, const double *w,
-                     const double *wx, const double *wy, double *out, double *s1, double *s2)
+void skew_correction(const solver_config *cfg, struct fourier_ops *four, const double *u, const double *v,
+                     const double *w, const double *wx, const double *wy, double *out, double *s1, double *s2)
 {
     int k, n = cfg->nx * cfg->ny;
 
     // Every read of wx and wy comes before the first write to s1 and s2
     for (k = 0; k < n; k++)
         out[k] += 0.5 * (u[k] * wx[k] + v[k] * wy[k]);
+    if (four)
+    {
+        // DX(u w) + DY(v w) in one pass through Fourier space
+        for (k = 0; k < n; k++)
+        {
+            s1[k] = u[k] * w[k];
+            s2[k] = v[k] * w[k];
+        }
+        fourier_divergence(four, s1, s2, s1);
+        for (k = 0; k < n; k++)
+            out[k] -= 0.5 * s1[k];
+        return;
+    }
     for (k = 0; k < n; k++)
         s1[k] = u[k] * w[k];
     spmv(*cfg->DX, s1, s2);
@@ -614,12 +674,13 @@ void step(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx)
                 ctx->w_tmp.M[k] = f ? f[k] : 0.0;
             add_forcing_terms(ctx->w_tmp, w, ctx);
             if (ctx->cfg.advection == 1)
-                skew_correction(&ctx->cfg, u.M, v.M, w.M, ctx->dwdx.M, ctx->dwdy.M, ctx->w_tmp.M, ctx->uw.M,
-                                ctx->vw.M);
+                skew_correction(&ctx->cfg, ctx->fourier, u.M, v.M, w.M, ctx->dwdx.M, ctx->dwdy.M, ctx->w_tmp.M,
+                                ctx->uw.M, ctx->vw.M);
             f = ctx->w_tmp.M;
         }
 
         euler(w, ctx->dwdx, ctx->dwdy, ctx->d2wdx2, ctx->d2wdy2, u, v, f, ctx->cfg.Re, dt);
+        if (ctx->fourier && ctx->cfg.dealias) fourier_filter(ctx->fourier, w.M);
         velocity_from_vorticity(w, u, v, 0, ctx);
     }
     else

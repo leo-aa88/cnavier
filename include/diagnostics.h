@@ -6,6 +6,7 @@
 
 #include "linearalg.h"
 #include "fluiddyn.h"
+#include "fourier.h"
 
 // Domain means of the kinetic energy E = 1/2 (u^2 + v^2), the enstrophy
 // Z = 1/2 w^2 and the palinstrophy P = 1/2 |grad w|^2 (grad by DX, DY). On a
@@ -34,8 +35,12 @@ typedef struct
 // resolved mode; 1 with walls, where it is not defined.
 double kolmogorov_factor(const solver_config *cfg);
 
-// wx, wy: scratch of nx*ny values each
+// wx, wy: scratch of nx*ny values each. With cfg->fourier, a Fourier workspace
+// is set up for the call; compute_integrals_with() takes one (or NULL for the
+// sparse operators).
 flow_integrals compute_integrals(const solver_config *cfg, mtrx u, mtrx v, mtrx w, double *wx, double *wy);
+flow_integrals compute_integrals_with(const solver_config *cfg, fourier_ops *four, mtrx u, mtrx v, mtrx w, double *wx,
+                                      double *wy);
 
 // Spectra on a periodic grid, summed over shells of |k| (not averaged): bins
 // of width dk = 2 pi / max(Lx, Ly), bin b holding b dk - dk/2 <= |k| < b dk + dk/2:

@@ -24,35 +24,47 @@ static void velocity_at(const solver_config *cfg, mtrx u, mtrx v, int i, int j, 
 
 double kolmogorov_factor(const solver_config *cfg)
 {
-    int e, n = cfg->forcing.kolmogorov_n, ny = cfg->ny, nx = cfg->nx;
-    double k, k1 = 0.0, Q = 0.0;
+    int n = cfg->forcing.kolmogorov_n, ny = cfg->ny;
+    double k, k1, Q;
+    periodic_symbols sym;
 
     if (!cfg->periodic || cfg->forcing.kolmogorov_amp == 0.0) return 1.0;
     k = 2.0 * PI * n / (ny * cfg->dy);
-    // DY = dyy (x) I and DY2 likewise: their first rows hold the y stencils
-    // in columns m*nx. DY e^{iky} = i k1 e^{iky}, DY2 e^{iky} = -Q e^{iky}.
-    for (e = cfg->DY->row_ptr[0]; e < cfg->DY->row_ptr[1]; e++)
-    {
-        int m = cfg->DY->col_idx[e] / nx; // whole rows: the offset along y
-        k1 += cfg->DY->values[e] * sin(2.0 * PI * n * (double)m / ny);
-    }
-    for (e = cfg->DY2->row_ptr[0]; e < cfg->DY2->row_ptr[1]; e++)
-    {
-        int m = cfg->DY2->col_idx[e] / nx;
-        Q -= cfg->DY2->values[e] * cos(2.0 * PI * n * (double)m / ny);
-    }
+    // DY e^{iky} = i k1 e^{iky}, DY2 e^{iky} = -Q e^{iky}
+    periodic_symbols_of(cfg, &sym);
+    k1 = sym.d1y_im[n % ny];
+    Q = -sym.d2y[n % ny];
+    periodic_symbols_free(&sym);
     return k * k1 / Q;
 }
 
 flow_integrals compute_integrals(const solver_config *cfg, mtrx u, mtrx v, mtrx w, double *wx, double *wy)
+{
+    if (cfg->fourier)
+    {
+        fourier_ops *f = fourier_setup(cfg);
+        flow_integrals r = compute_integrals_with(cfg, f, u, v, w, wx, wy);
+        fourier_free(f);
+        return r;
+    }
+    return compute_integrals_with(cfg, NULL, u, v, w, wx, wy);
+}
+
+flow_integrals compute_integrals_with(const solver_config *cfg, fourier_ops *four, mtrx u, mtrx v, mtrx w, double *wx,
+                                      double *wy)
 {
     int i, j, nx = cfg->nx, ny = cfg->ny;
     double sE = 0.0, sZ = 0.0, sP = 0.0, sI = 0.0, norm;
     double Ly = cfg->dy * (cfg->periodic ? ny : ny - 1), kk = 2.0 * PI * cfg->forcing.kolmogorov_n / Ly;
     flow_integrals r;
 
-    spmv(*cfg->DX, w.M, wx);
-    spmv(*cfg->DY, w.M, wy);
+    if (four)
+        fourier_derivatives(four, w.M, wx, wy, NULL);
+    else
+    {
+        spmv(*cfg->DX, w.M, wx);
+        spmv(*cfg->DY, w.M, wy);
+    }
     for (i = 0; i < ny; i++)
         for (j = 0; j < nx; j++)
         {
@@ -93,25 +105,10 @@ struct spectra
     double *in, *nl; // real field, nonlinear term
     double *wx, *wy; // derivatives of w
     fftw_complex *uh, *vh, *wh, *nh;
-    fftw_plan plan;   // r2c of `in` into a spectrum
-    unsigned long id; // distinct for every spectra_setup() of the run
+    fftw_plan plan;       // r2c of `in` into a spectrum
+    unsigned long id;     // distinct for every spectra_setup() of the run
+    fourier_ops *fourier; // the operators in Fourier space (cfg.fourier only)
 };
-
-// |symbol|^2 of a circulant first-derivative operator at wavenumber k: the
-// entries of its first row, offset counted in units of `step` columns
-static double symbol_sq(const smtrx *A, int k, int n, int step)
-{
-    int e;
-    double re = 0.0, im = 0.0;
-    for (e = A->row_ptr[0]; e < A->row_ptr[1]; e++)
-    {
-        int offset = A->col_idx[e] / step;
-        double th = 2.0 * PI * (double)k * (double)offset / (double)n;
-        re += A->values[e] * cos(th);
-        im += A->values[e] * sin(th);
-    }
-    return re * re + im * im;
-}
 
 spectra *spectra_setup(const solver_config *cfg)
 {
@@ -152,7 +149,12 @@ spectra *spectra_setup(const solver_config *cfg)
         printf("** Error: insufficient memory **\n");
         exit(1);
     }
-    periodic_eigenvalues(nx, ny, cfg->DX2, cfg->DY2, lx, ly);
+    periodic_symbols sym;
+    periodic_symbols_of(cfg, &sym);
+    for (j = 0; j < s->kx; j++)
+        lx[j] = sym.d2x[j];
+    for (i = 0; i < ny; i++)
+        ly[i] = sym.d2y[i];
     for (i = 0; i < ny; i++)
         for (j = 0; j < s->kx; j++)
         {
@@ -165,14 +167,16 @@ spectra *spectra_setup(const solver_config *cfg)
             s->weight[idx] = (j == 0 || (nx % 2 == 0 && j == nx / 2)) ? 1.0 : 2.0;
             s->lap[idx] = lx[j] + ly[i];
             s->ratio[idx] = idx == 0 ? 0.0
-                                     : (symbol_sq(cfg->DXv ? cfg->DXv : cfg->DX, j, nx, 1) +
-                                        symbol_sq(cfg->DYv ? cfg->DYv : cfg->DY, i, ny, nx)) /
+                                     : (sym.d1x_re[j] * sym.d1x_re[j] + sym.d1x_im[j] * sym.d1x_im[j] +
+                                        sym.d1y_re[i] * sym.d1y_re[i] + sym.d1y_im[i] * sym.d1y_im[i]) /
                                            -s->lap[idx];
             if (k > kmax) kmax = k;
         }
     s->bins = (int)floor(kmax / s->dk + 0.5) + 1;
     free(lx);
     free(ly);
+    periodic_symbols_free(&sym);
+    s->fourier = cfg->fourier ? fourier_setup(cfg) : NULL;
     s->plan = fftw_plan_dft_r2c_2d(ny, nx, s->in, s->uh, FFTW_ESTIMATE);
     if (!s->plan)
     {
@@ -222,11 +226,17 @@ void spectra_compute(spectra *s, mtrx u, mtrx v, mtrx w, double *E, double *Z, d
 
     // The solver's nonlinear term N = -(u DX w + v DY w), or its
     // skew-symmetric form (skew_correction())
-    spmv(*s->cfg.DX, w.M, s->wx);
-    spmv(*s->cfg.DY, w.M, s->wy);
+    if (s->fourier)
+        fourier_derivatives(s->fourier, w.M, s->wx, s->wy, NULL);
+    else
+    {
+        spmv(*s->cfg.DX, w.M, s->wx);
+        spmv(*s->cfg.DY, w.M, s->wy);
+    }
     for (k = 0; k < n; k++)
         s->nl[k] = -(u.M[k] * s->wx[k] + v.M[k] * s->wy[k]);
-    if (s->cfg.advection == 1) skew_correction(&s->cfg, u.M, v.M, w.M, s->wx, s->wy, s->nl, s->wx, s->wy);
+    if (s->cfg.advection == 1)
+        skew_correction(&s->cfg, s->fourier, u.M, v.M, w.M, s->wx, s->wy, s->nl, s->wx, s->wy);
 
     transform(s, u.M, s->uh);
     transform(s, v.M, s->vh);
@@ -359,6 +369,7 @@ void spectra_write(spectra *s, mtrx u, mtrx v, mtrx w, double t)
 void spectra_free(spectra *s)
 {
     if (!s) return;
+    fourier_free(s->fourier);
     fftw_destroy_plan(s->plan);
     fftw_plans_release();
     free(s->bin);

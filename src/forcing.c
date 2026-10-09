@@ -7,23 +7,6 @@
 
 #define FORCING_PI 3.14159265358979323846
 
-// Symbol of the circulant operator A at wavenumber index k along an axis of n
-// points: the entries of its first row, offset counted in units of `step`
-// columns. Returns the real and imaginary parts.
-static void symbol(const smtrx *A, int k, int n, int step, double *re, double *im)
-{
-    int e;
-    *re = 0.0;
-    *im = 0.0;
-    for (e = A->row_ptr[0]; e < A->row_ptr[1]; e++)
-    {
-        int offset = A->col_idx[e] / step;
-        double th = 2.0 * FORCING_PI * (double)k * (double)offset / (double)n;
-        *re += A->values[e] * cos(th);
-        *im += A->values[e] * sin(th);
-    }
-}
-
 // splitmix64: a small, well-mixed generator; uniform in [0, 1)
 static double uniform(unsigned long long *state)
 {
@@ -51,7 +34,7 @@ double *kolmogorov_rows(const forcing_config *f, int ny, double dy, double Ly)
 }
 
 random_forcing *random_forcing_setup(const forcing_config *f, int nx, int ny, double dx, double dy, double dt,
-                                     const smtrx *DX, const smtrx *DY, const smtrx *DX2, const smtrx *DY2)
+                                     const periodic_symbols *sym)
 {
     int pass, m, n, count = 0;
     double Lx = nx * dx, Ly = ny * dy, dk0 = 2.0 * FORCING_PI / (Lx > Ly ? Lx : Ly);
@@ -112,13 +95,10 @@ random_forcing *random_forcing_setup(const forcing_config *f, int nx, int ny, do
     for (m = 0; m < rf->modes; m++)
     {
         int jx = (int)lround(rf->kx[m] * Lx / (2.0 * FORCING_PI)), jy = (int)lround(rf->ky[m] * Ly / (2.0 * FORCING_PI));
-        double xr, xi, yr, yi, x2r, x2i, y2r, y2i, A, Q;
-        symbol(DX, (jx + nx) % nx, nx, 1, &xr, &xi);
-        symbol(DY, (jy + ny) % ny, ny, nx, &yr, &yi);
-        symbol(DX2, (jx + nx) % nx, nx, 1, &x2r, &x2i);
-        symbol(DY2, (jy + ny) % ny, ny, nx, &y2r, &y2i);
-        A = xr * xr + xi * xi + yr * yr + yi * yi;
-        Q = -(x2r + y2r);
+        int ix = (jx + nx) % nx, iy = (jy + ny) % ny;
+        double A = sym->d1x_re[ix] * sym->d1x_re[ix] + sym->d1x_im[ix] * sym->d1x_im[ix] +
+                   sym->d1y_re[iy] * sym->d1y_re[iy] + sym->d1y_im[iy] * sym->d1y_im[iy];
+        double Q = -(sym->d2x[ix] + sym->d2y[iy]);
         rf->amp[m] = 2.0 * Q * sqrt(f->random_rate * dt / (rf->modes * A));
     }
     rf->nx = nx;

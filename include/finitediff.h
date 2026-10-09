@@ -18,6 +18,10 @@ smtrx SDiff1_wall4(int n, int o, double dx);
 // o = FD_COMPACT6: Lele's sixth-order tridiagonal compact schemes instead,
 // A f' = B f, applied as the circulant matrix A^-1 B (periodic grids only)
 #define FD_COMPACT6 106
+// o = FD_SPECTRAL: pseudospectral differentiation, symbols i k and -k^2. The
+// matrices are dense; the solver applies them in Fourier space
+// (solver_config.fourier), and they exist for their symbols
+#define FD_SPECTRAL 199
 smtrx SDiff1_periodic(int n, int o, double dx);
 smtrx SDiff2_periodic(int n, int o, double dx);
 

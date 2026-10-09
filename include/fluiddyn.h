@@ -27,7 +27,7 @@ typedef struct
 // solver takes a copy when it is created, so later changes to the caller's
 // struct have no effect on it. The operators are owned by the caller and must
 // outlive the solver.
-typedef struct
+typedef struct solver_config
 {
     int nx, ny;                       // grid points in x and y
     double dx, dy;                    // grid spacing
@@ -49,6 +49,15 @@ typedef struct
     // continuity check; NULL to use DX and DY. Built with SDiff1_wall4 they
     // give the velocity fourth-order rows next to the walls.
     const smtrx *DXv, *DYv;
+
+    // Periodic grids: the 1-D operators (nx and ny points) whose symbols the
+    // Fourier mode, the diagnostics and the forcing use (fourier.h); NULL to
+    // read the symbols from the first rows of DX, DY, DX2, DY2
+    const smtrx *D1x, *D1y, *D2x, *D2y;
+    // Periodic grids: apply the operators in Fourier space by their symbols
+    // (fourier.h) instead of as sparse products; DX, DY, DX2, DY2 may then be
+    // NULL. dealias: with fourier, the 2/3 rule (fourier_filter())
+    int fourier, dealias;
 
     // Optional source term f in the vorticity equation,
     // dw/dt = -u.grad(w) + (1/Re) lap(w) + f (the curl of a body force in the
@@ -87,6 +96,7 @@ typedef struct
     double *kolmogorov;               // Kolmogorov source -A k cos(k y) of each row, else NULL
     mtrx hyp1, hyp2;                  // scratch for (-L)^p w (cfg.forcing.hyperviscosity only)
     mtrx uw, vw;                      // scratch of the skew-symmetric form (cfg.advection 1 only)
+    struct fourier_ops *fourier;      // the operators in Fourier space (cfg.fourier only)
     random_forcing *kicks;            // random forcing, else NULL
     long steps;                       // steps taken; the time is cfg.t0 + steps * cfg.dt
 } rk4_ctx;
@@ -144,8 +154,9 @@ typedef struct
 // near the grid cutoff. Neither conserves the energy 1/2 <u^2 + v^2> exactly.
 // out += (skew-symmetric N) - (advective N), from u, v, w and wx = DX w,
 // wy = DY w, all n values. s1, s2: scratch, which may be wx and wy.
-void skew_correction(const solver_config *cfg, const double *u, const double *v, const double *w,
-                     const double *wx, const double *wy, double *out, double *s1, double *s2);
+// four: the Fourier workspace when cfg->fourier is set, else NULL
+void skew_correction(const solver_config *cfg, struct fourier_ops *four, const double *u, const double *v,
+                     const double *w, const double *wx, const double *wy, double *out, double *s1, double *s2);
 
 // The largest damping rate of the linear terms: a periodic mode with
 // eigenvalue Q of -(DX2 + DY2) decays at

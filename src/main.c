@@ -98,7 +98,12 @@ static void usage(const char *prog)
     printf("  --output-interval N  write VTK every N iterations (0 = never)\n");
     printf("  --re RE              Reynolds number\n");
     printf("  --order N            order of the finite differences: 2, 4 or 6 (default 6),\n"
-           "                       or compact6 (periodic cases: Lele's sixth-order compact)\n");
+           "                       or on the periodic cases compact6 (Lele's sixth-order\n"
+           "                       compact schemes) or spectral (pseudospectral)\n");
+    printf("  --operators NAME     periodic cases: apply the derivatives as sparse products\n"
+           "                       or in Fourier space (fourier; default for compact6 and\n"
+           "                       spectral, which needs it)\n");
+    printf("  --dealias            with Fourier operators: the 2/3 rule\n");
     printf("  --integrals-interval N  write E, Z, P to output/integrals.csv every N steps\n"
            "                       (default 1; 0 = never)\n");
     printf("  --poisson-order N    2 (5-point, default) or 4 (compact 9-point) Poisson\n"
@@ -174,6 +179,8 @@ int main(int argc, char *argv[])
     int hyper_order = 4;
     int spectrum_interval = -1; // negative: with the VTK frames
     int advection = -1;         // 0 = advective, 1 = skew-symmetric nonlinear term; -1: the case's default
+    int operators = -1;         // 0 = sparse products, 1 = Fourier space; -1: the order's default
+    int dealias = 0;            // 2/3 rule (Fourier operators only)
     unsigned long long seed = 1;
     int forcing_given = 0;
 
@@ -205,6 +212,8 @@ int main(int argc, char *argv[])
         {"spectrum-interval", required_argument, 0, 'S'},
         {"advection", required_argument, 0, 'A'},
         {"order", required_argument, 0, 'O'},
+        {"operators", required_argument, 0, 'X'},
+        {"dealias", no_argument, 0, 'L'},
         {"cpu", no_argument, 0, 'c'},
         {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}};
@@ -311,8 +320,21 @@ int main(int argc, char *argv[])
         case 'O':
             if (strcmp(optarg, "compact6") == 0)
                 order = FD_COMPACT6;
+            else if (strcmp(optarg, "spectral") == 0)
+                order = FD_SPECTRAL;
             else
                 ok = parse_int(optarg, &order) && (order == 2 || order == 4 || order == 6);
+            break;
+        case 'X':
+            if (strcmp(optarg, "sparse") == 0)
+                operators = 0;
+            else if (strcmp(optarg, "fourier") == 0)
+                operators = 1;
+            else
+                ok = 0;
+            break;
+        case 'L':
+            dealias = 1;
             break;
         case 'A':
             if (strcmp(optarg, "advective") == 0)
@@ -388,9 +410,13 @@ int main(int argc, char *argv[])
     // processes can still take memory after this check, so it is a guard
     // against the clear cases only; backend_create() checks again for the
     // backend it actually uses.
+    // Compact and spectral derivatives are applied in Fourier space unless
+    // asked otherwise; the 2-D sparse operators are then not built
+    if (operators < 0) operators = order == FD_COMPACT6 || order == FD_SPECTRAL;
     // The compact operators are banded circulants about 65 entries wide on
     // average (81 for the first derivatives, 49 for the second)
-    double row_entries = order == FD_COMPACT6 ? fmin(65.0, (double)(nx > ny ? nx : ny)) : 7.0;
+    double row_entries = operators ? 0.0 : order == FD_COMPACT6 ? fmin(65.0, (double)(nx > ny ? nx : ny))
+                                                                : 7.0;
     double mem_needed = (double)nx * ny * (velocity_order == 4 ? 6.0 : 4.0) * (row_entries * (sizeof(double) + sizeof(int)) + sizeof(int)) + backend_host_memory(nx, ny, use_gpu);
     double mem_avail = available_memory();
     if (mem_avail >= 0. && mem_needed > mem_avail)
@@ -435,9 +461,20 @@ int main(int argc, char *argv[])
                "the periodic cases have none **\n");
         return 1;
     }
-    if (order == FD_COMPACT6 && !periodic)
+    if ((order == FD_COMPACT6 || order == FD_SPECTRAL || operators == 1 || dealias) && !periodic)
     {
-        printf("** Error: --order compact6 applies to the periodic cases **\n");
+        printf("** Error: --order compact6/spectral, --operators fourier and --dealias apply to the periodic "
+               "cases **\n");
+        return 1;
+    }
+    if (order == FD_SPECTRAL && !operators)
+    {
+        printf("** Error: --order spectral needs --operators fourier **\n");
+        return 1;
+    }
+    if (dealias && !operators)
+    {
+        printf("** Error: --dealias needs --operators fourier **\n");
         return 1;
     }
     if (velocity_order == 4 && (nx < 10 || ny < 10))
@@ -469,10 +506,13 @@ int main(int argc, char *argv[])
     if (periodic) printf("Nonlinear term: %s\n", advection == 1 ? "skew-symmetric" : "advective");
     if (hyperviscosity > 0. || hypodrag > 0.)
         printf("Damping: hyperviscosity %g, order %d | hypodrag %g\n", hyperviscosity, hyper_order, hypodrag);
-    printf("Grid: %d x %d | dt: %lf | tf: %lf | derivatives: %s\n", nx, ny, dt, tf,
-           order == FD_COMPACT6 ? "compact, order 6" : order == 4 ? "order 4"
-                                                   : order == 2   ? "order 2"
-                                                                  : "order 6");
+    printf("Grid: %d x %d | dt: %lf | tf: %lf | derivatives: %s%s%s\n", nx, ny, dt, tf,
+           order == FD_SPECTRAL   ? "pseudospectral"
+           : order == FD_COMPACT6 ? "compact, order 6"
+           : order == 4           ? "order 4"
+           : order == 2           ? "order 2"
+                                  : "order 6",
+           operators ? ", in Fourier space" : "", dealias ? ", 2/3 dealiased" : "");
 #ifdef _OPENMP
     default_threads();
     printf("OpenMP threads: %d\n", omp_get_max_threads());
@@ -519,7 +559,14 @@ int main(int argc, char *argv[])
     damping.hyperviscosity = hyperviscosity;
     damping.hyper_order = hyper_order;
     damping.hypodrag = hypodrag;
-    dt_limits lim = time_step_limits_forced(&sd_x2, &sd_y2, fmin(dx, dy), Re, u_max, max_co, time_scheme, &damping);
+    // The Courant check is calibrated on explicit order 6, whose modified
+    // wavenumber reaches k* h = 1.59; schemes that reach higher (compact 1.99,
+    // pseudospectral pi) have a smaller advective limit, so the check uses a
+    // proportionally smaller spacing for them
+    double kmax_h = order == FD_SPECTRAL ? CASE_PI : order == FD_COMPACT6 ? 1.989
+                                                                          : 1.586;
+    dt_limits lim = time_step_limits_forced(&sd_x2, &sd_y2, fmin(dx, dy) * fmin(1.0, 1.586 / kmax_h), Re, u_max,
+                                            max_co, time_scheme, &damping);
     if (dt > lim.accept)
     {
         printf("** Error: dt = %g is too large; use --dt %.3g or less. Limits: Courant number <= %g "
@@ -542,11 +589,16 @@ int main(int argc, char *argv[])
                "the run goes ahead, but it may diverge **\n",
                dt, round_down_3(lim.advection));
 
-    // Sparse 2D operators: DX = I_y x d_x,  DY = d_y x I_x
-    smtrx DX = skronecker(sIy, sd_x);
-    smtrx DY = skronecker(sd_y, sIx);
-    smtrx DX2 = skronecker(sIy, sd_x2);
-    smtrx DY2 = skronecker(sd_y2, sIx);
+    // Sparse 2D operators: DX = I_y x d_x,  DY = d_y x I_x (not with the
+    // Fourier operators, which use the symbols of the 1-D ones)
+    smtrx DX = {0}, DY = {0}, DX2 = {0}, DY2 = {0};
+    if (!operators)
+    {
+        DX = skronecker(sIy, sd_x);
+        DY = skronecker(sd_y, sIx);
+        DX2 = skronecker(sIy, sd_x2);
+        DY2 = skronecker(sd_y2, sIx);
+    }
     smtrx DXv = {0}, DYv = {0};
     if (velocity_order == 4)
     {
@@ -557,10 +609,6 @@ int main(int argc, char *argv[])
         freesm(vy);
     }
 
-    freesm(sd_x);
-    freesm(sd_y);
-    freesm(sd_x2);
-    freesm(sd_y2);
     freesm(sIx);
     freesm(sIy);
 
@@ -582,10 +630,16 @@ int main(int argc, char *argv[])
     cfg.periodic = periodic;
     cfg.advection = advection;
     cfg.bc = bc;
-    cfg.DX = &DX;
-    cfg.DY = &DY;
-    cfg.DX2 = &DX2;
-    cfg.DY2 = &DY2;
+    cfg.DX = operators ? NULL : &DX;
+    cfg.DY = operators ? NULL : &DY;
+    cfg.DX2 = operators ? NULL : &DX2;
+    cfg.DY2 = operators ? NULL : &DY2;
+    cfg.D1x = periodic ? &sd_x : NULL;
+    cfg.D1y = periodic ? &sd_y : NULL;
+    cfg.D2x = periodic ? &sd_x2 : NULL;
+    cfg.D2y = periodic ? &sd_y2 : NULL;
+    cfg.fourier = operators;
+    cfg.dealias = dealias;
     cfg.DXv = velocity_order == 4 ? &DXv : NULL;
     cfg.DYv = velocity_order == 4 ? &DYv : NULL;
     cfg.t0 = 0.0;
@@ -743,10 +797,17 @@ int main(int argc, char *argv[])
            elapsed, 1E3 * elapsed / (it_max + 1), it_max + 1, backend_name(solver));
 
     backend_free(solver);
-    freesm(DX);
-    freesm(DY);
-    freesm(DX2);
-    freesm(DY2);
+    if (!operators)
+    {
+        freesm(DX);
+        freesm(DY);
+        freesm(DX2);
+        freesm(DY2);
+    }
+    freesm(sd_x);
+    freesm(sd_y);
+    freesm(sd_x2);
+    freesm(sd_y2);
     if (velocity_order == 4)
     {
         freesm(DXv);

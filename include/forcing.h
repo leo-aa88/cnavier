@@ -5,6 +5,7 @@
 #define FORCING_H_INCLUDED
 
 #include "linearalg.h"
+#include "fourier.h"
 
 // dw/dt = ... - drag w + f_K - nu_h (-L)^p w - alpha_h psi, and before every
 // step a random kick w += dw:
@@ -56,11 +57,11 @@ typedef struct
     double *cx, *sx, *cy, *sy;
 } random_forcing;
 
-// NULL without random forcing. nx, ny, dx, dy: the periodic grid; DX, DY,
-// DX2, DY2: the solver's operators, whose symbols set the amplitudes so that
-// each kick carries eps dt of their discrete energy.
+// NULL without random forcing. nx, ny, dx, dy: the periodic grid; sym: the
+// symbols of the solver's operators (periodic_symbols_of()), which set the
+// amplitudes so that each kick carries eps dt of their discrete energy.
 random_forcing *random_forcing_setup(const forcing_config *f, int nx, int ny, double dx, double dy, double dt,
-                                     const smtrx *DX, const smtrx *DY, const smtrx *DX2, const smtrx *DY2);
+                                     const periodic_symbols *sym);
 void random_forcing_free(random_forcing *rf);
 
 // Draw the phases of the next kick

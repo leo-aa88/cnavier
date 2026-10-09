@@ -415,13 +415,53 @@ static smtrx compact_op(int n, int deriv, double dx)
     return op_to_csr(&D, n);
 }
 
+// The pseudospectral operators: symbols i k and -k^2 for the wavenumbers
+// k = 2 pi m / (n dx), |m| <= n/2 (the first derivative's symbol is zero at
+// the Nyquist wavenumber, so that it maps real fields to real fields). The
+// circulant matrix, c_j = (1/n) sum over m of symbol e^(-i theta_m j), is
+// dense: it is meant for the symbols (row_symbol(), the stability limit);
+// the solver applies it in Fourier space (solver_config.fourier).
+static smtrx spectral_op(int n, int deriv, double dx)
+{
+    op_builder D = {0};
+    int i, j, m;
+    double *c = (double *)malloc((size_t)n * sizeof(double));
+
+    if (!c)
+    {
+        printf("** Error: insufficient memory **\n");
+        exit(1);
+    }
+    for (j = 0; j < n; j++)
+    {
+        double s = 0.0;
+        for (m = 0; m < n; m++)
+        {
+            int sm = 2 * m <= n ? m : m - n; // signed wavenumber index
+            double th = 2.0 * 3.14159265358979323846 * m / n, kh = 2.0 * 3.14159265358979323846 * sm / n;
+            if (deriv == 1)
+                s += (2 * m == n ? 0.0 : kh) * sin(th * j); // i k: c_j = (1/n) sum k sin(theta j)
+            else
+                s -= kh * kh * cos(th * j);
+        }
+        c[j] = s / n / (deriv == 1 ? dx : dx * dx);
+    }
+    for (i = 0; i < n; i++)
+        for (j = 0; j < n; j++)
+            op_set(&D, i, (i + j) % n, c[j]);
+    free(c);
+    return op_to_csr(&D, n);
+}
+
 smtrx SDiff1_periodic(int n, int o, double dx)
 {
+    if (o == FD_SPECTRAL) return spectral_op(n, 1, dx);
     return o == FD_COMPACT6 ? compact_op(n, 1, dx) : periodic_op(n, o, dx, d1_coef);
 }
 
 smtrx SDiff2_periodic(int n, int o, double dx)
 {
+    if (o == FD_SPECTRAL) return spectral_op(n, 2, dx);
     return o == FD_COMPACT6 ? compact_op(n, 2, dx) : periodic_op(n, o, dx * dx, d2_coef);
 }
 

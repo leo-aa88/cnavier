@@ -141,7 +141,7 @@ static mms_norm norm_of(mtrx a, mtrx b, int part)
 
 static mms_errors run(int nx, int ny, double Lx, double Ly, double Re, int order, int time_scheme,
                       int poisson_type, int poisson_order, int wall_closure, int velocity_order, double dt,
-                      double t0, double T, int periodic, int advection)
+                      double t0, double T, int periodic, int advection, int fourier)
 {
     mms_case c = {Lx, Ly, Re, Lx / (periodic ? nx : nx - 1), Ly / (periodic ? ny : ny - 1), periodic};
     wall_bc walls = {{0., 0., 0., 0.}, {0., 0., 0., 0.}};
@@ -155,8 +155,15 @@ static mms_errors run(int nx, int ny, double Lx, double Ly, double Re, int order
     dt = fmin(dt, 0.5 * max_stable_dt(&d2x, &d2y, Re, time_scheme));
     steps = (int)ceil(T / dt - 1E-9);
     smtrx Ix = seye(nx), Iy = seye(ny);
-    smtrx DX = skronecker(Iy, d1x), DY = skronecker(d1y, Ix);
-    smtrx DX2 = skronecker(Iy, d2x), DY2 = skronecker(d2y, Ix);
+    // With the Fourier operators only the 1-D ones are needed (their symbols)
+    smtrx DX = {0}, DY = {0}, DX2 = {0}, DY2 = {0};
+    if (!fourier)
+    {
+        DX = skronecker(Iy, d1x);
+        DY = skronecker(d1y, Ix);
+        DX2 = skronecker(Iy, d2x);
+        DY2 = skronecker(d2y, Ix);
+    }
     smtrx DXv = {0}, DYv = {0};
     if (velocity_order == 4)
     {
@@ -166,10 +173,6 @@ static mms_errors run(int nx, int ny, double Lx, double Ly, double Re, int order
         freesm(vx);
         freesm(vy);
     }
-    freesm(d1x);
-    freesm(d1y);
-    freesm(d2x);
-    freesm(d2y);
     freesm(Ix);
     freesm(Iy);
 
@@ -191,12 +194,18 @@ static mms_errors run(int nx, int ny, double Lx, double Ly, double Re, int order
     cfg.periodic = periodic;
     cfg.advection = advection;
     cfg.bc = walls;
-    cfg.DX = &DX;
-    cfg.DY = &DY;
-    cfg.DX2 = &DX2;
-    cfg.DY2 = &DY2;
+    cfg.DX = fourier ? NULL : &DX;
+    cfg.DY = fourier ? NULL : &DY;
+    cfg.DX2 = fourier ? NULL : &DX2;
+    cfg.DY2 = fourier ? NULL : &DY2;
     cfg.DXv = velocity_order == 4 ? &DXv : NULL;
     cfg.DYv = velocity_order == 4 ? &DYv : NULL;
+    cfg.D1x = periodic ? &d1x : NULL;
+    cfg.D1y = periodic ? &d1y : NULL;
+    cfg.D2x = periodic ? &d2x : NULL;
+    cfg.D2y = periodic ? &d2y : NULL;
+    cfg.fourier = fourier;
+    cfg.dealias = 0;
     cfg.vorticity_source = mms_source;
     cfg.source_data = &c;
     cfg.forcing = (forcing_config){0};
@@ -227,6 +236,10 @@ static mms_errors run(int nx, int ny, double Lx, double Ly, double Re, int order
     freem(&ve);
     freem(&psie);
     rk4_free(&ctx);
+    freesm(d1x);
+    freesm(d1y);
+    freesm(d2x);
+    freesm(d2y);
     freesm(DX);
     freesm(DY);
     freesm(DX2);
@@ -242,25 +255,31 @@ static mms_errors run(int nx, int ny, double Lx, double Ly, double Re, int order
 mms_errors mms_run(int nx, int ny, double Lx, double Ly, double Re, int order, int time_scheme,
                    int poisson_type, double dt, double t0, double T)
 {
-    return run(nx, ny, Lx, Ly, Re, order, time_scheme, poisson_type, 2, 0, 2, dt, t0, T, 0, 0);
+    return run(nx, ny, Lx, Ly, Re, order, time_scheme, poisson_type, 2, 0, 2, dt, t0, T, 0, 0, 0);
 }
 
 mms_errors mms_run_closures(int nx, int ny, double Lx, double Ly, double Re, int order, int poisson_order,
                             int wall_closure, int velocity_order, double dt, double t0, double T)
 {
-    return run(nx, ny, Lx, Ly, Re, order, 2, 3, poisson_order, wall_closure, velocity_order, dt, t0, T, 0, 0);
+    return run(nx, ny, Lx, Ly, Re, order, 2, 3, poisson_order, wall_closure, velocity_order, dt, t0, T, 0, 0, 0);
 }
 
 mms_errors mms_run_periodic(int nx, int ny, double Lx, double Ly, double Re, int order, int time_scheme,
                             double dt, double t0, double T)
 {
-    return run(nx, ny, Lx, Ly, Re, order, time_scheme, 3, 2, 0, 2, dt, t0, T, 1, 0);
+    return run(nx, ny, Lx, Ly, Re, order, time_scheme, 3, 2, 0, 2, dt, t0, T, 1, 0, 0);
 }
 
 mms_errors mms_run_periodic_advection(int nx, int ny, double Lx, double Ly, double Re, int order, int advection,
                                       double dt, double t0, double T)
 {
-    return run(nx, ny, Lx, Ly, Re, order, 2, 3, 2, 0, 2, dt, t0, T, 1, advection);
+    return run(nx, ny, Lx, Ly, Re, order, 2, 3, 2, 0, 2, dt, t0, T, 1, advection, 0);
+}
+
+mms_errors mms_run_periodic_fourier(int nx, int ny, double Lx, double Ly, double Re, int order, int advection,
+                                    double dt, double t0, double T)
+{
+    return run(nx, ny, Lx, Ly, Re, order, 2, 3, 2, 0, 2, dt, t0, T, 1, advection, 1);
 }
 
 // ---------------------------------------------------------------------------

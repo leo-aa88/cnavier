@@ -6,6 +6,7 @@
 #include "backend.h"
 #include "utils.h"
 #include "diagnostics.h"
+#include "fourier.h"
 #ifdef USE_CUDA
 #include "cudasolver.h"
 #endif
@@ -159,8 +160,18 @@ void backend_continuity(backend *b, double *cmax, double *cmin)
         return;
     }
 #endif
-    spmv(b->cfg.DXv ? *b->cfg.DXv : *b->cfg.DX, b->u.M, b->dudx.M);
-    spmv(b->cfg.DYv ? *b->cfg.DYv : *b->cfg.DY, b->v.M, b->dvdy.M);
+    if (b->ws.fourier)
+    {
+        // The whole divergence into dudx
+        fourier_divergence(b->ws.fourier, b->u.M, b->v.M, b->dudx.M);
+        for (k = 0; k < n; k++)
+            b->dvdy.M[k] = 0.0;
+    }
+    else
+    {
+        spmv(b->cfg.DXv ? *b->cfg.DXv : *b->cfg.DX, b->u.M, b->dudx.M);
+        spmv(b->cfg.DYv ? *b->cfg.DYv : *b->cfg.DY, b->v.M, b->dvdy.M);
+    }
     *cmax = -__DBL_MAX__;
     *cmin = __DBL_MAX__;
     for (k = 0; k < n; k++)
@@ -182,7 +193,7 @@ flow_integrals backend_integrals(backend *b)
         return r;
     }
 #endif
-    return compute_integrals(&b->cfg, b->u, b->v, b->w, b->dudx.M, b->dvdy.M);
+    return compute_integrals_with(&b->cfg, b->ws.fourier, b->u, b->v, b->w, b->dudx.M, b->dvdy.M);
 }
 
 void backend_spectra(backend *b, spectra *s, double *out)

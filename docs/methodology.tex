@@ -568,7 +568,34 @@ g_j=\frac{r^j+r^{n-j}}{(1-r^n)\sqrt{1-4\alpha^2}},\qquad 0\le j<n,\qquad r=\frac
 \end{equation}
 the periodic sum of the infinite line's $r^{|j|}/\sqrt{1-4\alpha^2}$.  Convolving it with the five-point stencil of $B$ gives the entries of $A^{-1}B$ exactly, even the smallest.  They decay like $|r|^j$: $0.38$ per point for the first derivative and $0.19$ for the second.  Entries below $10^{-16}$ of the largest are dropped, which leaves 78 and 45 entries per row for $n\ge128$ and changes the symbol at round-off level.  (A direct inverse DFT of the symbol accumulates round-off of order $10^{-16}\sqrt n$ in every entry, and then no entry can be dropped.)  The matrices match the symbols on every Fourier mode of the grid to $4\times10^{-14}$, annihilate constants, and the first derivative is antisymmetric, so the skew-symmetric form of \cref{eq:skew} conserves enstrophy with them too.
 
-Building the operator as a banded matrix makes it exact and available everywhere at once, but not cheap.  The rows are 78 and 45 wide instead of 7, and in $y$ they span as many grid rows.  A step on the GPU costs about 21 times the explicit one: $269$ against $12.3\,\mathrm{ms}$ at $512^2$, and $66$ against $3.2$ at $256^2$.  A production implementation would apply the circulants in Fourier space, or by tridiagonal solves.  This one serves to measure what the compact schemes resolve.
+Building the operator as a banded matrix makes it exact and available everywhere at once, but not cheap.  The rows are 78 and 45 wide instead of 7, and in $y$ they span as many grid rows.  A step on the GPU costs about 21 times the explicit one: $269$ against $12.3\,\mathrm{ms}$ at $512^2$, and $66$ against $3.2$ at $256^2$.  Applied in Fourier space (\cref{sec:fourier-ops}), the same operators cost what every other scheme costs there.
+
+\subsection{Operators in Fourier space and pseudospectral differentiation}
+\label{sec:fourier-ops}
+
+On a periodic grid every derivative operator is circulant, so it is diagonal in Fourier space, with its symbol as the eigenvalues.  The symbols are read from the first row of the 1-D operators, as $\sum_jc_je^{i\theta j}$ (\code{periodic\_symbols\_of()}).  The same table now gives everything that needs them: the Poisson eigenvalues, $A/Q$ for the spectra, the kick amplitudes and the Kolmogorov factor.  With \code{--operators fourier} (\code{solver_config.fourier}, \code{src/fourier.c} and its counterpart in \code{cudasolver.cu}), the solver applies the operators that way instead of as sparse products:
+\begin{itemize}[leftmargin=2em]
+  \item the velocity: one forward transform of $\omega$, then $\hat\psi=-\hat\omega/(\tilde D_{xx}+\tilde D_{yy})$, and inverse transforms of $\hat\psi$, $\tilde D_y\hat\psi$ and $-\tilde D_x\hat\psi$;
+  \item the transport: one forward transform, and inverse ones of $\tilde D_x\hat\omega$, $\tilde D_y\hat\omega$ and $(\tilde D_{xx}+\tilde D_{yy})\hat\omega$;
+  \item the skew-symmetric correction (two forward transforms and one inverse), the hyperviscosity, the palinstrophy, the continuity check and the spectra.
+\end{itemize}
+The 2-D sparse operators are then not built.  The operators are the same matrices, so the results equal the sparse ones to round-off.  Twenty steps with every term on agree to $10^{-14}$ for explicit order 6 and for the compact scheme, and so do the integrals and the spectra; the GPU matches the CPU to $6\times10^{-15}$.  A decaying run with the compact scheme reproduces the banded run's spectrum to $4\times10^{-12}$.
+
+The table also allows operators that have no sparse form.  \code{--order spectral} (\code{FD\_SPECTRAL}) uses the symbols $ik$ and $-k^2$ of pseudospectral differentiation (with the first-derivative symbol zero at the Nyquist wavenumber, so that real fields stay real), and needs the Fourier operators.  Its 1-D matrices are dense and serve only for the symbols and the stability limit.  With exact symbols $A=Q$, so the energy of a mode is $\tfrac12|\hat\psi|^2Q$ and the two discrete energies coincide.  \code{--dealias} adds Orszag's 2/3 rule: the operators keep only $|k|<n/3$ along each axis, and $\omega$ is filtered at the end of each step.  Products of the kept fields then alias only onto cut modes, so the nonlinear term is a Galerkin truncation and conserves energy and enstrophy exactly in either form; the net transfers are $10^{-14}$ of the largest shell transfer.  On the manufactured solution the pseudospectral error at $32^2$ is $3.5\times10^{-9}$, against $1.1\times10^{-4}$ with the compact scheme, and it falls by 16 when $\Delta t$ is halved: it is the time integration's.
+
+In Fourier space every scheme costs the same, so the scheme is chosen by what it resolves and by its advective limit.  Per GPU step:
+\begin{center}\small
+\begin{tabular}{lccccc}
+\toprule
+ms per step & explicit 6, sparse & explicit 6 & compact 6 & spectral & spectral, 2/3 \\
+\midrule
+$256^2$ & 3.6 & 4.8 & 4.8 & 4.8 & 5.0 \\
+$512^2$ & 12.8 & 17.7 & 17.7 & 17.7 & 18.4 \\
+$1024^2$ & 51.8 & 78.5 & 78.6 & 78.5 & 82.0 \\
+\bottomrule
+\end{tabular}
+\end{center}
+(decaying turbulence, skew-symmetric form).  The transforms cost more than the explicit seven-point stencils, so explicit order 6 stays sparse by default.  The compact scheme is 15 times faster than in its banded form.
 
 % =============================================================================
 \section{Complete Timestep Algorithms}
@@ -1082,18 +1109,30 @@ inverse & 40 & $1.6\times10^{-23}$ & 1200 & $4\times10^{-4}$ & 30\,000 & $t=4$--
 
 \paragraph{Resolution.}  How much of the spectrum does each order resolve?  Decaying turbulence at $\Rey=2\times10^4$ (skew-symmetric form, $k_0=10$) was run on $256^2$ and $512^2$ with orders 2, 4 and 6 and the compact scheme of \cref{sec:compact}, and on $2048^2$ with order 6, all with the same time step ($6.25\times10^{-5}$) and from the same initial field: the phases of the initial spectrum depend on the wavevector only, so every grid that resolves the spectrum gets the same field (\code{random\_initial\_field()}; \code{make test} checks it to $3\times10^{-16}$).  Turbulence is chaotic, so the runs decorrelate.  At $t=0.5$ the shell energies differ by tens of per cent even at $K=10$.  At $t=0.09$, about six eddy turnovers, after the cascade has filled the spectrum, the large scales ($K\le20$) of the $512^2$ runs still agree with the $2048^2$ one to $2\times10^{-4}$ (order 6) and $6\times10^{-5}$ (compact).  A common time step matters here: an earlier comparison with a reference whose frames fell half a step later agreed only to $2\times10^{-3}$.  The spectra are compared there (\cref{fig:resolution}); the reference is resolved, with $E$ at $K=256$ at $10^{-8}$ of its peak, and order 6 on $2048^2$ differentiates that shell to $0.2\,\%$:
 \begin{center}\small
-\begin{tabular}{lcccc}
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lcccccc}
 \toprule
-$E(k)$ within $10\,\%$ ($2\,\%$) of $2048^2$ up to $K=$ & compact 6 & order 6 & order 4 & order 2 \\
+to $10\,\%$ ($2\,\%$) up to $K=$ & spectral & spectral, 2/3 & compact 6 & order 6 & order 4 & order 2 \\
 \midrule
-$512^2$ ($K_{\mathrm{Nyq}}=255$) & 198 (167) & 152 (111) & 133 (73) & 60 (28) \\
-$256^2$ ($K_{\mathrm{Nyq}}=127$) & 118 (67) & 74 (48) & 60 (30) & 29 (1) \\
+$512^2$ ($K_{\mathrm{Nyq}}=255$) & 235 (201) & 143 (103) & 198 (167) & 152 (111) & 133 (73) & 60 (28) \\
+$256^2$ ($K_{\mathrm{Nyq}}=127$) & 93 (57) & 50 (29) & 118 (67) & 74 (48) & 60 (30) & 29 (1) \\
 \bottomrule
 \end{tabular}
 \end{center}
-Orders 6, 4 and 2 resolve the spectrum to $10\,\%$ up to about $59$, $49$ and $23\,\%$ of the Nyquist wavenumber, and to $2\,\%$ up to $38$--$44$, $24$--$29$ and at most $11\,\%$.  The compact scheme resolves $78$--$93\,\%$ to $10\,\%$ and $53$--$65\,\%$ to $2\,\%$: 1.3--1.6 times as many shells as explicit order 6 on the same grid, in line with its modified wavenumber (\cref{sec:compact}).  Beyond that the finite differences underestimate the derivatives, and the spectrum falls below the reference; the compact scheme on $256^2$ first overshoots it, by up to $8\,\%$ around $0.85\,K_{\mathrm{Nyq}}$.  Order 6 on $256^2$ resolves more shells than order 2 on $512^2$, at about half the cost per step ($3.3$ against $5.6\,\mathrm{ms}$ on the GPU).  The compact scheme, in its banded form, costs 20 times explicit order 6 per step ($65$ against $3.3\,\mathrm{ms}$ at $256^2$, $267$ against $12.2$ at $512^2$), so here it does not pay: explicit order 6 on $512^2$ resolves more than compact on $256^2$ for a fifth of the cost.  Applied at about the cost of the explicit operators, it would be worth a grid about $1.3$--$1.6$ times finer in each direction.
+Orders 6, 4 and 2 resolve the spectrum to $10\,\%$ up to about $59$, $49$ and $23\,\%$ of the Nyquist wavenumber, and to $2\,\%$ up to $38$--$44$, $24$--$29$ and at most $11\,\%$.  The compact scheme resolves $78$--$93\,\%$ to $10\,\%$ and $53$--$65\,\%$ to $2\,\%$: 1.3--1.6 times as many shells as explicit order 6 on the same grid, in line with its modified wavenumber (\cref{sec:compact}).  Beyond that the finite differences underestimate the derivatives, and the spectrum falls below the reference; the compact scheme on $256^2$ first overshoots it, by up to $8\,\%$ around $0.85\,K_{\mathrm{Nyq}}$.  Order 6 on $256^2$ resolves more shells than order 2 on $512^2$, at about half the cost per step ($3.3$ against $5.6\,\mathrm{ms}$ on the GPU).  In its banded form the compact scheme costs 20 times explicit order 6 per step, so it does not pay; in Fourier space (\cref{sec:fourier-ops}) it costs $1.3$--$1.4$ times.
 
-\paragraph{Compact schemes in forced turbulence.}  The direct-cascade run on $256^2$, with the hyperviscosity scaled to that grid ($\nu_h=1.66\times10^{-21}$, $p=4$), the same seed and time step and averaged over $t=6$--$16$, gives nearly the same statistics with both schemes (\cref{fig:compact-turbulence}).  The enstrophy-flux plateau over $K=8$--$50$ is $41.9$ (spread $5\,\%$) with order 6 and $42.9$ ($3\,\%$) compact, and the spectral slope there is $-3.44$ and $-3.48$.  The flux falls below $90\,\%$ of the plateau at $K=66$ in both, where the hyperviscosity takes over.  Over $K=20$--$60$ the two spectra agree to $1$--$2\,\%$; above $K\approx80$ the compact run carries $8$--$25\,\%$ more energy.  That is where the first derivative of order 6 is off by more than $10\,\%$ ($K/K_{\mathrm{Nyq}}>0.54$).  With the dissipation confined to that range, the scheme changes the dissipation range and not the inertial one, at 15 times the cost per step ($66$ against $4.4\,\mathrm{ms}$).  The compact scheme pays off where a flow needs accurate derivatives close to the grid cutoff, as in the decaying runs above, and not in this set-up.
+Pseudospectral differentiation (\cref{sec:fourier-ops}) resolves the most on $512^2$, where the spectrum has fallen to $10^{-8}$ of its peak at the Nyquist wavenumber: $92\,\%$ of the range to $10\,\%$ and $79\,\%$ to $2\,\%$.  On $256^2$, where it is still at $10^{-6}$, it resolves less than the compact scheme.  Nothing damps the modes near the cutoff and aliasing feeds them, so energy piles up there, up to twice the reference at the Nyquist wavenumber (\cref{fig:resolution-fourier}).  The finite differences underestimate the derivatives there instead, and their spectra fall below the reference.  The 2/3 rule caps the range at $2/3$ of the Nyquist wavenumber by construction, and the energy piles up below that cutoff, which nothing dissipates either.  It resolves $56\,\%$ ($512^2$) and $39\,\%$ ($256^2$) to $10\,\%$, less than undealiased spectral and than compact.  Its merit is exact conservation, not resolution.
+
+What a resolved shell costs follows from the step time and the advective limit.  Explicit time steps go as $h/(k^*h)_{\max}$: $1.59$ for order 6, $1.99$ compact, $\pi$ spectral, and $2\pi/3$ with the 2/3 rule.  So the cost per unit simulated time at the advective limit is proportional to (ms per step)$\times(k^*h)_{\max}$.  The resolved range of explicit order 6 grows linearly with $n$ (74 on $256^2$, 152 on $512^2$), and its cost per unit time as $n^3$.  To resolve on its own grid what compact resolves on $512^2$ it needs $(198/152)^3=2.2$ times its $512^2$ cost, $45$ against the compact $35$ (in ms per step times $(k^*h)_{\max}$): compact is $22\,\%$ cheaper.  Pseudospectral is $26\,\%$ cheaper ($56$ against $75$).  On $256^2$ compact is $2.4$ times cheaper ($9.5$ against $23$), and undealiased spectral is $34\,\%$ dearer ($15.1$ against $11.3$).  These gains are modest where the flow is resolved and depend on how close to the cutoff the spectrum carries energy.  The compact scheme is the safer choice; pseudospectral pays only on grids fine enough that aliasing does not matter, or with the 2/3 rule where exact conservation is wanted.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.9\textwidth]{resolution_fourier.png}
+\caption{As \cref{fig:resolution}, with pseudospectral differentiation, with and without the 2/3 rule.}
+\label{fig:resolution-fourier}
+\end{figure}
+
+\paragraph{Compact schemes in forced turbulence.}  The direct-cascade run on $256^2$, with the hyperviscosity scaled to that grid ($\nu_h=1.66\times10^{-21}$, $p=4$), the same seed and time step and averaged over $t=6$--$16$, gives nearly the same statistics with both schemes (\cref{fig:compact-turbulence}).  The enstrophy-flux plateau over $K=8$--$50$ is $41.9$ (spread $5\,\%$) with order 6 and $42.9$ ($3\,\%$) compact, and the spectral slope there is $-3.44$ and $-3.48$.  The flux falls below $90\,\%$ of the plateau at $K=66$ in both, where the hyperviscosity takes over.  Over $K=20$--$60$ the two spectra agree to $1$--$2\,\%$; above $K\approx80$ the compact run carries $8$--$25\,\%$ more energy.  That is where the first derivative of order 6 is off by more than $10\,\%$ ($K/K_{\mathrm{Nyq}}>0.54$).  With the dissipation confined to that range, the scheme changes the dissipation range and not the inertial one, at 15 times the cost per step in its banded form ($66$ against $4.4\,\mathrm{ms}$), about 1.4 times in Fourier space.  The compact scheme pays off where a flow needs accurate derivatives close to the grid cutoff, as in the decaying runs above, and not in this set-up.
 
 \begin{figure}[htbp]
 \centering
