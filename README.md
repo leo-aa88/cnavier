@@ -390,6 +390,15 @@ Schemes that reach higher wavenumbers also have a smaller advective time-step li
 
 In these decaying runs (one Reynolds number, one initial spectrum, two grids), pseudospectral resolves the most once the grid resolves the high-wavenumber tail (512²). Where the spectrum still carries energy at the cutoff (256²), nothing damps those modes and aliasing feeds them, so energy piles up there and it falls behind compact. The 2/3 rule caps the range at 2/3 of Nyquist by construction. Counting the time step, at equal resolved range compact is 22 % cheaper than explicit order 6 on 512² and 2.4× cheaper on 256²; pseudospectral is 26 % cheaper on 512² and 34 % dearer on 256² (methodology, §Resolution).
 
+**Across regimes.** Repeating the comparison with the Reynolds number (5·10³, 8·10⁴) and the initial spectrum (k₀ = 5, 20) varied, the ordering in decaying turbulence, before the runs decorrelate, is largely organized by one parameter: how much energy the flow carries at the grid's cutoff, `E(K_Nyquist)/E_max` of a 2048² reference. It is not sufficient on its own near the crossover, and it does not carry over to the forced runs.
+
+- **Pseudospectral** leads below about 10⁻⁷, where it resolves up to 1.7× the shells of explicit order 6 and costs 0.54–0.74× as much at equal range.
+- **Compact** leads between about 10⁻⁷ and 5·10⁻⁶ (1.3–1.6×, cost 0.57–0.78×). Its crossover with pseudospectral is not sharp.
+- **Above about 10⁻⁵**, under-resolved, neither beats explicit order 6.
+- **The 2/3 rule** never leads on range or cost.
+
+`tools/compare_schemes.py` computes the comparison and the plot (methodology, Fig. "crossover"). In forced turbulence the time-mean statistics carry about ±8 % sampling scatter from the random forcing, and within it the schemes are indistinguishable in the inertial range, with hyperviscosity or with plain viscosity. They differ only at the cutoff: explicit order 6 falls below the reference there, pseudospectral piles energy up (2× at Nyquist), and compact lies between.
+
 ### Grid
 The grid is nodal: node `j` sits at `x = j·Lx/(nx−1)` and node `i` at `y = i·Ly/(ny−1)`, so the first and last row and column of nodes lie on the walls. `nx` and `ny` are independent. Fields are stored as `ny` rows of `nx` values (`x` varies fastest), which is also the layout of the VTK files. Wall velocities are imposed on those nodes, ψ = 0 there for every Poisson solver, and the centerline CSVs are written at the node coordinates (interpolated onto `x = Lx/2` or `y = Ly/2` when no node lies on the centerline, i.e. for an even number of nodes).
 
@@ -590,7 +599,8 @@ cnavier/
 ├── tools/
 │   ├── cascade.py      # Spectra: time averages, plots, flux and budget checks, comparisons
 │   ├── snapshots.py    # Vorticity frames side by side
-│   └── modified_wavenumber.py # Modified wavenumbers of the periodic schemes
+│   ├── modified_wavenumber.py # Modified wavenumbers of the periodic schemes
+│   └── compare_schemes.py # The schemes of one case against a reference; the crossover plot
 ├── output/             # VTK output files
 ├── Re1000_cavity_flow_example.png
 ├── Re1000_cavity_flow_example.mp4
