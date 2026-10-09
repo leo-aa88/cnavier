@@ -249,8 +249,10 @@ def cmd_compare(ref_dir, dirs, t, names, png):
         first = {}
         for th in (0.02, 0.1):
             first[th] = next((k for k, q in zip(K, ratio) if abs(q - 1) > th), None)
+        peak = max(r["E"] for r in ref[1:])
         print(f"  {name} (t = {td:g}, K_Nyquist {nyq}): within 2 % up to K = "
-              f"{(first[0.02] or nyq + 1) - 1}, within 10 % up to K = {(first[0.1] or nyq + 1) - 1}")
+              f"{(first[0.02] or nyq + 1) - 1}, within 10 % up to K = {(first[0.1] or nyq + 1) - 1}; "
+              f"max E/E_ref {max(ratio):.2f}; reference E(K_Nyquist)/E_peak {ref[nyq]['E'] / peak:.1e}")
         curves.append((name, K, nyq, [rows[k]["E"] for k in K], ratio))
     if png is None:
         return
