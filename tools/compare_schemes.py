@@ -14,11 +14,14 @@
         advective limit the step goes as 1 / (k* h)max, and explicit order 6
         resolves a range proportional to n at a cost per unit time going as
         n^3, so matching a range K costs (K / K_o6)^3 times its own.
-    tools/compare_schemes.py crossover OUT.png CASE:REF:T [CASE:REF:T ...]
+    tools/compare_schemes.py crossover OUT.png CASE:REF:T[:RE] [...]
         for every case and grid: the resolved range (to 10 %) of each scheme
         relative to explicit order 6, against the reference's energy at the
         grid's Nyquist shell relative to its peak; does the ordering of the
-        schemes follow that one parameter?
+        schemes follow that one parameter? With RE given for every case, a
+        second panel plots the same against the cell Reynolds number Re h
+        (h = 1/n on the unit square), the resolution criterion of San and
+        Staples (Comput. Fluids 63, 2012).
 """
 import os
 import re
@@ -59,9 +62,12 @@ def crossover(png, specs):
     import matplotlib.pyplot as plt
 
     points = {s: [] for s in SCHEMES}
-    print(f"{'case':<10} {'grid':>5} {'E(K_N)/E_max':>12}  K10 relative to order 6: " + ", ".join(SCHEMES[1:]))
+    with_re = all(len(spec.split(":")) == 4 for spec in specs)
+    print(f"{'case':<10} {'grid':>5} {'E(K_N)/E_max':>12} {'Re h':>6}  K10 relative to order 6: " +
+          ", ".join(SCHEMES[1:]))
     for spec in specs:
-        case, ref_dir, t = spec.split(":")
+        case, ref_dir, t = spec.split(":")[:3]
+        re_ = float(spec.split(":")[3]) if with_re else float("nan")
         _, ref = cascade.frame_at(os.path.join(ref_dir, "output"), float(t))
         peak = max(r["E"] for r in ref[1:])
         for n in (256, 512):
@@ -75,19 +81,21 @@ def crossover(png, specs):
             occ = ref[res["o6"][3]]["E"] / peak
             rel = {s: res[s][0] / res["o6"][0] for s in res}
             for s in rel:
-                points[s].append((occ, rel[s]))
-            print(f"{os.path.basename(case):<10} {n:>5} {occ:12.1e}  " +
+                points[s].append((occ, rel[s], re_ / n))
+            print(f"{os.path.basename(case):<10} {n:>5} {occ:12.1e} {re_ / n:6.1f}  " +
                   "  ".join(f"{rel.get(s, float('nan')):.2f}" for s in SCHEMES[1:]))
-    fig, ax = plt.subplots(figsize=(6.5, 4.2))
+    fig, axes = plt.subplots(1, 2 if with_re else 1, figsize=(11.5 if with_re else 6.5, 4.2), squeeze=False)
     style = {"o6": "k.", "compact6": "C1o", "spectral": "C0s", "spectral23": "C3^", "spectral32": "C2D"}
-    for s in SCHEMES:
-        if points[s]:
-            x, y = zip(*sorted(points[s]))
-            ax.semilogx(x, y, style[s], label=s, mfc="none" if s == "spectral32" else None)
-    ax.axhline(1, color="gray", lw=0.8)
-    ax.set_xlabel("reference E(K_Nyquist) / E_peak")
-    ax.set_ylabel("shells within 10 %, relative to order 6")
-    ax.legend(fontsize=8)
+    for col, (ax, label) in enumerate(zip(axes[0], ("reference E(K_Nyquist) / E_peak", "cell Reynolds number Re h"))):
+        for s in SCHEMES:
+            if points[s]:
+                pts = sorted(points[s], key=lambda q: q[col * 2])
+                ax.semilogx([q[col * 2] for q in pts], [q[1] for q in pts], style[s], label=s,
+                            mfc="none" if s == "spectral32" else None)
+        ax.axhline(1, color="gray", lw=0.8)
+        ax.set_xlabel(label)
+        ax.set_ylabel("shells within 10 %, relative to order 6")
+        ax.legend(fontsize=8)
     fig.tight_layout()
     fig.savefig(png, dpi=90)
     print(f"wrote {png}")
