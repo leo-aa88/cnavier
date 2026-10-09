@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
 #include "linearalg.h"
 #include "finitediff.h"
 
@@ -335,14 +336,93 @@ static smtrx periodic_op(int n, int o, double scale, const double coef[3][7])
     return op_to_csr(&D, n);
 }
 
+// Lele's (1992) sixth-order tridiagonal compact schemes,
+//   1/3 f'_{i-1} + f'_i + 1/3 f'_{i+1}
+//       = 14/9 (f_{i+1} - f_{i-1}) / (2h) + 1/9 (f_{i+2} - f_{i-2}) / (4h)
+//   2/11 f''_{i-1} + f''_i + 2/11 f''_{i+1}
+//       = 12/11 (f_{i+1} - 2 f_i + f_{i-1}) / h^2 + 3/11 (f_{i+2} - 2 f_i + f_{i-2}) / (4 h^2)
+// with the symbols, theta = k h,
+//   i k* h      = i (14/9 sin theta + 1/18 sin 2 theta) / (1 + 2/3 cos theta)
+//   -(k*h)^2    = (24/11 (cos theta - 1) + 3/22 (cos 2 theta - 1)) / (1 + 4/11 cos theta)
+double compact6_symbol(int deriv, double theta)
+{
+    if (deriv == 1)
+        return (14.0 / 9.0 * sin(theta) + 1.0 / 18.0 * sin(2.0 * theta)) / (1.0 + 2.0 / 3.0 * cos(theta));
+    return (24.0 / 11.0 * (cos(theta) - 1.0) + 3.0 / 22.0 * (cos(2.0 * theta) - 1.0)) / (1.0 + 4.0 / 11.0 * cos(theta));
+}
+
+// On a periodic grid of n points A^-1 B is circulant: row i has c_j at column
+// i + j (mod n). A = tridiag(alpha, 1, alpha) has the circulant inverse
+//   g_j = (r^j + r^(n-j)) / ((1 - r^n) sqrt(1 - 4 alpha^2)),  0 <= j < n,
+// r = (sqrt(1 - 4 alpha^2) - 1) / (2 alpha) the root of alpha r^2 + r + alpha
+// inside the unit circle (the periodic sum of the infinite line's
+// r^|j| / sqrt(1 - 4 alpha^2)), and c_j = sum over m of g_(j-m) b_m with the
+// five-point stencil b of B. Computed so, even the smallest entries are
+// accurate; they decay like |r|^j (0.38 per point for the first derivative,
+// 0.19 for the second), and those below 1e-16 of the largest are dropped:
+// about 40 and 24 on each side, a change of the symbol at round-off level.
+static smtrx compact_op(int n, int deriv, double dx)
+{
+    op_builder D = {0};
+    int i, j, m;
+    double alpha = deriv == 1 ? 1.0 / 3.0 : 2.0 / 11.0, root = sqrt(1.0 - 4.0 * alpha * alpha);
+    double r = (root - 1.0) / (2.0 * alpha), b[5], cmax = 0.0;
+    double *g = (double *)malloc((size_t)n * sizeof(double)), *c = (double *)malloc((size_t)n * sizeof(double));
+
+    if (!g || !c)
+    {
+        printf("** Error: insufficient memory **\n");
+        exit(1);
+    }
+    if (n < 5)
+    {
+        printf("** Error: the compact schemes need at least 5 points **\n");
+        exit(1);
+    }
+    // b[m + 2]: coefficient of f_(i+m) in (B f)_i
+    if (deriv == 1)
+    {
+        double a1 = 14.0 / 9.0 / (2.0 * dx), b2 = 1.0 / 9.0 / (4.0 * dx);
+        b[0] = -b2;
+        b[1] = -a1;
+        b[2] = 0.0;
+        b[3] = a1;
+        b[4] = b2;
+    }
+    else
+    {
+        double a1 = 12.0 / 11.0 / (dx * dx), b2 = 3.0 / 11.0 / (4.0 * dx * dx);
+        b[0] = b2;
+        b[1] = a1;
+        b[2] = -2.0 * a1 - 2.0 * b2;
+        b[3] = a1;
+        b[4] = b2;
+    }
+    for (j = 0; j < n; j++)
+        g[j] = (pow(r, j) + pow(r, n - j)) / ((1.0 - pow(r, n)) * root);
+    for (j = 0; j < n; j++)
+    {
+        c[j] = 0.0;
+        for (m = -2; m <= 2; m++)
+            c[j] += g[((j - m) % n + n) % n] * b[m + 2];
+        if (fabs(c[j]) > cmax) cmax = fabs(c[j]);
+    }
+    for (i = 0; i < n; i++)
+        for (j = 0; j < n; j++)
+            if (fabs(c[j]) > 1E-16 * cmax) op_set(&D, i, (i + j) % n, c[j]);
+    free(g);
+    free(c);
+    return op_to_csr(&D, n);
+}
+
 smtrx SDiff1_periodic(int n, int o, double dx)
 {
-    return periodic_op(n, o, dx, d1_coef);
+    return o == FD_COMPACT6 ? compact_op(n, 1, dx) : periodic_op(n, o, dx, d1_coef);
 }
 
 smtrx SDiff2_periodic(int n, int o, double dx)
 {
-    return periodic_op(n, o, dx * dx, d2_coef);
+    return o == FD_COMPACT6 ? compact_op(n, 2, dx) : periodic_op(n, o, dx * dx, d2_coef);
 }
 
 // SDiff1 with fourth-order one-sided rows at the ends and next to them (orders

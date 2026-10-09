@@ -611,6 +611,75 @@ static void test_order_ablation(void)
 
 // Periodic operators: the wrapped centered stencils differentiate sin(2 pi x)
 // at their nominal order, and annihilate constants
+// Lele's compact schemes as circulant matrices: on every Fourier mode of the
+// grid they act as the scheme's symbol, to round-off; they annihilate
+// constants; the first derivative is antisymmetric; and they are banded
+static void test_compact_operators(void)
+{
+    static const int sizes[3] = {16, 33, 128};
+    char name[128];
+
+    printf("Unit: compact sixth-order operators (Lele 1992) on the periodic grid\n");
+    for (int c = 0; c < 3; c++)
+    {
+        int n = sizes[c], i, k, w1, w2;
+        double dx = 1.0 / n, e1 = 0.0, e2 = 0.0, s1 = 0.0, s2 = 0.0, ones = 0.0, asym = 0.0;
+        smtrx d1 = SDiff1_periodic(n, FD_COMPACT6, dx), d2 = SDiff2_periodic(n, FD_COMPACT6, dx);
+        double *f = (double *)malloc(n * sizeof(double)), *g = (double *)malloc(n * sizeof(double));
+        double *d = (double *)malloc(n * sizeof(double));
+
+        for (k = 0; k <= n / 2; k++)
+        {
+            // cos(k x) and sin(k x): D1 cos = -(k*) sin, D1 sin = (k*) cos, D2 = symbol
+            double th = 2.0 * PI * k / n, ks = compact6_symbol(1, th) / dx, q = compact6_symbol(2, th) / (dx * dx);
+            for (i = 0; i < n; i++)
+            {
+                f[i] = cos(th * i);
+                g[i] = sin(th * i);
+            }
+            spmv(d1, f, d);
+            for (i = 0; i < n; i++)
+                e1 = fmax(e1, fabs(d[i] + ks * g[i]));
+            spmv(d1, g, d);
+            for (i = 0; i < n; i++)
+                e1 = fmax(e1, fabs(d[i] - ks * f[i]));
+            spmv(d2, f, d);
+            for (i = 0; i < n; i++)
+                e2 = fmax(e2, fabs(d[i] - q * f[i]));
+            s1 = fmax(s1, fabs(ks));
+            s2 = fmax(s2, fabs(q));
+        }
+        for (i = 0; i < n; i++)
+            f[i] = 1.0;
+        spmv(d1, f, d);
+        for (i = 0; i < n; i++)
+            ones = fmax(ones, fabs(d[i]) * dx);
+        spmv(d2, f, d);
+        for (i = 0; i < n; i++)
+            ones = fmax(ones, fabs(d[i]) * dx * dx);
+        // Antisymmetry of the first derivative: entry (0, j) = -(0, n - j)
+        for (k = d1.row_ptr[0]; k < d1.row_ptr[1]; k++)
+        {
+            int j = d1.col_idx[k], m;
+            double mirror = 0.0;
+            for (m = d1.row_ptr[0]; m < d1.row_ptr[1]; m++)
+                if (d1.col_idx[m] == (n - j) % n) mirror = d1.values[m];
+            asym = fmax(asym, fabs(d1.values[k] + mirror) * dx);
+        }
+        w1 = d1.row_ptr[1] - d1.row_ptr[0];
+        w2 = d2.row_ptr[1] - d2.row_ptr[0];
+        snprintf(name, sizeof(name), "n = %d: symbols of D1, D2 on every mode (%d and %d entries per row)", n, w1, w2);
+        check(name, fmax(e1 / s1, e2 / s2), 1E-13);
+        snprintf(name, sizeof(name), "n = %d: constants annihilated, D1 antisymmetric", n);
+        check(name, fmax(ones, asym), 1E-14);
+        freesm(d1);
+        freesm(d2);
+        free(f);
+        free(g);
+        free(d);
+    }
+}
+
 static void test_periodic_operators(void)
 {
     int o, n, i;
@@ -735,6 +804,18 @@ static void test_periodic_mms_order(void)
         double pw = log2(a.w.max / b.w.max);
         snprintf(name, sizeof(name), "skew, order %d: w order %.2f (64 -> 128)", o, pw);
         check(name, isnan(pw) ? INFINITY : fabs(pw - o), 0.15);
+    }
+    printf("Unit: ... with the compact sixth-order schemes\n");
+    {
+        mms_errors e6 = mms_run_periodic(64, 64, 1.0, 1.0, 100.0, 6, 2, 2.5E-3, 0.0, 0.25);
+        mms_errors ca = mms_run_periodic(32, 32, 1.0, 1.0, 100.0, FD_COMPACT6, 2, 2.5E-3, 0.0, 0.25);
+        mms_errors cb = mms_run_periodic(64, 64, 1.0, 1.0, 100.0, FD_COMPACT6, 2, 2.5E-3, 0.0, 0.25);
+        double pw = log2(ca.w.max / cb.w.max), pp = log2(ca.psi.max / cb.psi.max);
+        snprintf(name, sizeof(name), "compact: w order %.2f, psi order %.2f (32 -> 64)", pw, pp);
+        check(name, isnan(pw + pp) ? INFINITY : fmax(fabs(pw - 6.0), fabs(pp - 6.0)), 0.3);
+        snprintf(name, sizeof(name), "compact vs explicit order 6 at 64x64: w error %.1e vs %.1e (%.0fx smaller)",
+                 cb.w.max, e6.w.max, e6.w.max / cb.w.max);
+        check(name, cb.w.max < e6.w.max / 4.0 ? 0.0 : 1.0, 0.0);
     }
     // A 2 x 1 domain with dx != dy
     mms_errors a = mms_run_periodic(48, 32, 2.0, 1.0, 100.0, 6, 2, 2.5E-3, 0.0, 0.25);
@@ -2593,6 +2674,36 @@ static void test_gpu_poisson_reuse(int periodic, int kicks, long expect)
     problem_free(&p);
 }
 
+// The compact operators' wide rows on the GPU: RK4 with the skew-symmetric
+// form on a random field matches the CPU
+static void test_gpu_compact(void)
+{
+    int t, nx = 48, ny = 40, N = nx * ny;
+    problem p;
+    problem_init_ext(&p, nx, ny, 1.0, 1.0, 1, FD_COMPACT6, 1000., 2, 3, 5E-4, 1E-10, NULL, 0.0, NULL, NULL, 2, 0, 2);
+    rk4_free(&p.ctx);
+    p.cfg.advection = 1;
+    p.ctx = rk4_alloc(&p.cfg);
+    fill_pseudo_random(p.w.M, N, 19u);
+    gpu_solver *g = gpu_for(&p);
+    mtrx w = initm(ny, nx), u = initm(ny, nx);
+
+    printf("GPU: compact sixth-order operators, %dx%d periodic grid\n", nx, ny);
+    gpu_set_fields(g, &p.u, &p.v, &p.w);
+    for (t = 0; t < 20; t++)
+    {
+        step(p.w, p.u, p.v, &p.ctx);
+        gpu_step(g);
+    }
+    gpu_get_fields(g, &u, NULL, &w);
+    check("compact: w vs CPU", rel_diff(w.M, p.w.M, N), 1E-12);
+    check("compact: u vs CPU", rel_diff(u.M, p.u.M, N), 1E-12);
+    freem(&w);
+    freem(&u);
+    gpu_free(g);
+    problem_free(&p);
+}
+
 // Hyperviscosity strong enough to dominate near the cutoff: the GPU applies it
 // in spectral space, the CPU by p sparse products, and the two agree
 static void test_gpu_hyperviscosity(int p_order)
@@ -2805,6 +2916,7 @@ static void run_gpu_tests(void)
     GPU_TEST(test_gpu_poisson_reuse(1, 0, 41));
     GPU_TEST(test_gpu_poisson_reuse(0, 0, 41));
     GPU_TEST(test_gpu_poisson_reuse(1, 1, 50));
+    GPU_TEST(test_gpu_compact());
     GPU_TEST(test_gpu_spectra(0));
     GPU_TEST(test_gpu_spectra(1));
     GPU_TEST(test_gpu_hyperviscosity(2));
@@ -2866,6 +2978,7 @@ int main(int argc, char **argv)
     test_velocity_rows();
     test_wall_order_pairing();
     test_periodic_operators();
+    test_compact_operators();
     test_periodic_poisson(32, 24, 6);
     test_periodic_poisson(15, 21, 4);
     test_periodic_poisson(16, 16, 2);

@@ -227,7 +227,7 @@ A few numerical parameters can be overridden without recompiling; anything not g
 | `--tf TF` | Final time |
 | `--output-interval N` | Write VTK every N iterations (`0` disables VTK output) |
 | `--re RE` | Reynolds number |
-| `--order N` | Order of the finite differences: 2, 4 or 6 (default 6) |
+| `--order N` | Order of the finite differences: 2, 4 or 6 (default 6), or `compact6`: Lele's sixth-order compact schemes (periodic cases; see [Compact schemes](#compact-schemes)) |
 | `--integrals-interval N` | Write `E`, `Z`, `P`, `I` to `output/integrals.csv` every N steps (default 1; `0` never) |
 | `--drag ALPHA` | Periodic cases: linear drag `−αω` (default 0; 0.1 for `forced`) |
 | `--kolmogorov-amp A`, `--kolmogorov-n N` | Periodic cases: Kolmogorov body force `A sin(2πN y)` in x (defaults: A = 1 for `kolmogorov`, else 0; N = 4) |
@@ -339,14 +339,37 @@ python3 tools/snapshots.py output 0 1 2 3 --titles "t = 0,t = 5,t = 10,t = 15"
 
 `make regression` runs a 64² version of the direct-cascade check (6 s on the CPU): the signs of `Π_E` below and `Π_Z` above the forcing, and the conservation of enstrophy.
 
-**Resolution.** How much of the spectrum does each order resolve? Decaying turbulence at Re = 2·10⁴ from the same initial field (`--case decaying`; the phases depend on the wavevector only, so every grid gets the same field), compared at t = 0.1 (about 7 eddy turnovers, before the runs decorrelate) with a 1024² order-6 run:
+**Resolution.** How much of the spectrum does each order resolve? Decaying turbulence at Re = 2·10⁴ from the same initial field (`--case decaying`; the phases depend on the wavevector only, so every grid gets the same field), compared at t = 0.09 (about 6 eddy turnovers, before the runs decorrelate) with a 2048² order-6 run. All runs use the same time step, so they are compared at the same instant; their largest scales agree with the reference to 2e-4.
 
-| | order 6 | order 4 | order 2 |
-|---|---|---|---|
-| 512²: `E(k)` within 10 % (2 %) up to K = | 154 (108) | 132 (66) | 68 (26) |
-| 256²: | 72 (42) | 66 (30) | 34 (1) |
+| `E(k)` within 10 % (2 %) of 2048² up to K = | compact 6 | order 6 | order 4 | order 2 |
+|---|---|---|---|---|
+| 512² (Nyquist K = 255) | 198 (167) | 152 (111) | 133 (73) | 60 (28) |
+| 256² (Nyquist K = 127) | 118 (67) | 74 (48) | 60 (30) | 29 (1) |
 
-So orders 6, 4 and 2 resolve about 60 %, 52 % and 27 % of the Nyquist wavenumber to 10 %. Order 6 on 256² resolves as many shells as order 2 on 512², at half the cost per step. Beyond that, the finite differences underestimate the derivatives, and the spectrum falls below the reference (`tools/cascade.py compare`, figure in the [methodology](docs/cnavier_methodology.pdf)).
+So orders 6, 4 and 2 resolve about 59 %, 49 % and 23 % of the Nyquist wavenumber to 10 %, and Lele's compact scheme of order 6 ([below](#compact-schemes)) 78–93 %. Order 6 on 256² resolves more shells than order 2 on 512², at about half the cost per step (3.3 against 5.6 ms on the GPU). Beyond that, the finite differences underestimate the derivatives, and the spectrum falls below the reference (`tools/cascade.py compare`, figure in the [methodology](docs/cnavier_methodology.pdf)).
+
+### Compact schemes
+
+`--order compact6` uses Lele's (1992) sixth-order tridiagonal compact schemes for the first and second derivatives on the periodic grid, `A f′ = B f`. On a periodic grid `A⁻¹B` is a circulant matrix, built exactly from the closed-form inverse of the tridiagonal `A`. Its entries decay geometrically, so it is banded to round-off: 78 and 45 entries per row. The rest of the solver, GPU included, uses it like any other sparse operator.
+
+What they buy is resolution (`tools/modified_wavenumber.py`): the fraction of the wavenumbers up to Nyquist that each scheme differentiates to 1 % and 10 %:
+
+| | first derivative, 1 % | 10 % | second derivative, 1 % | 10 % |
+|---|---|---|---|---|
+| order 2 | 0.08 | 0.25 | 0.11 | 0.36 |
+| order 4 | 0.24 | 0.44 | 0.32 | 0.60 |
+| order 6 | 0.35 | 0.54 | 0.45 | 0.71 |
+| compact 6 | 0.50 | 0.70 | 0.56 | 0.81 |
+
+![Modified wavenumbers](docs/figures/modified_wavenumber.png)
+
+On the manufactured solution they converge at order 6.0, with an error 12× smaller than explicit order 6 at 64². In decaying turbulence they resolve 1.3–1.6× as many shells as explicit order 6 on the same grid ([Resolution](#two-dimensional-turbulence): K = 198 against 152 on 512², 118 against 74 on 256², within 10 % of a 2048² reference).
+
+In forced turbulence with hyperviscosity they change little: the 256² direct-cascade run gives an enstrophy-flux plateau of 42.9 with them against 41.9 with order 6, and spectral slopes of −3.48 and −3.44. The spectra agree to 1–2 % over K = 20–60, and the compact run has 8–25 % more energy above K ≈ 80. The hyperviscosity confines the cascade to scales that order 6 already differentiates well, so the scheme only changes the dissipation range there.
+
+![Compact vs order 6 in forced turbulence](docs/figures/cascade_compact.png)
+
+The price, in this implementation, is speed. The banded rows are about ten times wider, and a step costs about 21× the explicit one on the GPU (269 against 12.3 ms at 512²). Their largest modified wavenumber is also higher (`k*h` up to 1.99 against 1.59), so the advective time-step limit is 20 % smaller. Applying the circulants in Fourier space, or by tridiagonal solves, would remove most of that cost; this implementation is there to measure what the schemes resolve.
 
 ### Grid
 The grid is nodal: node `j` sits at `x = j·Lx/(nx−1)` and node `i` at `y = i·Ly/(ny−1)`, so the first and last row and column of nodes lie on the walls. `nx` and `ny` are independent. Fields are stored as `ny` rows of `nx` values (`x` varies fastest), which is also the layout of the VTK files. Wall velocities are imposed on those nodes, ψ = 0 there for every Poisson solver, and the centerline CSVs are written at the node coordinates (interpolated onto `x = Lx/2` or `y = Ly/2` when no node lies on the centerline, i.e. for an even number of nodes).
@@ -545,7 +568,8 @@ cnavier/
 │   └── reference/      # Stored results and the Ghia et al. data
 ├── tools/
 │   ├── cascade.py      # Spectra: time averages, plots, flux and budget checks, comparisons
-│   └── snapshots.py    # Vorticity frames side by side
+│   ├── snapshots.py    # Vorticity frames side by side
+│   └── modified_wavenumber.py # Modified wavenumbers of the periodic schemes
 ├── output/             # VTK output files
 ├── Re1000_cavity_flow_example.png
 ├── Re1000_cavity_flow_example.mp4
