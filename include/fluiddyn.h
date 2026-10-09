@@ -78,6 +78,9 @@ typedef struct
     mtrx k1, k2, k3, k4;              // RK4 stage increments
     mtrx w_tmp;                       // temporary w for intermediate stages
     mtrx rhs;                         // Poisson right-hand side, -w
+    mtrx w_solved;                    // the w that psi was last solved for ...
+    int psi_valid;                    // ... if set (velocity_from_vorticity() skips a repeat solve)
+    long solves;                      // Poisson solves done
     struct fft_solver *fft;           // FFT Poisson solver (poisson_type 3, walls), else NULL
     struct periodic_solver *periodic; // periodic Poisson solver (cfg.periodic), else NULL
     mtrx source;                      // vorticity source of the current stage (cfg.vorticity_source only)

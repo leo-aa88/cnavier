@@ -192,6 +192,7 @@ Things to keep in mind:
 - Much of the GPU time goes to double-precision FFTs. Consumer GeForce cards are much slower in double than in single precision, so expect larger gains on workstation/datacenter GPUs.
 - Pick grid sizes where `n − 1` has only small prime factors (65, 129, 257, 513, 1025, ...). The sine transform of the interior works on length `2(n−1)`, and awkward lengths are slow on both backends: 1024×1024 takes 77 ms per step on the GPU, against 60 ms for 1025×1025.
 - Forced 2-D turbulence on 512² (periodic, skew-symmetric nonlinear term, random forcing, hypodrag, hyperviscosity of order 4, spectra every 50 steps) takes 16.2 ms per step. On the periodic grid the GPU applies the hyperviscosity in spectral space and computes the spectra on the device; before, with `p` sparse Laplacians per stage and spectra on the host, it was 23.1 ms. A spectrum frame now costs about 5 ms instead of 20.
+- RK4 does four Poisson solves per step instead of five: the first stage reuses the solve that ended the previous step when the interior of ω has not changed since (FFT solvers only; results bitwise the same). That is 8–12 % faster on the cavity, on both backends, and 2–3 % on unforced periodic runs on the GPU. The random kick changes ω every step, so forced runs still do five solves.
 - The table is for the FFT solver only. Gauss-Seidel and SOR are on the GPU so that every solver option works there, not because they are fast: on the default 64×64 case SOR takes about 30 ms per step on the GPU, against about 1 ms for the FFT solver.
 
 ## Configuration
