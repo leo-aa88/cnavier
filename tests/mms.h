@@ -73,6 +73,10 @@ mms_errors mms_run_periodic(int nx, int ny, double Lx, double Ly, double Re, int
 // The same with RK4 and a choice of nonlinear term (solver_config.advection)
 mms_errors mms_run_periodic_advection(int nx, int ny, double Lx, double Ly, double Re, int order, int advection,
                                       double dt, double t0, double T);
+// The same with the operators applied in Fourier space (solver_config.fourier);
+// the only way to run order FD_SPECTRAL
+mms_errors mms_run_periodic_fourier(int nx, int ny, double Lx, double Ly, double Re, int order, int advection,
+                                    double dt, double t0, double T);
 
 // Ablation of the discretization (issue #25): parts of the RK4 step replaced
 // by the exact solution at each stage's time. Flags may be combined.

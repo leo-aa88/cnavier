@@ -16,6 +16,7 @@
 #include "fluiddyn.h"
 #include "threads.h"
 #include "mms.h"
+#include "fourier.h"
 #include "diagnostics.h"
 #include "backend.h"
 #include "utils.h"
@@ -47,9 +48,10 @@ typedef struct
 {
     int nx, ny;
     smtrx DX, DY, DX2, DY2;
-    smtrx DXv, DYv;    // velocity operators (velocity_order 4), else empty
-    solver_config cfg; // shared by the CPU and GPU solvers
-    rk4_ctx ctx;       // CPU workspace
+    smtrx D1x, D1y, D2x, D2y; // the 1-D operators (periodic only, for their symbols)
+    smtrx DXv, DYv;           // velocity operators (velocity_order 4), else empty
+    solver_config cfg;        // shared by the CPU and GPU solvers
+    rk4_ctx ctx;              // CPU workspace
     mtrx u, v, w;
 } problem;
 
@@ -85,10 +87,10 @@ static void problem_init_ext(problem *p, int nx, int ny, double Lx, double Ly, i
     p->DX2 = skronecker(sIy, sd_x2);
     p->DY2 = skronecker(sd_y2, sIx);
 
-    freesm(sd_x);
-    freesm(sd_y);
-    freesm(sd_x2);
-    freesm(sd_y2);
+    p->D1x = sd_x;
+    p->D1y = sd_y;
+    p->D2x = sd_x2;
+    p->D2y = sd_y2;
     freesm(sIx);
     freesm(sIy);
 
@@ -126,6 +128,12 @@ static void problem_init_ext(problem *p, int nx, int ny, double Lx, double Ly, i
     }
     p->cfg.DXv = velocity_order == 4 ? &p->DXv : NULL;
     p->cfg.DYv = velocity_order == 4 ? &p->DYv : NULL;
+    p->cfg.D1x = periodic ? &p->D1x : NULL;
+    p->cfg.D1y = periodic ? &p->D1y : NULL;
+    p->cfg.D2x = periodic ? &p->D2x : NULL;
+    p->cfg.D2y = periodic ? &p->D2y : NULL;
+    p->cfg.fourier = 0;
+    p->cfg.dealias = 0;
     p->cfg.t0 = t0;
     p->cfg.vorticity_source = vorticity_source;
     p->cfg.source_data = source_data;
@@ -152,6 +160,10 @@ static void problem_free(problem *p)
     freesm(p->DY);
     freesm(p->DX2);
     freesm(p->DY2);
+    freesm(p->D1x);
+    freesm(p->D1y);
+    freesm(p->D2x);
+    freesm(p->D2y);
     if (p->cfg.DXv)
     {
         freesm(p->DXv);
@@ -1467,6 +1479,143 @@ static void test_poisson_reuse(void)
     }
 }
 
+// A forced periodic problem with every term (skew-symmetric form, drag,
+// hypodrag, hyperviscosity, Kolmogorov and random forcing), its operators
+// applied as sparse products or in Fourier space
+static void fourier_problem(problem *p, int order, int fourier, int dealias)
+{
+    problem_init_ext(p, 32, 24, 1.0, 1.0, 1, order, 2000., 2, 3, 2E-4, 1E-10, NULL, 0.0, NULL, NULL, 2, 0, 2);
+    rk4_free(&p->ctx);
+    p->cfg.advection = 1;
+    p->cfg.fourier = fourier;
+    p->cfg.dealias = dealias;
+    p->cfg.forcing.drag = 0.1;
+    p->cfg.forcing.hypodrag = 2.0;
+    p->cfg.forcing.hyperviscosity = 1E-9;
+    p->cfg.forcing.hyper_order = 2;
+    p->cfg.forcing.kolmogorov_amp = 0.5;
+    p->cfg.forcing.kolmogorov_n = 2;
+    p->cfg.forcing.random_rate = 0.3;
+    p->cfg.forcing.random_kf = 3.0;
+    p->cfg.forcing.random_dk = 1.0;
+    p->cfg.forcing.random_seed = 5;
+    p->ctx = rk4_alloc(&p->cfg);
+    fill_pseudo_random(p->w.M, 32 * 24, 23u);
+}
+
+// The operators applied in Fourier space by their symbols are the same
+// circulant matrices as the sparse ones: 20 steps with every term agree to
+// round-off, for explicit order 6 and the compact scheme, and so do the
+// integrals and the spectra
+static void test_fourier_operators(void)
+{
+    static const int orders[2] = {6, FD_COMPACT6};
+    char name[128];
+
+    printf("Fourier operators: the same as the sparse ones, every term, 32x24 periodic grid\n");
+    for (int c = 0; c < 2; c++)
+    {
+        problem a, b;
+        int t, N = 32 * 24;
+        fourier_problem(&a, orders[c], 0, 0);
+        fourier_problem(&b, orders[c], 1, 0);
+        for (t = 0; t < 20; t++)
+        {
+            step(a.w, a.u, a.v, &a.ctx);
+            step(b.w, b.u, b.v, &b.ctx);
+        }
+        flow_integrals fa = compute_integrals(&a.cfg, a.u, a.v, a.w, a.ctx.k1.M, a.ctx.k2.M);
+        flow_integrals fb = compute_integrals(&b.cfg, b.u, b.v, b.w, b.ctx.k1.M, b.ctx.k2.M);
+        spectra *sa = spectra_setup(&a.cfg), *sb = spectra_setup(&b.cfg);
+        int B = spectra_bins(sa);
+        double *oa = (double *)malloc((size_t)SPECTRA_COLUMNS * B * sizeof(double));
+        double *ob = (double *)malloc((size_t)SPECTRA_COLUMNS * B * sizeof(double));
+        double ds = 0.0, peak = 0.0;
+        spectra_all(sa, a.u, a.v, a.w, oa);
+        spectra_all(sb, b.u, b.v, b.w, ob);
+        for (int k = 0; k < SPECTRA_COLUMNS * B; k++)
+        {
+            ds = fmax(ds, fabs(oa[k] - ob[k]));
+            peak = fmax(peak, fabs(oa[k]));
+        }
+        const char *label = c ? "compact 6" : "order 6";
+        snprintf(name, sizeof(name), "%s: w, u after 20 steps (%ld and %ld solves)", label, a.ctx.solves, b.ctx.solves);
+        check(name, rel_diff(a.w.M, b.w.M, N) + rel_diff(a.u.M, b.u.M, N), 1E-12);
+        snprintf(name, sizeof(name), "%s: E, Z, P and the spectra", label);
+        check(name,
+              fmax(fmax(fabs(fa.E - fb.E) / fa.E, fabs(fa.Z - fb.Z) / fa.Z), fmax(fabs(fa.P - fb.P) / fa.P, ds / peak)),
+              1E-12);
+        free(oa);
+        free(ob);
+        spectra_free(sa);
+        spectra_free(sb);
+        problem_free(&a);
+        problem_free(&b);
+    }
+}
+
+// Pseudospectral differentiation on the periodic manufactured solution: at
+// 32^2 already far below the compact scheme (the error is the time
+// integration's), and the 2/3 rule: no energy above it after steps of a forced
+// run, and a Galerkin truncation, so the nonlinear term conserves energy and
+// enstrophy exactly, even in the advective form
+static void test_pseudospectral(void)
+{
+    char name[128];
+    mms_errors c = mms_run_periodic_fourier(32, 32, 1.0, 1.0, 100.0, FD_COMPACT6, 0, 2.5E-3, 0.0, 0.25);
+    mms_errors s = mms_run_periodic_fourier(32, 32, 1.0, 1.0, 100.0, FD_SPECTRAL, 0, 2.5E-3, 0.0, 0.25);
+    mms_errors s2 = mms_run_periodic_fourier(32, 32, 1.0, 1.0, 100.0, FD_SPECTRAL, 0, 1.25E-3, 0.0, 0.25);
+
+    printf("Pseudospectral operators (Fourier space), periodic grid\n");
+    snprintf(name, sizeof(name), "MMS 32x32: w error %.1e (compact 6: %.1e); halving dt: %.1e (time error)", s.w.max,
+             c.w.max, s2.w.max);
+    check(name, s.w.max < c.w.max / 100.0 && s2.w.max < s.w.max / 8.0 ? 0.0 : 1.0, 0.0);
+
+    for (int form = 0; form < 2; form++)
+    {
+        problem p;
+        int t, B, N = 32 * 24;
+        fourier_problem(&p, FD_SPECTRAL, 1, 1);
+        rk4_free(&p.ctx);
+        p.cfg.advection = form;
+        p.ctx = rk4_alloc(&p.cfg);
+        for (t = 0; t < 20; t++)
+            step(p.w, p.u, p.v, &p.ctx);
+        // Energy above the 2/3 cutoff, relative to all of it
+        fourier_ops *f = fourier_setup(&p.cfg);
+        double *cut = (double *)malloc(N * sizeof(double)), above = 0.0, all = 0.0;
+        for (t = 0; t < N; t++)
+            cut[t] = p.w.M[t];
+        fourier_filter(f, cut);
+        for (t = 0; t < N; t++)
+        {
+            above += (p.w.M[t] - cut[t]) * (p.w.M[t] - cut[t]);
+            all += p.w.M[t] * p.w.M[t];
+        }
+        // Net nonlinear transfers through the last shell, relative to the
+        // largest shell transfer
+        spectra *sp = spectra_setup(&p.cfg);
+        B = spectra_bins(sp);
+        double *PE = (double *)calloc(B, sizeof(double)), *PZ = (double *)calloc(B, sizeof(double));
+        double pe = 0.0, pz = 0.0;
+        spectra_compute(sp, p.u, p.v, p.w, NULL, NULL, PE, PZ);
+        for (t = 0; t < B; t++)
+        {
+            pe = fmax(pe, fabs(PE[t] - (t ? PE[t - 1] : 0.0)));
+            pz = fmax(pz, fabs(PZ[t] - (t ? PZ[t - 1] : 0.0)));
+        }
+        snprintf(name, sizeof(name), "2/3 rule, %s form: w^2 above the cutoff %.1e, net transfers E %.1e, Z %.1e",
+                 form ? "skew-symmetric" : "advective", sqrt(above / all), fabs(PE[B - 1]) / pe, fabs(PZ[B - 1]) / pz);
+        check(name, fmax(sqrt(above / all), fmax(fabs(PE[B - 1]) / pe, fabs(PZ[B - 1]) / pz)), 1E-13);
+        free(PE);
+        free(PZ);
+        free(cut);
+        spectra_free(sp);
+        fourier_free(f);
+        problem_free(&p);
+    }
+}
+
 // The decaying-turbulence initial field: energy 1/2 <u^2 + v^2> as asked,
 // u, v the velocity of w (u_x + v_y = 0 and v_x - u_y = w, spectrally exact,
 // so to the order of the stencils with DX, DY), and the same field on a grid
@@ -1566,8 +1715,11 @@ static void test_random_kick(void)
     fc.random_kf = 6.0;
     fc.random_dk = 1.0;
     fc.random_seed = 42;
-    a = random_forcing_setup(&fc, n, n, p.cfg.dx, p.cfg.dy, dt, &p.DX, &p.DY, &p.DX2, &p.DY2);
-    b = random_forcing_setup(&fc, n, n, p.cfg.dx, p.cfg.dy, dt, &p.DX, &p.DY, &p.DX2, &p.DY2);
+    periodic_symbols sym;
+    periodic_symbols_of(&p.cfg, &sym);
+    a = random_forcing_setup(&fc, n, n, p.cfg.dx, p.cfg.dy, dt, &sym);
+    b = random_forcing_setup(&fc, n, n, p.cfg.dx, p.cfg.dy, dt, &sym);
+    periodic_symbols_free(&sym);
     random_forcing_draw(a);
     random_forcing_add(a, w, p.cfg.dy);
     random_forcing_draw(b);
@@ -2704,6 +2856,56 @@ static void test_gpu_compact(void)
     problem_free(&p);
 }
 
+// The Fourier operators on the GPU match the CPU's, with every term: the
+// fields after 20 steps, the integrals and the spectra
+static void test_gpu_fourier(int order, int dealias, const char *label)
+{
+    int t, N = 32 * 24;
+    char name[128];
+    problem p;
+    fourier_problem(&p, order, 1, dealias);
+    gpu_solver *g = gpu_for(&p);
+    mtrx u = initm(24, 32), w = initm(24, 32);
+    double E, Z, P, I, cmax, cmin;
+
+    printf("GPU: Fourier operators, %s, every term, 32x24 periodic grid\n", label);
+    gpu_set_fields(g, &p.u, &p.v, &p.w);
+    for (t = 0; t < 20; t++)
+    {
+        step(p.w, p.u, p.v, &p.ctx);
+        gpu_step(g);
+    }
+    gpu_get_fields(g, &u, NULL, &w);
+    snprintf(name, sizeof(name), "%s: w, u vs CPU", label);
+    check(name, rel_diff(w.M, p.w.M, N) + rel_diff(u.M, p.u.M, N), 1E-12);
+    flow_integrals f = compute_integrals(&p.cfg, p.u, p.v, p.w, p.ctx.k1.M, p.ctx.k2.M);
+    gpu_integrals(g, &E, &Z, &P, &I);
+    gpu_continuity(g, &cmax, &cmin);
+    snprintf(name, sizeof(name), "%s: E, Z, P vs CPU; divergence %.1e", label, fmax(cmax, -cmin));
+    check(name, fmax(fmax(fabs(E - f.E) / f.E, fabs(Z - f.Z) / f.Z), fabs(P - f.P) / f.P) + (fmax(cmax, -cmin) < 1E-10 ? 0.0 : 1.0),
+          1E-12);
+    spectra *sp = spectra_setup(&p.cfg);
+    int B = spectra_bins(sp);
+    double *dev = (double *)malloc((size_t)SPECTRA_COLUMNS * B * sizeof(double));
+    double *host = (double *)malloc((size_t)SPECTRA_COLUMNS * B * sizeof(double)), diff = 0.0, peak = 0.0;
+    gpu_spectra(g, sp, dev);
+    spectra_all(sp, p.u, p.v, p.w, host);
+    for (t = 0; t < SPECTRA_COLUMNS * B; t++)
+    {
+        diff = fmax(diff, fabs(dev[t] - host[t]));
+        peak = fmax(peak, fabs(host[t]));
+    }
+    snprintf(name, sizeof(name), "%s: spectra vs CPU", label);
+    check(name, diff / peak, 1E-12);
+    free(dev);
+    free(host);
+    spectra_free(sp);
+    freem(&u);
+    freem(&w);
+    gpu_free(g);
+    problem_free(&p);
+}
+
 // Hyperviscosity strong enough to dominate near the cutoff: the GPU applies it
 // in spectral space, the CPU by p sparse products, and the two agree
 static void test_gpu_hyperviscosity(int p_order)
@@ -2917,6 +3119,10 @@ static void run_gpu_tests(void)
     GPU_TEST(test_gpu_poisson_reuse(0, 0, 41));
     GPU_TEST(test_gpu_poisson_reuse(1, 1, 50));
     GPU_TEST(test_gpu_compact());
+    GPU_TEST(test_gpu_fourier(6, 0, "order 6"));
+    GPU_TEST(test_gpu_fourier(FD_COMPACT6, 0, "compact 6"));
+    GPU_TEST(test_gpu_fourier(FD_SPECTRAL, 0, "pseudospectral"));
+    GPU_TEST(test_gpu_fourier(FD_SPECTRAL, 1, "pseudospectral, 2/3 rule"));
     GPU_TEST(test_gpu_spectra(0));
     GPU_TEST(test_gpu_spectra(1));
     GPU_TEST(test_gpu_hyperviscosity(2));
@@ -2989,6 +3195,8 @@ int main(int argc, char **argv)
     test_random_initial_field();
     test_damping_stability();
     test_poisson_reuse();
+    test_fourier_operators();
+    test_pseudospectral();
     test_random_kick();
     test_budgets();
     test_cpu_operator_axes(13, 9);

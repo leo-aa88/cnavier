@@ -227,7 +227,9 @@ A few numerical parameters can be overridden without recompiling; anything not g
 | `--tf TF` | Final time |
 | `--output-interval N` | Write VTK every N iterations (`0` disables VTK output) |
 | `--re RE` | Reynolds number |
-| `--order N` | Order of the finite differences: 2, 4 or 6 (default 6), or `compact6`: Lele's sixth-order compact schemes (periodic cases; see [Compact schemes](#compact-schemes)) |
+| `--order N` | Order of the finite differences: 2, 4 or 6 (default 6), or on the periodic cases `compact6` (Lele's sixth-order compact schemes) or `spectral` (pseudospectral); see [Compact schemes](#compact-schemes) |
+| `--operators NAME` | Periodic cases: apply the derivatives as `sparse` products or in `fourier` space by their symbols (default: `fourier` for `compact6` and `spectral`, which needs it) |
+| `--dealias` | With Fourier operators: Orszag's 2/3 rule |
 | `--integrals-interval N` | Write `E`, `Z`, `P`, `I` to `output/integrals.csv` every N steps (default 1; `0` never) |
 | `--drag ALPHA` | Periodic cases: linear drag `−αω` (default 0; 0.1 for `forced`) |
 | `--kolmogorov-amp A`, `--kolmogorov-n N` | Periodic cases: Kolmogorov body force `A sin(2πN y)` in x (defaults: A = 1 for `kolmogorov`, else 0; N = 4) |
@@ -350,7 +352,9 @@ So orders 6, 4 and 2 resolve about 59 %, 49 % and 23 % of the Nyquist wavenumber
 
 ### Compact schemes
 
-`--order compact6` uses Lele's (1992) sixth-order tridiagonal compact schemes for the first and second derivatives on the periodic grid, `A f′ = B f`. On a periodic grid `A⁻¹B` is a circulant matrix, built exactly from the closed-form inverse of the tridiagonal `A`. Its entries decay geometrically, so it is banded to round-off: 78 and 45 entries per row. The rest of the solver, GPU included, uses it like any other sparse operator.
+`--order compact6` uses Lele's (1992) sixth-order tridiagonal compact schemes for the first and second derivatives on the periodic grid, `A f′ = B f`. On a periodic grid `A⁻¹B` is a circulant matrix, built exactly from the closed-form inverse of the tridiagonal `A`. Its entries decay geometrically, so it is banded to round-off: 78 and 45 entries per row.
+
+On a periodic grid every derivative operator is circulant, so it is diagonal in Fourier space. With `--operators fourier` (the default for `compact6` and `spectral`) the solver applies them that way: one forward transform of ω and inverse transforms of the symbols times its spectrum, on the CPU (FFTW) and the GPU (cuFFT). The symbols come from the operators themselves, so the results equal the sparse products to round-off (`make test` checks 1e-14 for orders 6 and compact 6 with every term on). `--order spectral` uses the exact symbols `ik` and `−k²` (pseudospectral differentiation), and `--dealias` adds the 2/3 rule, under which the nonlinear term conserves energy and enstrophy exactly.
 
 What they buy is resolution (`tools/modified_wavenumber.py`): the fraction of the wavenumbers up to Nyquist that each scheme differentiates to 1 % and 10 %:
 
@@ -369,7 +373,22 @@ In forced turbulence with hyperviscosity they change little: the 256² direct-ca
 
 ![Compact vs order 6 in forced turbulence](docs/figures/cascade_compact.png)
 
-The price, in this implementation, is speed. The banded rows are about ten times wider, and a step costs about 21× the explicit one on the GPU (269 against 12.3 ms at 512²). Their largest modified wavenumber is also higher (`k*h` up to 1.99 against 1.59), so the advective time-step limit is 20 % smaller. Applying the circulants in Fourier space, or by tridiagonal solves, would remove most of that cost; this implementation is there to measure what the schemes resolve.
+**Cost.** In Fourier space every scheme costs the same per step, about 1.3–1.5× the sparse explicit order 6:
+
+| ms per GPU step | order 6, sparse | any scheme, Fourier | compact 6, banded sparse | spectral, 2/3 rule |
+|---|---|---|---|---|
+| 256² | 3.6 | 4.8 | 66 | 5.0 |
+| 512² | 12.8 | 17.7 | 269 | 18.4 |
+| 1024² | 51.8 | 78.5 | — | 82.0 |
+
+Schemes that reach higher wavenumbers also have a smaller advective time-step limit, `∝ 1/(k*h)max`: 1.59 for order 6, 1.99 compact, π spectral, 2π/3 with the 2/3 rule. In decaying turbulence against a 2048² reference, within 10 % (2 %) up to K:
+
+| | spectral | spectral, 2/3 | compact 6 | order 6 |
+|---|---|---|---|---|
+| 512² | 235 (201) | 143 (103) | 198 (167) | 152 (111) |
+| 256² | 93 (57) | 50 (29) | 118 (67) | 74 (48) |
+
+In these decaying runs (one Reynolds number, one initial spectrum, two grids), pseudospectral resolves the most once the grid resolves the high-wavenumber tail (512²). Where the spectrum still carries energy at the cutoff (256²), nothing damps those modes and aliasing feeds them, so energy piles up there and it falls behind compact. The 2/3 rule caps the range at 2/3 of Nyquist by construction. Counting the time step, at equal resolved range compact is 22 % cheaper than explicit order 6 on 512² and 2.4× cheaper on 256²; pseudospectral is 26 % cheaper on 512² and 34 % dearer on 256² (methodology, §Resolution).
 
 ### Grid
 The grid is nodal: node `j` sits at `x = j·Lx/(nx−1)` and node `i` at `y = i·Ly/(ny−1)`, so the first and last row and column of nodes lie on the walls. `nx` and `ny` are independent. Fields are stored as `ny` rows of `nx` values (`x` varies fastest), which is also the layout of the VTK files. Wall velocities are imposed on those nodes, ψ = 0 there for every Poisson solver, and the centerline CSVs are written at the node coordinates (interpolated onto `x = Lx/2` or `y = Ly/2` when no node lies on the centerline, i.e. for an even number of nodes).
@@ -545,6 +564,7 @@ cnavier/
 │   ├── threads.c       # Default number of OpenMP threads
 │   ├── diagnostics.c   # Energy, enstrophy, palinstrophy; spectra and fluxes
 │   ├── forcing.c       # Kolmogorov and random forcing
+│   ├── fourier.c       # Periodic grids: operator symbols, operators applied in Fourier space
 │   ├── cudasolver.cu   # CUDA backend (built only with CUDA=1)
 │   └── utils.c         # VTK output, random utilities
 ├── include/
@@ -557,6 +577,7 @@ cnavier/
 │   ├── threads.h
 │   ├── diagnostics.h
 │   ├── forcing.h
+│   ├── fourier.h
 │   └── utils.h
 ├── tests/
 │   ├── test_solver.c   # Unit and solver tests, GPU-vs-CPU checks
