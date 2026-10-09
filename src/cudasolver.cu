@@ -73,16 +73,19 @@ struct gpu_solver
     csr_dev DXv, DYv; // velocity operators: cfg.DXv, cfg.DYv, or copies of DX, DY
 
     double *u, *v, *w, *psi;
-    double *k1, *k2, *k3, *k4;                         // RK4 stage increments
-    double *w_tmp;                                     // temporary w for intermediate stages
-    double *scratch;                                   // continuity field / Poisson work array
-    double *partial;                                   // per-block results of a reduction
-    double *source;                                    // vorticity source of the current stage (cfg.vorticity_source only)
-    double *kolmogorov;                                // Kolmogorov source of each row (cfg.forcing), else NULL
-    random_forcing *kicks;                             // random forcing: modes on the host, else NULL
-    double *kick_kx, *kick_ky, *kick_amp, *kick_phase; // ... and on the device
-    mtrx source_host;                                  // ... and the host field cfg.vorticity_source fills
-    long steps;                                        // steps taken; the time is cfg.t0 + steps * cfg.dt
+    double *k1, *k2, *k3, *k4;                     // RK4 stage increments
+    double *w_tmp;                                 // temporary w for intermediate stages
+    double *scratch;                               // continuity field / Poisson work array
+    double *partial;                               // per-block results of a reduction
+    double *source;                                // vorticity source of the current stage (cfg.vorticity_source only)
+    double *kolmogorov;                            // Kolmogorov source of each row (cfg.forcing), else NULL
+    double *hyp1, *hyp2;                           // scratch for (-L)^p w (cfg.forcing.hyperviscosity only)
+    double *uw, *vw;                               // u w and v w (cfg.advection 1 only)
+    random_forcing *kicks;                         // random forcing: modes on the host, else NULL
+    double *kick_ky, *kick_phase;                  // ... and on the device, with the tables
+    double *kick_cx, *kick_sx, *kick_cy, *kick_sy; // of random_forcing
+    mtrx source_host;                              // ... and the host field cfg.vorticity_source fills
+    long steps;                                    // steps taken; the time is cfg.t0 + steps * cfg.dt
 
     // Convergence state of the iterative Poisson solvers, kept on the device
     // so that a batch of sweeps runs without waiting for the host
@@ -627,21 +630,85 @@ __global__ void forcing_terms_kernel(double *out, const double *w, double drag, 
         out[k] += -drag * w[k] + (kolmogorov ? kolmogorov[k / nx] : 0.0);
 }
 
-// w += sum over the modes of amp cos(kx x + ky y + phase), as random_forcing_add()
-__global__ void kick_kernel(double *w, const double *kx, const double *ky, const double *amp, const double *phase,
-                            int modes, int nx, double dx, double dy, int n)
+// The row tables of the kick: cos and sin of ky y + phase, entry m ny + i
+__global__ void kick_rows_kernel(double *cy, double *sy, const double *ky, const double *phase, int ny, double dy,
+                                 int n)
 {
     int k = blockIdx.x * blockDim.x + threadIdx.x;
     if (k >= n) return;
-    double x = (k % nx) * dx, y = (k / nx) * dy, s = 0.0;
+    int m = k / ny, i = k % ny;
+    sincos(ky[m] * (i * dy) + phase[m], &sy[k], &cy[k]);
+}
+
+// w += sum over the modes of amp cos(kx x + ky y + phase) = cx cy - sx sy,
+// as random_forcing_add()
+__global__ void kick_kernel(double *w, const double *cx, const double *sx, const double *cy, const double *sy,
+                            int modes, int nx, int ny, int n)
+{
+    int k = blockIdx.x * blockDim.x + threadIdx.x;
+    if (k >= n) return;
+    int i = k / nx, j = k % nx;
+    double s = 0.0;
     for (int m = 0; m < modes; m++)
-        s += amp[m] * cos(kx[m] * x + ky[m] * y + phase[m]);
+        s += cx[m * nx + j] * cy[m * ny + i] - sx[m * nx + j] * sy[m * ny + i];
     w[k] += s;
 }
 
+// uw = u w, vw = v w
+__global__ void products_kernel(const double *u, const double *v, const double *w, double *uw, double *vw, int n)
+{
+    int k = blockIdx.x * blockDim.x + threadIdx.x;
+    if (k < n)
+    {
+        uw[k] = u[k] * w[k];
+        vw[k] = v[k] * w[k];
+    }
+}
+
+// out += 1/2 (u DX w + v DY w) - 1/2 (DX(u w) + DY(v w)): the skew-symmetric
+// nonlinear term in place of the advective one, as skew_correction()
+__global__ void skew_kernel(csr_dev DX, csr_dev DY, const double *u, const double *v, const double *w,
+                            const double *uw, const double *vw, double *out, int n)
+{
+    int k = blockIdx.x * blockDim.x + threadIdx.x;
+    if (k < n)
+        out[k] += 0.5 * (u[k] * csr_row(DX, w, k) + v[k] * csr_row(DY, w, k)) -
+                  0.5 * (csr_row(DX, uw, k) + csr_row(DY, vw, k));
+}
+
+static void add_skew_correction(gpu_solver *g, const double *w, double *out)
+{
+    if (g->cfg.advection != 1) return;
+    LAUNCH(products_kernel, g->n, g->u, g->v, w, g->uw, g->vw, g->n);
+    LAUNCH(skew_kernel, g->n, g->DX, g->DY, g->u, g->v, w, g->uw, g->vw, out, g->n);
+}
+
+// out = -(DX2 + DY2) in
+__global__ void neg_laplacian_kernel(csr_dev DX2, csr_dev DY2, const double *in, double *out, int n)
+{
+    int k = blockIdx.x * blockDim.x + threadIdx.x;
+    if (k < n)
+        out[k] = -(csr_row(DX2, in, k) + csr_row(DY2, in, k));
+}
+
+// out += -drag w + the Kolmogorov source - nu_h (-L)^p w - alpha_h psi, as
+// add_forcing_terms() in fluiddyn.c; g->psi must be that of w
 static void add_forcing_terms(gpu_solver *g, double *out, const double *w)
 {
-    if (g->cfg.forcing.drag == 0.0 && !g->kolmogorov) return;
+    const forcing_config *fc = &g->cfg.forcing;
+    if (fc->hyperviscosity > 0.0)
+    {
+        const double *a = w;
+        double *bufs[2] = {g->hyp1, g->hyp2};
+        for (int i = 0; i < fc->hyper_order; i++)
+        {
+            LAUNCH(neg_laplacian_kernel, g->n, g->DX2, g->DY2, a, bufs[i % 2], g->n);
+            a = bufs[i % 2];
+        }
+        LAUNCH(axpy_kernel, g->n, out, -fc->hyperviscosity, a, out, g->n);
+    }
+    if (fc->hypodrag > 0.0) LAUNCH(axpy_kernel, g->n, out, -fc->hypodrag, g->psi, out, g->n);
+    if (fc->drag == 0.0 && !g->kolmogorov) return;
     LAUNCH(forcing_terms_kernel, g->n, out, w, g->cfg.forcing.drag, g->kolmogorov, g->nx, g->n);
 }
 
@@ -657,6 +724,7 @@ static void dwdt(gpu_solver *g, double *w, double *out, double t)
         wall_vorticity(g, g->u, g->v, w);
     }
     LAUNCH(rhs_kernel, g->n, g->DX, g->DY, g->DX2, g->DY2, w, g->u, g->v, g->cfg.Re, out, g->n);
+    add_skew_correction(g, w, out);
     add_vorticity_source(g, t, out);
     add_forcing_terms(g, out, w);
 }
@@ -720,6 +788,26 @@ gpu_solver *gpu_init(const solver_config *cfg)
             free(rows);
         }
     }
+    if (cfg->advection == 1)
+    {
+        if (!cfg->periodic)
+        {
+            printf("** Error: the skew-symmetric nonlinear term needs a periodic grid **\n");
+            exit(1);
+        }
+        g->uw = dev_alloc(n);
+        g->vw = dev_alloc(n);
+    }
+    if (cfg->forcing.hyperviscosity > 0.0)
+    {
+        if (cfg->forcing.hyper_order < 2)
+        {
+            printf("** Error: the hyperviscosity order must be at least 2 **\n");
+            exit(1);
+        }
+        g->hyp1 = dev_alloc(n);
+        g->hyp2 = dev_alloc(n);
+    }
     if (cfg->forcing.random_rate > 0.0 && !cfg->periodic)
     {
         printf("** Error: random forcing needs a periodic grid **\n");
@@ -729,14 +817,16 @@ gpu_solver *gpu_init(const solver_config *cfg)
                                     cfg->DY2);
     if (g->kicks)
     {
-        size_t bytes = g->kicks->modes * sizeof(double);
-        g->kick_kx = dev_alloc(g->kicks->modes);
-        g->kick_ky = dev_alloc(g->kicks->modes);
-        g->kick_amp = dev_alloc(g->kicks->modes);
-        g->kick_phase = dev_alloc(g->kicks->modes);
-        CUDA_CHECK(cudaMemcpy(g->kick_kx, g->kicks->kx, bytes, cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(g->kick_ky, g->kicks->ky, bytes, cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(g->kick_amp, g->kicks->amp, bytes, cudaMemcpyHostToDevice));
+        int modes = g->kicks->modes;
+        g->kick_ky = dev_alloc(modes);
+        g->kick_phase = dev_alloc(modes);
+        g->kick_cx = dev_alloc(modes * nx);
+        g->kick_sx = dev_alloc(modes * nx);
+        g->kick_cy = dev_alloc(modes * ny);
+        g->kick_sy = dev_alloc(modes * ny);
+        CUDA_CHECK(cudaMemcpy(g->kick_ky, g->kicks->ky, modes * sizeof(double), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(g->kick_cx, g->kicks->cx, (size_t)modes * nx * sizeof(double), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(g->kick_sx, g->kicks->sx, (size_t)modes * nx * sizeof(double), cudaMemcpyHostToDevice));
     }
     if (cfg->vorticity_source)
     {
@@ -836,12 +926,18 @@ void gpu_free(gpu_solver *g)
     cudaFree(g->partial);
     cudaFree(g->rb);
     cudaFree(g->kolmogorov);
+    cudaFree(g->hyp1);
+    cudaFree(g->hyp2);
+    cudaFree(g->uw);
+    cudaFree(g->vw);
     if (g->kicks)
     {
-        cudaFree(g->kick_kx);
         cudaFree(g->kick_ky);
-        cudaFree(g->kick_amp);
         cudaFree(g->kick_phase);
+        cudaFree(g->kick_cx);
+        cudaFree(g->kick_sx);
+        cudaFree(g->kick_cy);
+        cudaFree(g->kick_sy);
         random_forcing_free(g->kicks);
     }
     if (g->source)
@@ -900,15 +996,20 @@ void gpu_step(gpu_solver *g)
         random_forcing_draw(g->kicks);
         CUDA_CHECK(cudaMemcpy(g->kick_phase, g->kicks->phase, g->kicks->modes * sizeof(double),
                               cudaMemcpyHostToDevice));
-        LAUNCH(kick_kernel, n, g->w, g->kick_kx, g->kick_ky, g->kick_amp, g->kick_phase, g->kicks->modes, g->nx,
-               g->cfg.dx, g->cfg.dy, n);
+        LAUNCH(kick_rows_kernel, g->kicks->modes * g->ny, g->kick_cy, g->kick_sy, g->kick_ky, g->kick_phase, g->ny,
+               g->cfg.dy, g->kicks->modes * g->ny);
+        LAUNCH(kick_kernel, n, g->w, g->kick_cx, g->kick_sx, g->kick_cy, g->kick_sy, g->kicks->modes, g->nx, g->ny, n);
         if (g->cfg.time_scheme == 1) velocity_from_vorticity(g, g->w);
     }
+    // hypodrag needs the psi of w, which a first step does not have yet
+    if (g->cfg.time_scheme == 1 && g->cfg.forcing.hypodrag > 0.0 && g->steps == 0 && !g->kicks)
+        velocity_from_vorticity(g, g->w);
 
     if (g->cfg.time_scheme == 1)
     {
         // Euler: single RHS evaluation, then one Poisson solve
         LAUNCH(rhs_kernel, n, g->DX, g->DY, g->DX2, g->DY2, g->w, g->u, g->v, g->cfg.Re, g->k1, n);
+        add_skew_correction(g, g->w, g->k1);
         add_vorticity_source(g, t, g->k1);
         add_forcing_terms(g, g->k1, g->w);
         LAUNCH(axpy_kernel, n, g->w, dt, g->k1, g->w, n);

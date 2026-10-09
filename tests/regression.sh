@@ -73,3 +73,18 @@ else
     echo "  [FAIL] last line of integrals.csv: '$last'"
     exit 1
 fi
+
+# Forced 2-D turbulence has a dual cascade: forced at |k|/2 pi = 8 on 64^2,
+# with hyperviscosity and hypodrag confining the dissipation to the ends of
+# the spectrum, the time-mean energy flux is negative (to large scales) below
+# the forcing and the enstrophy flux positive (to small scales) above it, and
+# not merely positive: at least 50, a fifth of the enstrophy input (seeds 1-3
+# give 75-85). With the skew-symmetric nonlinear term the net enstrophy
+# transfer is round-off.
+echo "Regression: dual cascade of forced 2-D turbulence (flux signs)"
+rm -f output/spectrum-1-*.csv
+"$bin" --case forced --n 64 --re 1e7 --drag 0 --hypodrag 400 --hyperviscosity 1.6e-16 --hyper-order 4 \
+    --forcing-rate 0.1 --forcing-k 8 --dt 2e-3 --tf 8 --output-interval 0 --spectrum-interval 50 \
+    --integrals-interval 0 --advection skew > cascade.txt
+python3 "$here/../tools/cascade.py" check output --kf 8 --from 3 --below 1,6 --above 10,20 --conserves-enstrophy \
+    --min-pi-z 50

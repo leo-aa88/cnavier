@@ -141,7 +141,7 @@ static mms_norm norm_of(mtrx a, mtrx b, int part)
 
 static mms_errors run(int nx, int ny, double Lx, double Ly, double Re, int order, int time_scheme,
                       int poisson_type, int poisson_order, int wall_closure, int velocity_order, double dt,
-                      double t0, double T, int periodic)
+                      double t0, double T, int periodic, int advection)
 {
     mms_case c = {Lx, Ly, Re, Lx / (periodic ? nx : nx - 1), Ly / (periodic ? ny : ny - 1), periodic};
     wall_bc walls = {{0., 0., 0., 0.}, {0., 0., 0., 0.}};
@@ -189,6 +189,7 @@ static mms_errors run(int nx, int ny, double Lx, double Ly, double Re, int order
     cfg.poisson_tol = 1E-13;
     cfg.beta = sor_beta(nx, ny, c.dx, c.dy);
     cfg.periodic = periodic;
+    cfg.advection = advection;
     cfg.bc = walls;
     cfg.DX = &DX;
     cfg.DY = &DY;
@@ -241,19 +242,25 @@ static mms_errors run(int nx, int ny, double Lx, double Ly, double Re, int order
 mms_errors mms_run(int nx, int ny, double Lx, double Ly, double Re, int order, int time_scheme,
                    int poisson_type, double dt, double t0, double T)
 {
-    return run(nx, ny, Lx, Ly, Re, order, time_scheme, poisson_type, 2, 0, 2, dt, t0, T, 0);
+    return run(nx, ny, Lx, Ly, Re, order, time_scheme, poisson_type, 2, 0, 2, dt, t0, T, 0, 0);
 }
 
 mms_errors mms_run_closures(int nx, int ny, double Lx, double Ly, double Re, int order, int poisson_order,
                             int wall_closure, int velocity_order, double dt, double t0, double T)
 {
-    return run(nx, ny, Lx, Ly, Re, order, 2, 3, poisson_order, wall_closure, velocity_order, dt, t0, T, 0);
+    return run(nx, ny, Lx, Ly, Re, order, 2, 3, poisson_order, wall_closure, velocity_order, dt, t0, T, 0, 0);
 }
 
 mms_errors mms_run_periodic(int nx, int ny, double Lx, double Ly, double Re, int order, int time_scheme,
                             double dt, double t0, double T)
 {
-    return run(nx, ny, Lx, Ly, Re, order, time_scheme, 3, 2, 0, 2, dt, t0, T, 1);
+    return run(nx, ny, Lx, Ly, Re, order, time_scheme, 3, 2, 0, 2, dt, t0, T, 1, 0);
+}
+
+mms_errors mms_run_periodic_advection(int nx, int ny, double Lx, double Ly, double Re, int order, int advection,
+                                      double dt, double t0, double T)
+{
+    return run(nx, ny, Lx, Ly, Re, order, 2, 3, 2, 0, 2, dt, t0, T, 1, advection);
 }
 
 // ---------------------------------------------------------------------------

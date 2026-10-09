@@ -74,6 +74,20 @@ rk4_ctx rk4_alloc(const solver_config *cfg)
         printf("** Error: random forcing needs a periodic grid **\n");
         exit(1);
     }
+    ctx.hyp1 = cfg->forcing.hyperviscosity > 0.0 ? initm(ny, nx) : (mtrx){0};
+    ctx.hyp2 = cfg->forcing.hyperviscosity > 0.0 ? initm(ny, nx) : (mtrx){0};
+    ctx.uw = cfg->advection == 1 ? initm(ny, nx) : (mtrx){0};
+    ctx.vw = cfg->advection == 1 ? initm(ny, nx) : (mtrx){0};
+    if (cfg->advection == 1 && !cfg->periodic)
+    {
+        printf("** Error: the skew-symmetric nonlinear term needs a periodic grid **\n");
+        exit(1);
+    }
+    if (cfg->forcing.hyperviscosity > 0.0 && cfg->forcing.hyper_order < 2)
+    {
+        printf("** Error: the hyperviscosity order must be at least 2 **\n");
+        exit(1);
+    }
     ctx.kicks = random_forcing_setup(&cfg->forcing, nx, ny, cfg->dx, cfg->dy, cfg->dt, cfg->DX, cfg->DY, cfg->DX2,
                                      cfg->DY2);
     ctx.steps = 0;
@@ -103,6 +117,10 @@ void rk4_free(rk4_ctx *ctx)
     ctx->kolmogorov = NULL;
     random_forcing_free(ctx->kicks);
     ctx->kicks = NULL;
+    if (ctx->hyp1.M) freem(&ctx->hyp1);
+    if (ctx->hyp2.M) freem(&ctx->hyp2);
+    if (ctx->uw.M) freem(&ctx->uw);
+    if (ctx->vw.M) freem(&ctx->vw);
 }
 
 // Solve nabla^2 psi = -w and recover u = dpsi/dy, v = -dpsi/dx.
@@ -228,11 +246,34 @@ static const double *vorticity_source_at(double t, rk4_ctx *ctx)
 }
 
 // out += -drag w + the Kolmogorov source (forcing.h)
-static void add_forcing_terms(mtrx out, mtrx w, const rk4_ctx *ctx)
+// out += -drag w + the Kolmogorov source - nu_h (-L)^p w - alpha_h psi
+// (forcing.h). psi must be that of w: dwdt() and step() solve for it first.
+static void add_forcing_terms(mtrx out, mtrx w, rk4_ctx *ctx)
 {
-    int i, nx = ctx->cfg.nx, ny = ctx->cfg.ny;
-    double drag = ctx->cfg.forcing.drag;
+    int i, k, n = ctx->cfg.nx * ctx->cfg.ny, nx = ctx->cfg.nx, ny = ctx->cfg.ny;
+    const forcing_config *fc = &ctx->cfg.forcing;
+    double drag = fc->drag;
 
+    if (fc->hyperviscosity > 0.0)
+    {
+        // (-L)^p w by p applications of -L = -(DX2 + DY2), alternating between
+        // hyp1 and hyp2; rhs is free scratch outside the Poisson solve
+        double *a = w.M, *bufs[2] = {ctx->hyp1.M, ctx->hyp2.M};
+        for (i = 0; i < fc->hyper_order; i++)
+        {
+            double *b = bufs[i % 2];
+            spmv(*ctx->cfg.DX2, a, b);
+            spmv(*ctx->cfg.DY2, a, ctx->rhs.M);
+            for (k = 0; k < n; k++)
+                b[k] = -(b[k] + ctx->rhs.M[k]);
+            a = b;
+        }
+        for (k = 0; k < n; k++)
+            out.M[k] -= fc->hyperviscosity * a[k];
+    }
+    if (fc->hypodrag > 0.0)
+        for (k = 0; k < n; k++)
+            out.M[k] -= fc->hypodrag * ctx->psi.M[k];
     if (drag == 0.0 && !ctx->kolmogorov) return;
 #ifdef _OPENMP
 #pragma omp parallel for schedule(static) if (nx * ny >= OMP_MIN_WORK)
@@ -272,6 +313,8 @@ void dwdt(mtrx w, mtrx u, mtrx v, mtrx out, double t, rk4_ctx *ctx)
         for (j = 0; j < nx; j++)
             MAt(out, i, j) = -MAt(u, i, j) * MAt(ctx->dwdx, i, j) - MAt(v, i, j) * MAt(ctx->dwdy, i, j) + (1.0 / ctx->cfg.Re) * (MAt(ctx->d2wdx2, i, j) + MAt(ctx->d2wdy2, i, j));
     }
+    if (ctx->cfg.advection == 1)
+        skew_correction(&ctx->cfg, u.M, v.M, w.M, ctx->dwdx.M, ctx->dwdy.M, out.M, ctx->uw.M, ctx->vw.M);
 
     const double *f = vorticity_source_at(t, ctx);
     if (f)
@@ -358,17 +401,78 @@ static double row_abs_sum(const smtrx *A, int r)
     return s;
 }
 
-double max_stable_dt(const smtrx *dxx, const smtrx *dyy, double Re, int time_scheme)
+void skew_correction(const solver_config *cfg, const double *u, const double *v, const double *w,
+                     const double *wx, const double *wy, double *out, double *s1, double *s2)
 {
-    // Largest |eigenvalue| of each second-derivative operator, taken from the
-    // middle row. The interior stencils are centered with coefficients of
-    // alternating sign, so the sum of their magnitudes is the value of the
-    // stencil's symbol at the highest grid frequency.
-    double lambda = (row_abs_sum(dxx, dxx->m / 2) + row_abs_sum(dyy, dyy->m / 2)) / Re;
+    int k, n = cfg->nx * cfg->ny;
 
+    // Every read of wx and wy comes before the first write to s1 and s2
+    for (k = 0; k < n; k++)
+        out[k] += 0.5 * (u[k] * wx[k] + v[k] * wy[k]);
+    for (k = 0; k < n; k++)
+        s1[k] = u[k] * w[k];
+    spmv(*cfg->DX, s1, s2);
+    for (k = 0; k < n; k++)
+        out[k] -= 0.5 * s2[k];
+    for (k = 0; k < n; k++)
+        s1[k] = v[k] * w[k];
+    spmv(*cfg->DY, s1, s2);
+    for (k = 0; k < n; k++)
+        out[k] -= 0.5 * s2[k];
+}
+
+// Smallest non-zero eigenvalue of -A, A a periodic second-derivative
+// operator of n points: its symbol at the lowest wavenumber, from the middle
+// row with the column offsets taken modulo n
+static double lowest_eigenvalue(const smtrx *A)
+{
+    int k, r = A->m / 2, n = A->m;
+    double s = 0.0;
+    for (k = A->row_ptr[r]; k < A->row_ptr[r + 1]; k++)
+    {
+        int off = A->col_idx[k] - r;
+        if (2 * off > n) off -= n;
+        if (2 * off < -n) off += n;
+        s -= A->values[k] * cos(2.0 * 3.14159265358979323846 * off / n);
+    }
+    return s;
+}
+
+double damping_rate_max(const smtrx *dxx, const smtrx *dyy, double Re, const forcing_config *fc)
+{
+    // Largest eigenvalue of -(DX2 + DY2), from the middle rows. The interior
+    // stencils are centered with coefficients of alternating sign, so the sum
+    // of their magnitudes is the value of the stencil's symbol at the highest
+    // grid frequency.
+    double qmax = row_abs_sum(dxx, dxx->m / 2) + row_abs_sum(dyy, dyy->m / 2);
+    double rate = qmax / Re;
+
+    if (!fc) return rate;
+    // sigma(Q) = Q/Re + nu_h Q^p + alpha + alpha_h/Q is convex for Q > 0, so
+    // its maximum over the eigenvalues lies at the largest or the smallest
+    rate += fc->drag;
+    if (fc->hyperviscosity > 0.0) rate += fc->hyperviscosity * pow(qmax, fc->hyper_order);
+    if (fc->hypodrag > 0.0)
+    {
+        double qmin = fmin(lowest_eigenvalue(dxx), lowest_eigenvalue(dyy));
+        double low = qmin / Re + fc->drag + fc->hypodrag / qmin;
+        if (fc->hyperviscosity > 0.0) low += fc->hyperviscosity * pow(qmin, fc->hyper_order);
+        rate = fmax(rate + fc->hypodrag / qmax, low);
+    }
+    return rate;
+}
+
+double max_stable_dt_forced(const smtrx *dxx, const smtrx *dyy, double Re, const forcing_config *fc,
+                            int time_scheme)
+{
     // Forward Euler is stable for real eigenvalues in [-2, 0], classical RK4
     // down to -2.785293...
-    return (time_scheme == 1 ? 2.0 : 2.785293563405282) / lambda;
+    return (time_scheme == 1 ? 2.0 : 2.785293563405282) / damping_rate_max(dxx, dyy, Re, fc);
+}
+
+double max_stable_dt(const smtrx *dxx, const smtrx *dyy, double Re, int time_scheme)
+{
+    return max_stable_dt_forced(dxx, dyy, Re, NULL, time_scheme);
 }
 
 double euler_advection_dt(double Re, double u_max)
@@ -379,9 +483,15 @@ double euler_advection_dt(double Re, double u_max)
 dt_limits time_step_limits(const smtrx *dxx, const smtrx *dyy, double h, double Re, double u_max,
                            double max_co, int time_scheme)
 {
+    return time_step_limits_forced(dxx, dyy, h, Re, u_max, max_co, time_scheme, NULL);
+}
+
+dt_limits time_step_limits_forced(const smtrx *dxx, const smtrx *dyy, double h, double Re, double u_max,
+                                  double max_co, int time_scheme, const forcing_config *fc)
+{
     dt_limits l;
     l.courant = u_max > 0. ? max_co * h / u_max : HUGE_VAL;
-    l.viscous = max_stable_dt(dxx, dyy, Re, time_scheme);
+    l.viscous = max_stable_dt_forced(dxx, dyy, Re, fc, time_scheme);
     l.advection = time_scheme == 1 ? euler_advection_dt(Re, u_max) : HUGE_VAL;
     l.accept = fmin(l.courant, l.viscous);
     l.suggest = fmin(l.accept, l.advection);
@@ -443,25 +553,32 @@ void step(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx)
     if (ctx->kicks)
     {
         random_forcing_draw(ctx->kicks);
-        random_forcing_add(ctx->kicks, w, ctx->cfg.dx, ctx->cfg.dy);
+        random_forcing_add(ctx->kicks, w, ctx->cfg.dy);
         if (ctx->cfg.time_scheme == 1) velocity_from_vorticity(w, u, v, ctx);
     }
 
     if (ctx->cfg.time_scheme == 1)
     {
         // Euler: single RHS evaluation, then one Poisson solve. The source,
-        // drag and Kolmogorov forcing go in as one field (in w_tmp, which
-        // Euler does not otherwise use).
+        // the forcing and damping terms and the skew-symmetric correction go
+        // in as one field (in w_tmp, which Euler does not otherwise use).
         const double *f = vorticity_source_at(ctx->cfg.t0 + (double)ctx->steps * dt, ctx);
-        if (ctx->cfg.forcing.drag != 0.0 || ctx->kolmogorov)
+        const forcing_config *fc = &ctx->cfg.forcing;
+        // hypodrag needs the psi of w, which a first step does not have yet
+        if (fc->hypodrag > 0.0 && ctx->steps == 0 && !ctx->kicks) velocity_from_vorticity(w, u, v, ctx);
+        derivatives(w, ctx);
+        if (fc->drag != 0.0 || ctx->kolmogorov || fc->hyperviscosity > 0.0 || fc->hypodrag > 0.0 ||
+            ctx->cfg.advection == 1)
         {
             int k, n = ctx->cfg.nx * ctx->cfg.ny;
             for (k = 0; k < n; k++)
                 ctx->w_tmp.M[k] = f ? f[k] : 0.0;
             add_forcing_terms(ctx->w_tmp, w, ctx);
+            if (ctx->cfg.advection == 1)
+                skew_correction(&ctx->cfg, u.M, v.M, w.M, ctx->dwdx.M, ctx->dwdy.M, ctx->w_tmp.M, ctx->uw.M,
+                                ctx->vw.M);
             f = ctx->w_tmp.M;
         }
-        derivatives(w, ctx);
 
         euler(w, ctx->dwdx, ctx->dwdy, ctx->d2wdx2, ctx->d2wdy2, u, v, f, ctx->cfg.Re, dt);
         velocity_from_vorticity(w, u, v, ctx);

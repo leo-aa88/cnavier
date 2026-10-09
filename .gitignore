@@ -62,3 +62,5 @@ convergence_study
 ablation_study
 output/integrals.csv
 output/spectrum-*.csv
+__pycache__/
+runs/

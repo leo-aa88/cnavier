@@ -57,16 +57,21 @@ int spectra_bins(const spectra *s);
 double spectra_dk(const spectra *s);
 // Arrays of spectra_bins() values; any may be NULL
 void spectra_compute(spectra *s, mtrx u, mtrx v, mtrx w, double *E, double *Z, double *PE, double *PZ);
-// Viscous dissipation of energy and enstrophy in each shell, as the discrete
-// equations have it: the viscous term nu (DX2 + DY2) w removes
-//   DE(k) = nu sum over the shell of (A/Q) |w^|^2   (continuum: 2 nu Z(k))
-//   DZ(k) = nu sum over the shell of Q |w^|^2       (continuum: 2 nu P(k))
-// so in an unforced flow without drag dE/dt = sum of the nonlinear transfers
-// - sum DE exactly, where 2 nu Z holds only to the order of the scheme; the
-// difference grows where A/Q departs from 1, near the grid cutoff. Drag
-// removes exactly 2 alpha E. Arrays of spectra_bins() values; either may be NULL.
-void spectra_dissipation(spectra *s, mtrx w, double *DE, double *DZ);
-// Write output/spectrum-1-<n>.csv (k, E, Z, PE, PZ, DE, DZ) for time t
+// Dissipation of energy and enstrophy in each shell, as the discrete
+// equations have it. A damping term of symbol -sigma removes
+// sigma (A/Q^2) |w^|^2 of energy and sigma |w^|^2 of enstrophy per mode:
+//   DE, DZ  small scales: viscosity nu (DX2 + DY2) w, sigma = nu Q, plus the
+//           hyperviscosity, nu_h Q^p. For viscosity alone,
+//           DE(k) = nu sum over the shell of (A/Q) |w^|^2   (continuum: 2 nu Z(k))
+//           DZ(k) = nu sum over the shell of Q |w^|^2       (continuum: 2 nu P(k))
+//   FE, FZ  large scales: drag, sigma = alpha (FE = 2 alpha E(k)), plus the
+//           hypodrag, alpha_h / Q
+// so dE/dt = sum of the nonlinear transfers - sum (DE + FE) + the input of
+// the forcing (flow_integrals.I_disc) exactly, where 2 nu Z holds only to the
+// order of the scheme; the difference grows where A/Q departs from 1, near the
+// grid cutoff. Arrays of spectra_bins() values; any may be NULL.
+void spectra_dissipation(spectra *s, mtrx w, double *DE, double *DZ, double *FE, double *FZ);
+// Write output/spectrum-1-<n>.csv (k, E, Z, PE, PZ, DE, DZ, FE, FZ) for time t
 void spectra_write(spectra *s, mtrx u, mtrx v, mtrx w, double t);
 void spectra_free(spectra *s);
 
