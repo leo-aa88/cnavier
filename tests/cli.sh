@@ -87,6 +87,8 @@ expect nonzero --order compact6
 expect nonzero --order spectral
 expect nonzero --case taylor-green --order spectral --operators sparse
 expect nonzero --case taylor-green --dealias
+expect nonzero --case taylor-green --pad
+expect nonzero --case taylor-green --order spectral --dealias --pad
 expect nonzero --operators fourier
 expect nonzero --case forced --operators spectral
 expect nonzero --case taylor-green --order compact7
@@ -110,6 +112,7 @@ expect 0 --case taylor-green --n 32 --drag 0.5 --forcing-rate 0.1 --tf 0.01 --ou
 expect 0 --case decaying --n 32 --tf 0.01 --output-interval 0 --spectrum-interval 2 --advection skew
 expect 0 --case taylor-green --n 32 --order compact6 --tf 0.01 --output-interval 0
 expect 0 --case taylor-green --n 32 --order spectral --dealias --tf 0.01 --output-interval 0
+expect 0 --case decaying --n 32 --order spectral --pad --dt 0.002 --tf 0.01 --output-interval 0 --spectrum-interval 2
 expect 0 --case forced --n 32 --operators fourier --hyperviscosity 1e-16 --tf 0.01 --output-interval 0
 expect 0 --case forced --n 32 --hyperviscosity 1e-12 --hyper-order 3 --hypodrag 5 --tf 0.01 --output-interval 0
 

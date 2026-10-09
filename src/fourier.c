@@ -64,9 +64,9 @@ void periodic_symbols_of(const solver_config *cfg, periodic_symbols *s)
     // 2/3 rule: keep |k| < n/3 along each axis, so that the products of two
     // kept fields alias only onto modes that are cut
     for (k = 0; k < nx; k++)
-        s->maskx[k] = (!cfg->dealias || 3 * (k <= nx / 2 ? k : nx - k) < nx) ? 1.0 : 0.0;
+        s->maskx[k] = (cfg->dealias != 1 || 3 * (k <= nx / 2 ? k : nx - k) < nx) ? 1.0 : 0.0;
     for (k = 0; k < ny; k++)
-        s->masky[k] = (!cfg->dealias || 3 * (k <= ny / 2 ? k : ny - k) < ny) ? 1.0 : 0.0;
+        s->masky[k] = (cfg->dealias != 1 || 3 * (k <= ny / 2 ? k : ny - k) < ny) ? 1.0 : 0.0;
 }
 
 void periodic_symbols_free(periodic_symbols *s)
@@ -89,6 +89,12 @@ struct fourier_ops
     fftw_complex *hat, *hat2; // spectra of the inputs, ny * kx
     fftw_complex *work;       // the spectrum an inverse transform consumes
     fftw_plan r2c, c2r;
+
+    // 3/2 padding (cfg.dealias 2): the padded grid mx * my, its fields and spectra
+    int mx, my, mkx;
+    double *pf[4];      // u, v, DX w, DY w on the padded grid, then the product
+    fftw_complex *phat; // a padded half spectrum, my * mkx
+    fftw_plan pr2c, pc2r;
 };
 
 fourier_ops *fourier_setup(const solver_config *cfg)
@@ -122,6 +128,29 @@ fourier_ops *fourier_setup(const solver_config *cfg)
         printf("** Error: FFTW could not plan the Fourier operators **\n");
         exit(1);
     }
+    if (cfg->dealias == 2)
+    {
+        // Products of two fields with |k| < n/2 alias onto |k| >= m - n, so
+        // m >= 3n/2 keeps every mode of the n grid free of aliasing
+        f->mx = (3 * nx + 1) / 2;
+        f->my = (3 * ny + 1) / 2;
+        f->mkx = f->mx / 2 + 1;
+        for (int q = 0; q < 4; q++)
+            f->pf[q] = (double *)fftw_malloc((size_t)f->mx * f->my * sizeof(double));
+        f->phat = (fftw_complex *)fftw_malloc((size_t)f->mkx * f->my * sizeof(fftw_complex));
+        if (!f->pf[0] || !f->pf[1] || !f->pf[2] || !f->pf[3] || !f->phat)
+        {
+            printf("** Error: insufficient memory **\n");
+            exit(1);
+        }
+        f->pr2c = fftw_plan_dft_r2c_2d(f->my, f->mx, f->pf[0], f->phat, FFTW_ESTIMATE);
+        f->pc2r = fftw_plan_dft_c2r_2d(f->my, f->mx, f->phat, f->pf[0], FFTW_ESTIMATE);
+        if (!f->pr2c || !f->pc2r)
+        {
+            printf("** Error: FFTW could not plan the padded transforms **\n");
+            exit(1);
+        }
+    }
     return f;
 }
 
@@ -130,6 +159,14 @@ void fourier_free(fourier_ops *f)
     if (!f) return;
     fftw_destroy_plan(f->r2c);
     fftw_destroy_plan(f->c2r);
+    if (f->mx)
+    {
+        fftw_destroy_plan(f->pr2c);
+        fftw_destroy_plan(f->pc2r);
+        for (int q = 0; q < 4; q++)
+            fftw_free(f->pf[q]);
+        fftw_free(f->phat);
+    }
     fftw_free(f->in);
     fftw_free(f->hat);
     fftw_free(f->hat2);
@@ -313,4 +350,87 @@ void fourier_filter(fourier_ops *f, double *w)
     forward(f, w, f->hat);
     apply(f, f->hat, OP_FILTER);
     inverse(f, w);
+}
+
+// Row of the padded spectrum that holds row i (signed wavenumber m) of the n
+// grid's, or -1 for the Nyquist row, which the padded product leaves out
+static int padded_row(int i, int n, int m)
+{
+    int s = 2 * i <= n ? i : i - n;
+    if (2 * (s < 0 ? -s : s) >= n) return -1;
+    return s >= 0 ? s : s + m;
+}
+
+void fourier_nonlinear_padded(fourier_ops *f, const double *w, double *out)
+{
+    const periodic_symbols *s = &f->sym;
+    int i, j, q, k, nx = f->nx, ny = f->ny, mx = f->mx, my = f->my, mkx = f->mkx, pn = mx * my;
+    double inv = 1.0 / ((double)nx * ny);
+
+    forward(f, w, f->hat);
+    // u = DY psi, v = -DX psi, DX w, DY w on the padded grid: the n grid's
+    // modes (the Nyquist ones left out) times the symbols, zero elsewhere
+    for (q = 0; q < 4; q++)
+    {
+        for (k = 0; k < mkx * my; k++)
+            f->phat[k][0] = f->phat[k][1] = 0.0;
+        for (i = 0; i < ny; i++)
+        {
+            int r = padded_row(i, ny, my);
+            if (r < 0) continue;
+            for (j = 0; j < f->kx; j++)
+            {
+                double mr, mi, psi;
+                if (2 * j >= nx) continue;
+                psi = (i == 0 && j == 0) ? 0.0 : -1.0 / (s->d2x[j] + s->d2y[i]);
+                if (q == 0)
+                {
+                    mr = s->d1y_re[i] * psi;
+                    mi = s->d1y_im[i] * psi;
+                }
+                else if (q == 1)
+                {
+                    mr = -s->d1x_re[j] * psi;
+                    mi = -s->d1x_im[j] * psi;
+                }
+                else if (q == 2)
+                {
+                    mr = s->d1x_re[j];
+                    mi = s->d1x_im[j];
+                }
+                else
+                {
+                    mr = s->d1y_re[i];
+                    mi = s->d1y_im[i];
+                }
+                const double *a = f->hat[i * f->kx + j];
+                double *b = f->phat[r * mkx + j];
+                b[0] = (mr * a[0] - mi * a[1]) * inv;
+                b[1] = (mr * a[1] + mi * a[0]) * inv;
+            }
+        }
+        fftw_execute_dft_c2r(f->pc2r, f->phat, f->pf[q]);
+    }
+    // The product on the padded grid, which represents it exactly up to the
+    // n grid's modes; then back to the n grid, without the Nyquist modes
+    for (k = 0; k < pn; k++)
+        f->pf[0][k] = -(f->pf[0][k] * f->pf[2][k] + f->pf[1][k] * f->pf[3][k]);
+    fftw_execute_dft_r2c(f->pr2c, f->pf[0], f->phat);
+    for (i = 0; i < ny; i++)
+    {
+        int r = padded_row(i, ny, my);
+        for (j = 0; j < f->kx; j++)
+        {
+            double *d = f->work[i * f->kx + j];
+            if (r < 0 || 2 * j >= nx)
+                d[0] = d[1] = 0.0;
+            else
+            {
+                // padded r2c sums over mx*my points; inverse() divides by nx*ny
+                d[0] = f->phat[r * mkx + j][0] * ((double)nx * ny / pn);
+                d[1] = f->phat[r * mkx + j][1] * ((double)nx * ny / pn);
+            }
+        }
+    }
+    inverse(f, out);
 }

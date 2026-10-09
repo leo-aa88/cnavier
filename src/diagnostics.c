@@ -225,7 +225,7 @@ void spectra_compute(spectra *s, mtrx u, mtrx v, mtrx w, double *E, double *Z, d
             Z[b] = 0.0;
 
     // The solver's nonlinear term N = -(u DX w + v DY w), or its
-    // skew-symmetric form (skew_correction())
+    // skew-symmetric or 3/2-padded form (nonlinear_correction())
     if (s->fourier)
         fourier_derivatives(s->fourier, w.M, s->wx, s->wy, NULL);
     else
@@ -235,8 +235,8 @@ void spectra_compute(spectra *s, mtrx u, mtrx v, mtrx w, double *E, double *Z, d
     }
     for (k = 0; k < n; k++)
         s->nl[k] = -(u.M[k] * s->wx[k] + v.M[k] * s->wy[k]);
-    if (s->cfg.advection == 1)
-        skew_correction(&s->cfg, s->fourier, u.M, v.M, w.M, s->wx, s->wy, s->nl, s->wx, s->wy);
+    if (nonlinear_corrected(&s->cfg))
+        nonlinear_correction(&s->cfg, s->fourier, u.M, v.M, w.M, s->wx, s->wy, s->nl, s->wx, s->wy);
 
     transform(s, u.M, s->uh);
     transform(s, v.M, s->vh);

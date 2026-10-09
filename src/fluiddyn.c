@@ -71,7 +71,7 @@ rk4_ctx rk4_alloc(const solver_config *cfg)
         exit(1);
     }
     ctx.fft = cfg->poisson_type == 3 && !cfg->periodic ? fft_setup(nx, ny) : NULL;
-    if ((cfg->fourier && !cfg->periodic) || (cfg->dealias && !cfg->fourier))
+    if ((cfg->fourier && !cfg->periodic) || (cfg->dealias && !cfg->fourier) || cfg->dealias < 0 || cfg->dealias > 2)
     {
         printf("** Error: the Fourier operators need a periodic grid, and dealiasing the Fourier operators **\n");
         exit(1);
@@ -89,8 +89,8 @@ rk4_ctx rk4_alloc(const solver_config *cfg)
     }
     ctx.hyp1 = cfg->forcing.hyperviscosity > 0.0 ? initm(ny, nx) : (mtrx){0};
     ctx.hyp2 = cfg->forcing.hyperviscosity > 0.0 ? initm(ny, nx) : (mtrx){0};
-    ctx.uw = cfg->advection == 1 ? initm(ny, nx) : (mtrx){0};
-    ctx.vw = cfg->advection == 1 ? initm(ny, nx) : (mtrx){0};
+    ctx.uw = nonlinear_corrected(cfg) ? initm(ny, nx) : (mtrx){0};
+    ctx.vw = nonlinear_corrected(cfg) ? initm(ny, nx) : (mtrx){0};
     if (cfg->advection == 1 && !cfg->periodic)
     {
         printf("** Error: the skew-symmetric nonlinear term needs a periodic grid **\n");
@@ -394,9 +394,9 @@ void dwdt(mtrx w, mtrx u, mtrx v, mtrx out, double t, rk4_ctx *ctx)
         for (j = 0; j < nx; j++)
             MAt(out, i, j) = -MAt(u, i, j) * MAt(ctx->dwdx, i, j) - MAt(v, i, j) * MAt(ctx->dwdy, i, j) + (1.0 / ctx->cfg.Re) * (MAt(ctx->d2wdx2, i, j) + MAt(ctx->d2wdy2, i, j));
     }
-    if (ctx->cfg.advection == 1)
-        skew_correction(&ctx->cfg, ctx->fourier, u.M, v.M, w.M, ctx->dwdx.M, ctx->dwdy.M, out.M, ctx->uw.M,
-                        ctx->vw.M);
+    if (nonlinear_corrected(&ctx->cfg))
+        nonlinear_correction(&ctx->cfg, ctx->fourier, u.M, v.M, w.M, ctx->dwdx.M, ctx->dwdy.M, out.M, ctx->uw.M,
+                             ctx->vw.M);
 
     const double *f = vorticity_source_at(t, ctx);
     if (f)
@@ -466,7 +466,7 @@ void rk4(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx)
     }
 
     // With dealiasing, w_{n+1} without the modes the 2/3 rule cuts
-    if (ctx->fourier && ctx->cfg.dealias) fourier_filter(ctx->fourier, w.M);
+    if (ctx->fourier && ctx->cfg.dealias == 1) fourier_filter(ctx->fourier, w.M);
 
     // Final Poisson solve so u, v are consistent with w_{n+1}; the next
     // step's first stage can reuse it unless a kick changes w first
@@ -487,10 +487,28 @@ static double row_abs_sum(const smtrx *A, int r)
     return s;
 }
 
-void skew_correction(const solver_config *cfg, struct fourier_ops *four, const double *u, const double *v,
-                     const double *w, const double *wx, const double *wy, double *out, double *s1, double *s2)
+int nonlinear_corrected(const solver_config *cfg)
+{
+    return cfg->advection == 1 || cfg->dealias == 2;
+}
+
+void nonlinear_correction(const solver_config *cfg, struct fourier_ops *four, const double *u, const double *v,
+                          const double *w, const double *wx, const double *wy, double *out, double *s1, double *s2)
 {
     int k, n = cfg->nx * cfg->ny;
+
+    if (cfg->dealias == 2 && four)
+    {
+        // The padded Galerkin term in place of the advective one (wx, wy
+        // read before s1, which may be wx, is written)
+        for (k = 0; k < n; k++)
+            out[k] += u[k] * wx[k] + v[k] * wy[k];
+        fourier_nonlinear_padded(four, w, s1);
+        for (k = 0; k < n; k++)
+            out[k] += s1[k];
+        return;
+    }
+    if (cfg->advection != 1) return;
 
     // Every read of wx and wy comes before the first write to s1 and s2
     for (k = 0; k < n; k++)
@@ -667,20 +685,20 @@ void step(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx)
         if (fc->hypodrag > 0.0 && ctx->steps == 0 && !ctx->kicks) velocity_from_vorticity(w, u, v, 0, ctx);
         derivatives(w, ctx);
         if (fc->drag != 0.0 || ctx->kolmogorov || fc->hyperviscosity > 0.0 || fc->hypodrag > 0.0 ||
-            ctx->cfg.advection == 1)
+            nonlinear_corrected(&ctx->cfg))
         {
             int k, n = ctx->cfg.nx * ctx->cfg.ny;
             for (k = 0; k < n; k++)
                 ctx->w_tmp.M[k] = f ? f[k] : 0.0;
             add_forcing_terms(ctx->w_tmp, w, ctx);
-            if (ctx->cfg.advection == 1)
-                skew_correction(&ctx->cfg, ctx->fourier, u.M, v.M, w.M, ctx->dwdx.M, ctx->dwdy.M, ctx->w_tmp.M,
-                                ctx->uw.M, ctx->vw.M);
+            if (nonlinear_corrected(&ctx->cfg))
+                nonlinear_correction(&ctx->cfg, ctx->fourier, u.M, v.M, w.M, ctx->dwdx.M, ctx->dwdy.M,
+                                     ctx->w_tmp.M, ctx->uw.M, ctx->vw.M);
             f = ctx->w_tmp.M;
         }
 
         euler(w, ctx->dwdx, ctx->dwdy, ctx->d2wdx2, ctx->d2wdy2, u, v, f, ctx->cfg.Re, dt);
-        if (ctx->fourier && ctx->cfg.dealias) fourier_filter(ctx->fourier, w.M);
+        if (ctx->fourier && ctx->cfg.dealias == 1) fourier_filter(ctx->fourier, w.M);
         velocity_from_vorticity(w, u, v, 0, ctx);
     }
     else
