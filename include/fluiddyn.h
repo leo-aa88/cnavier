@@ -41,7 +41,7 @@ typedef struct solver_config
     int wall_closure;                 // wall vorticity: 0 = D_x v - D_y u, 1 = third-order formula from psi
     double poisson_tol, beta;         // their tolerance and SOR parameter
     int periodic;                     // 0: four walls with velocities bc; 1: doubly periodic
-    int advection;                    // nonlinear term, see skew_correction(): 0 advective, 1 skew-symmetric
+    int advection;                    // nonlinear term, see nonlinear_correction(): 0 advective, 1 skew-symmetric
     wall_bc bc;                       // wall velocities (walls only)
     const smtrx *DX, *DY, *DX2, *DY2; // sparse derivative operators
 
@@ -56,7 +56,8 @@ typedef struct solver_config
     const smtrx *D1x, *D1y, *D2x, *D2y;
     // Periodic grids: apply the operators in Fourier space by their symbols
     // (fourier.h) instead of as sparse products; DX, DY, DX2, DY2 may then be
-    // NULL. dealias: with fourier, the 2/3 rule (fourier_filter())
+    // NULL. dealias: with fourier, 1 the 2/3 rule (fourier_filter()), 2 3/2
+    // padding of the nonlinear term (fourier_nonlinear_padded())
     int fourier, dealias;
 
     // Optional source term f in the vorticity equation,
@@ -152,11 +153,16 @@ typedef struct
 // of the stencils.) The
 // advective form does not; in under-resolved turbulence it makes enstrophy
 // near the grid cutoff. Neither conserves the energy 1/2 <u^2 + v^2> exactly.
-// out += (skew-symmetric N) - (advective N), from u, v, w and wx = DX w,
-// wy = DY w, all n values. s1, s2: scratch, which may be wx and wy.
-// four: the Fourier workspace when cfg->fourier is set, else NULL
-void skew_correction(const solver_config *cfg, struct fourier_ops *four, const double *u, const double *v,
-                     const double *w, const double *wx, const double *wy, double *out, double *s1, double *s2);
+// With 3/2 padding (cfg->dealias 2) the nonlinear term is the dealiased
+// Fourier-Galerkin one instead, in either form (fourier_nonlinear_padded());
+// with the spectral symbols it conserves energy and enstrophy exactly.
+// out += (that N) - (advective N), from u, v, w and wx = DX w, wy = DY w, all
+// n values; nothing for the advective form. s1, s2: scratch, which may be wx
+// and wy. four: the Fourier workspace when cfg->fourier is set, else NULL
+void nonlinear_correction(const solver_config *cfg, struct fourier_ops *four, const double *u, const double *v,
+                          const double *w, const double *wx, const double *wy, double *out, double *s1, double *s2);
+// Whether cfg's nonlinear term is other than the advective one
+int nonlinear_corrected(const solver_config *cfg);
 
 // The largest damping rate of the linear terms: a periodic mode with
 // eigenvalue Q of -(DX2 + DY2) decays at

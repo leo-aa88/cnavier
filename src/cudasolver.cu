@@ -116,6 +116,14 @@ struct gpu_solver
     cufftDoubleComplex *f_hat, *f_hat2, *f_work; // kx * ny each
     double *f_wx, *f_wy, *f_lap, *f_tmp;         // n each
 
+    // 3/2 padding (cfg.dealias 2), as fourier_nonlinear_padded(): the padded
+    // grid mx * my, the half spectra of u, v, DX w, DY w on it (mkx * my
+    // each) and the fields (mx * my each)
+    int mx, my, mkx;
+    cufftHandle plan_pc2r4, plan_pr2c; // the four spectra back at once; one field forward
+    cufftDoubleComplex *p_hat;
+    double *p_f;
+
     // Spectra on the device (gpu_spectra()), set up on first use for the
     // spectra object with spectra_id() sp_id (0: none yet)
     unsigned long sp_id;
@@ -712,6 +720,76 @@ __global__ void skew_arrays_kernel(const double *u, const double *v, const doubl
         out[k] += 0.5 * (u[k] * wx[k] + v[k] * wy[k]) - 0.5 * div[k];
 }
 
+// 3/2 padding: the half spectra of u = DY psi, v = -DX psi, DX w, DY w on the
+// padded grid, from the spectrum hat of w on the n grid: its modes (the
+// Nyquist ones left out) times the symbols and scale, zero elsewhere
+__global__ void pad_kernel(const cufftDoubleComplex *hat, cufftDoubleComplex *phat, gpu_solver::fsym s,
+                           double scale, int nx, int ny, int my, int mkx)
+{
+    int k = blockIdx.x * blockDim.x + threadIdx.x;
+    if (k >= mkx * my) return;
+    int r = k / mkx, j = k % mkx, sy = 2 * r <= my ? r : r - my, pm = mkx * my;
+    if (2 * j >= nx || 2 * (sy < 0 ? -sy : sy) >= ny)
+    {
+        for (int q = 0; q < 4; q++)
+            phat[q * pm + k].x = phat[q * pm + k].y = 0.0;
+        return;
+    }
+    int i = sy >= 0 ? sy : sy + ny;
+    cufftDoubleComplex a = hat[i * (nx / 2 + 1) + j];
+    double psi = (i == 0 && j == 0) ? 0.0 : -scale / (s.d2x[j] + s.d2y[i]);
+    double mr[4] = {s.d1y_re[i] * psi, -s.d1x_re[j] * psi, s.d1x_re[j] * scale, s.d1y_re[i] * scale};
+    double mi[4] = {s.d1y_im[i] * psi, -s.d1x_im[j] * psi, s.d1x_im[j] * scale, s.d1y_im[i] * scale};
+    for (int q = 0; q < 4; q++)
+    {
+        phat[q * pm + k].x = mr[q] * a.x - mi[q] * a.y;
+        phat[q * pm + k].y = mr[q] * a.y + mi[q] * a.x;
+    }
+}
+
+// f[0..pn) = -(u DX w + v DY w) from the four padded fields
+__global__ void padded_product_kernel(double *f, int pn)
+{
+    int k = blockIdx.x * blockDim.x + threadIdx.x;
+    if (k < pn)
+        f[k] = -(f[k] * f[2 * pn + k] + f[pn + k] * f[3 * pn + k]);
+}
+
+// The n grid's half spectrum from the padded one, times scale, without the
+// Nyquist modes
+__global__ void truncate_kernel(const cufftDoubleComplex *phat, cufftDoubleComplex *dst, double scale, int nx,
+                                int ny, int my, int mkx)
+{
+    int kx = nx / 2 + 1, k = blockIdx.x * blockDim.x + threadIdx.x;
+    if (k >= kx * ny) return;
+    int i = k / kx, j = k % kx, sy = 2 * i <= ny ? i : i - ny;
+    if (2 * j >= nx || 2 * (sy < 0 ? -sy : sy) >= ny)
+    {
+        dst[k].x = dst[k].y = 0.0;
+        return;
+    }
+    cufftDoubleComplex a = phat[(sy >= 0 ? sy : sy + my) * mkx + j];
+    dst[k].x = a.x * scale;
+    dst[k].y = a.y * scale;
+}
+
+// out += u wx + v wy: removes the advective term
+__global__ void unadvect_kernel(const double *u, const double *v, const double *wx, const double *wy, double *out,
+                                int n)
+{
+    int k = blockIdx.x * blockDim.x + threadIdx.x;
+    if (k < n)
+        out[k] += u[k] * wx[k] + v[k] * wy[k];
+}
+
+// out += a
+__global__ void add_kernel(const double *a, double *out, int n)
+{
+    int k = blockIdx.x * blockDim.x + threadIdx.x;
+    if (k < n)
+        out[k] += a[k];
+}
+
 // The spectrum of x into hat (x is copied first: cuFFT may overwrite the input)
 static void f_forward(gpu_solver *g, const double *x, cufftDoubleComplex *hat)
 {
@@ -866,8 +944,31 @@ __global__ void skew_kernel(csr_dev DX, csr_dev DY, const double *u, const doubl
                   0.5 * (csr_row(DX, uw, k) + csr_row(DY, vw, k));
 }
 
-static void add_skew_correction(gpu_solver *g, const double *w, double *out)
+// out += -(u DX w + v DY w) with 3/2 padding: the Fourier-Galerkin term
+static void add_padded_nonlinear(gpu_solver *g, const double *w, double *out)
 {
+    int pn = g->mx * g->my;
+    f_forward(g, w, g->f_hat);
+    LAUNCH(pad_kernel, g->mkx * g->my, g->f_hat, g->p_hat, g->fs, 1.0 / g->n, g->nx, g->ny, g->my, g->mkx);
+    CUFFT_CHECK(cufftExecZ2D(g->plan_pc2r4, g->p_hat, g->p_f));
+    LAUNCH(padded_product_kernel, pn, g->p_f, pn);
+    CUFFT_CHECK(cufftExecD2Z(g->plan_pr2c, g->p_f, g->p_hat));
+    LAUNCH(truncate_kernel, (g->nx / 2 + 1) * g->ny, g->p_hat, g->f_work, 1.0 / pn, g->nx, g->ny, g->my, g->mkx);
+    CUFFT_CHECK(cufftExecZ2D(g->plan_c2r, g->f_work, g->f_tmp));
+    LAUNCH(add_kernel, g->n, g->f_tmp, out, g->n);
+}
+
+// out += (the solver's nonlinear term) - (the advective one), as
+// nonlinear_correction(): the skew-symmetric form, or 3/2 padding
+static void add_nonlinear_correction(gpu_solver *g, const double *w, double *out)
+{
+    if (g->cfg.fourier && g->cfg.dealias == 2)
+    {
+        // Uses g->f_wx, g->f_wy of w, which the caller has computed
+        LAUNCH(unadvect_kernel, g->n, g->u, g->v, g->f_wx, g->f_wy, out, g->n);
+        add_padded_nonlinear(g, w, out);
+        return;
+    }
     if (g->cfg.advection != 1) return;
     if (g->cfg.fourier)
     {
@@ -1019,7 +1120,7 @@ static void add_forcing_terms(gpu_solver *g, double *out, const double *w)
 
 // out = -(u DX w + v DY w) + (DX2 + DY2) w / Re, the transport right-hand
 // side, by the sparse operators or in Fourier space (then leaving DX w, DY w
-// in g->f_wx, g->f_wy for the skew-symmetric correction)
+// in g->f_wx, g->f_wy for the nonlinear correction)
 static void rhs(gpu_solver *g, const double *w, double *out)
 {
     if (g->cfg.fourier)
@@ -1043,7 +1144,7 @@ static void dwdt(gpu_solver *g, double *w, double *out, double t)
         wall_vorticity(g, g->u, g->v, w);
     }
     rhs(g, w, out);
-    add_skew_correction(g, w, out);
+    add_nonlinear_correction(g, w, out);
     add_vorticity_source(g, t, out);
     add_forcing_terms(g, out, w);
 }
@@ -1209,6 +1310,20 @@ gpu_solver *gpu_init(const solver_config *cfg)
             g->f_wy = dev_alloc(n);
             g->f_lap = dev_alloc(n);
             g->f_tmp = dev_alloc(n);
+            if (cfg->dealias == 2)
+            {
+                int pdims[2];
+                g->mx = (3 * nx + 1) / 2;
+                g->my = (3 * ny + 1) / 2;
+                g->mkx = g->mx / 2 + 1;
+                pdims[0] = g->my;
+                pdims[1] = g->mx;
+                CUFFT_CHECK(cufftPlanMany(&g->plan_pc2r4, 2, pdims, NULL, 1, g->mkx * g->my, NULL, 1,
+                                          g->mx * g->my, CUFFT_Z2D, 4));
+                CUFFT_CHECK(cufftPlan2d(&g->plan_pr2c, g->my, g->mx, CUFFT_D2Z));
+                CUDA_CHECK(cudaMalloc((void **)&g->p_hat, (size_t)4 * g->mkx * g->my * sizeof(cufftDoubleComplex)));
+                g->p_f = dev_alloc((size_t)4 * g->mx * g->my);
+            }
         }
         periodic_symbols_free(&sym);
         g->plam_x = dev_alloc(kx);
@@ -1310,6 +1425,13 @@ void gpu_free(gpu_solver *g)
         cudaFree(g->f_hat);
         cudaFree(g->f_hat2);
         cudaFree(g->f_work);
+        if (g->p_f)
+        {
+            cufftDestroy(g->plan_pc2r4);
+            cufftDestroy(g->plan_pr2c);
+            cudaFree(g->p_hat);
+            cudaFree(g->p_f);
+        }
         cudaFree(g->sp_bin_ptr);
         cudaFree(g->sp_modes);
         cudaFree(g->sp_weight);
@@ -1340,10 +1462,10 @@ const char *gpu_device_name(void)
     return prop.name;
 }
 
-// With dealiasing, w without the modes the 2/3 rule cuts
+// With the 2/3 rule, w without the modes it cuts
 static void dealias(gpu_solver *g)
 {
-    if (!g->cfg.fourier || !g->cfg.dealias) return;
+    if (!g->cfg.fourier || g->cfg.dealias != 1) return;
     f_forward(g, g->w, g->f_hat);
     f_inverse(g, F_FILTER, g->f_hat, g->w);
 }
@@ -1384,7 +1506,7 @@ void gpu_step(gpu_solver *g)
     {
         // Euler: single RHS evaluation, then one Poisson solve
         rhs(g, g->w, g->k1);
-        add_skew_correction(g, g->w, g->k1);
+        add_nonlinear_correction(g, g->w, g->k1);
         add_vorticity_source(g, t, g->k1);
         add_forcing_terms(g, g->k1, g->w);
         LAUNCH(axpy_kernel, n, g->w, dt, g->k1, g->w, n);
@@ -1557,7 +1679,7 @@ void gpu_spectra(gpu_solver *g, const spectra *s, double *out)
     }
     else
         LAUNCH(nonlinear_kernel, g->n, g->DX, g->DY, g->w, g->u, g->v, g->sp_nl, g->n);
-    add_skew_correction(g, g->w, g->sp_nl);
+    add_nonlinear_correction(g, g->w, g->sp_nl);
 
     // Spectra of u, v, w (copied first: cuFFT may overwrite the input) and N
     for (q = 0; q < 3; q++)

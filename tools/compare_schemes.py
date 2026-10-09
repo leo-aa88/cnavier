@@ -3,7 +3,8 @@
 
     tools/compare_schemes.py CASE_DIR REF_DIR --at T [--grids 256,512]
         CASE_DIR holds runs named n<N>_<scheme> (scheme: o6, compact6,
-        spectral, spectral23), each with output/spectrum-1-*.csv and a
+        spectral, spectral23 with the 2/3 rule, spectral32 with 3/2
+        padding), each with output/spectrum-1-*.csv and a
         log.txt with the solver's "ms per step" line; REF_DIR is the
         reference run. For each grid and scheme, at the frame nearest to T:
         the shells within 10 % and 2 % of the reference, the largest ratio
@@ -26,8 +27,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cascade  # noqa: E402
 
-KMAX_H = {"o6": 1.586, "compact6": 1.989, "spectral": 3.14159265, "spectral23": 2.0943951}
-SCHEMES = ["o6", "compact6", "spectral", "spectral23"]
+KMAX_H = {"o6": 1.586, "compact6": 1.989, "spectral": 3.14159265, "spectral23": 2.0943951, "spectral32": 3.14159265}
+SCHEMES = ["o6", "compact6", "spectral", "spectral23", "spectral32"]
 
 
 def ms_per_step(run_dir):
@@ -58,7 +59,7 @@ def crossover(png, specs):
     import matplotlib.pyplot as plt
 
     points = {s: [] for s in SCHEMES}
-    print(f"{'case':<10} {'grid':>5} {'E(K_N)/E_max':>12}  K10 relative to order 6: compact6, spectral, spectral23")
+    print(f"{'case':<10} {'grid':>5} {'E(K_N)/E_max':>12}  K10 relative to order 6: " + ", ".join(SCHEMES[1:]))
     for spec in specs:
         case, ref_dir, t = spec.split(":")
         _, ref = cascade.frame_at(os.path.join(ref_dir, "output"), float(t))
@@ -78,11 +79,11 @@ def crossover(png, specs):
             print(f"{os.path.basename(case):<10} {n:>5} {occ:12.1e}  " +
                   "  ".join(f"{rel.get(s, float('nan')):.2f}" for s in SCHEMES[1:]))
     fig, ax = plt.subplots(figsize=(6.5, 4.2))
-    style = {"o6": "k.", "compact6": "C1o", "spectral": "C0s", "spectral23": "C3^"}
+    style = {"o6": "k.", "compact6": "C1o", "spectral": "C0s", "spectral23": "C3^", "spectral32": "C2D"}
     for s in SCHEMES:
         if points[s]:
             x, y = zip(*sorted(points[s]))
-            ax.semilogx(x, y, style[s], label=s)
+            ax.semilogx(x, y, style[s], label=s, mfc="none" if s == "spectral32" else None)
     ax.axhline(1, color="gray", lw=0.8)
     ax.set_xlabel("reference E(K_Nyquist) / E_peak")
     ax.set_ylabel("shells within 10 %, relative to order 6")

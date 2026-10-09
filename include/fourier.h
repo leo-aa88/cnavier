@@ -11,7 +11,7 @@ struct solver_config;
 // The symbols of the periodic operators: on exp(i k x) at wavenumber index k
 // (0..n-1), the first derivative gives (d1_re + i d1_im) exp(i k x) and the
 // second d2 exp(i k x). Centred stencils give d1_re = 0 (to round-off) and
-// d2 <= 0. With dealias set, the 2/3 rule: modes with |k| > n/3 along an axis
+// d2 <= 0. With dealias 1, the 2/3 rule: modes with |k| > n/3 along an axis
 // are cut (the masks).
 typedef struct
 {
@@ -48,5 +48,10 @@ void fourier_divergence(fourier_ops *f, const double *a, const double *b, double
 void fourier_power(fourier_ops *f, const double *w, int p, double *out);
 // w = w without the modes the dealiasing masks cut (nothing without dealiasing)
 void fourier_filter(fourier_ops *f, double *w);
+// With 3/2 padding (solver_config.dealias 2): out = -(u DX w + v DY w), the
+// velocity from w, with the products formed on a grid 3/2 as fine and
+// truncated back, so that every mode of the grid (except the Nyquist modes,
+// which are left out) is free of aliasing: the Fourier-Galerkin nonlinear term
+void fourier_nonlinear_padded(fourier_ops *f, const double *w, double *out);
 
 #endif // FOURIER_H_INCLUDED

@@ -230,6 +230,7 @@ A few numerical parameters can be overridden without recompiling; anything not g
 | `--order N` | Order of the finite differences: 2, 4 or 6 (default 6), or on the periodic cases `compact6` (Lele's sixth-order compact schemes) or `spectral` (pseudospectral); see [Compact schemes](#compact-schemes) |
 | `--operators NAME` | Periodic cases: apply the derivatives as `sparse` products or in `fourier` space by their symbols (default: `fourier` for `compact6` and `spectral`, which needs it) |
 | `--dealias` | With Fourier operators: Orszag's 2/3 rule |
+| `--pad` | With Fourier operators: dealias the nonlinear term by 3/2 padding instead, keeping every mode |
 | `--integrals-interval N` | Write `E`, `Z`, `P`, `I` to `output/integrals.csv` every N steps (default 1; `0` never) |
 | `--drag ALPHA` | Periodic cases: linear drag `−αω` (default 0; 0.1 for `forced`) |
 | `--kolmogorov-amp A`, `--kolmogorov-n N` | Periodic cases: Kolmogorov body force `A sin(2πN y)` in x (defaults: A = 1 for `kolmogorov`, else 0; N = 4) |
@@ -354,7 +355,7 @@ So orders 6, 4 and 2 resolve about 59 %, 49 % and 23 % of the Nyquist wavenumber
 
 `--order compact6` uses Lele's (1992) sixth-order tridiagonal compact schemes for the first and second derivatives on the periodic grid, `A f′ = B f`. On a periodic grid `A⁻¹B` is a circulant matrix, built exactly from the closed-form inverse of the tridiagonal `A`. Its entries decay geometrically, so it is banded to round-off: 78 and 45 entries per row.
 
-On a periodic grid every derivative operator is circulant, so it is diagonal in Fourier space. With `--operators fourier` (the default for `compact6` and `spectral`) the solver applies them that way: one forward transform of ω and inverse transforms of the symbols times its spectrum, on the CPU (FFTW) and the GPU (cuFFT). The symbols come from the operators themselves, so the results equal the sparse products to round-off (`make test` checks 1e-14 for orders 6 and compact 6 with every term on). `--order spectral` uses the exact symbols `ik` and `−k²` (pseudospectral differentiation), and `--dealias` adds the 2/3 rule, under which the nonlinear term conserves energy and enstrophy exactly.
+On a periodic grid every derivative operator is circulant, so it is diagonal in Fourier space. With `--operators fourier` (the default for `compact6` and `spectral`) the solver applies them that way: one forward transform of ω and inverse transforms of the symbols times its spectrum, on the CPU (FFTW) and the GPU (cuFFT). The symbols come from the operators themselves, so the results equal the sparse products to round-off (`make test` checks 1e-14 for orders 6 and compact 6 with every term on). `--order spectral` uses the exact symbols `ik` and `−k²` (pseudospectral differentiation), and `--dealias` adds the 2/3 rule, under which the nonlinear term conserves energy and enstrophy exactly. `--pad` dealiases by 3/2 padding instead: the products are formed on a grid 3/2 as fine and truncated back, which gives the Fourier–Galerkin nonlinear term on every mode but the Nyquist ones (checked against the direct convolution to 1e-14), with the same exact conservation and without giving up a third of the range.
 
 What they buy is resolution (`tools/modified_wavenumber.py`): the fraction of the wavenumbers up to Nyquist that each scheme differentiates to 1 % and 10 %:
 
@@ -375,20 +376,20 @@ In forced turbulence with hyperviscosity they change little: the 256² direct-ca
 
 **Cost.** In Fourier space every scheme costs the same per step, about 1.3–1.5× the sparse explicit order 6:
 
-| ms per GPU step | order 6, sparse | any scheme, Fourier | compact 6, banded sparse | spectral, 2/3 rule |
-|---|---|---|---|---|
-| 256² | 3.6 | 4.8 | 66 | 5.0 |
-| 512² | 12.8 | 17.7 | 269 | 18.4 |
-| 1024² | 51.8 | 78.5 | — | 82.0 |
+| ms per GPU step | order 6, sparse | any scheme, Fourier | compact 6, banded sparse | spectral, 2/3 rule | spectral, 3/2 padding |
+|---|---|---|---|---|---|
+| 256² | 3.6 | 4.8 | 66 | 5.0 | 7.7 |
+| 512² | 12.8 | 17.7 | 269 | 18.4 | 31.5 |
+| 1024² | 51.8 | 78.5 | — | 82.0 | — |
 
-Schemes that reach higher wavenumbers also have a smaller advective time-step limit, `∝ 1/(k*h)max`: 1.59 for order 6, 1.99 compact, π spectral, 2π/3 with the 2/3 rule. In decaying turbulence against a 2048² reference, within 10 % (2 %) up to K:
+Schemes that reach higher wavenumbers also have a smaller advective time-step limit, `∝ 1/(k*h)max`: 1.59 for order 6, 1.99 compact, π spectral (with or without padding), 2π/3 with the 2/3 rule. In decaying turbulence against a 2048² reference, within 10 % (2 %) up to K:
 
-| | spectral | spectral, 2/3 | compact 6 | order 6 |
-|---|---|---|---|---|
-| 512² | 235 (201) | 143 (103) | 198 (167) | 152 (111) |
-| 256² | 93 (57) | 50 (29) | 118 (67) | 74 (48) |
+| | spectral | spectral, 3/2 | spectral, 2/3 | compact 6 | order 6 |
+|---|---|---|---|---|---|
+| 512² | 235 (201) | 239 (198) | 143 (103) | 198 (167) | 152 (111) |
+| 256² | 93 (57) | 93 (61) | 50 (29) | 118 (67) | 74 (48) |
 
-In these decaying runs (one Reynolds number, one initial spectrum, two grids), pseudospectral resolves the most once the grid resolves the high-wavenumber tail (512²). Where the spectrum still carries energy at the cutoff (256²), nothing damps those modes and aliasing feeds them, so energy piles up there and it falls behind compact. The 2/3 rule caps the range at 2/3 of Nyquist by construction. Counting the time step, at equal resolved range compact is 22 % cheaper than explicit order 6 on 512² and 2.4× cheaper on 256²; pseudospectral is 26 % cheaper on 512² and 34 % dearer on 256² (methodology, §Resolution).
+In these decaying runs (one Reynolds number, one initial spectrum, two grids), pseudospectral resolves the most once the grid resolves the high-wavenumber tail (512²). Where the spectrum still carries energy at the cutoff (256²), nothing damps those modes, so energy piles up there and it falls behind compact. Removing the aliasing by 3/2 padding leaves this unchanged, so the pile-up comes from the truncation, not from aliasing. The 2/3 rule caps the range at 2/3 of Nyquist by construction. Counting the time step, at equal resolved range compact is 22 % cheaper than explicit order 6 on 512² and 2.4× cheaper on 256²; pseudospectral is 26 % cheaper on 512² and 34 % dearer on 256² (methodology, §Resolution).
 
 **Across regimes.** Repeating the comparison with the Reynolds number (5·10³, 8·10⁴) and the initial spectrum (k₀ = 5, 20) varied, the ordering in decaying turbulence, before the runs decorrelate, is largely organized by one parameter: how much energy the flow carries at the grid's cutoff, `E(K_Nyquist)/E_max` of a 2048² reference. It is not sufficient on its own near the crossover, and it does not carry over to the forced runs.
 
@@ -396,6 +397,7 @@ In these decaying runs (one Reynolds number, one initial spectrum, two grids), p
 - **Compact** leads between about 10⁻⁷ and 5·10⁻⁶ (1.3–1.6×, cost 0.57–0.78×). Its crossover with pseudospectral is not sharp.
 - **Above about 10⁻⁵**, under-resolved, neither beats explicit order 6.
 - **The 2/3 rule** never leads on range or cost.
+- **3/2 padding** resolves the same range as unpadded spectral (within ±8 shells in all ten cases) and piles up the same energy at the cutoff, at 1.85× the cost per step: at best it matches explicit order 6 at equal range (1.00–1.31×).
 
 `tools/compare_schemes.py` computes the comparison and the plot (methodology, Fig. "crossover"). In forced turbulence the time-mean statistics carry about ±8 % sampling scatter from the random forcing, and within it the schemes are indistinguishable in the inertial range, with hyperviscosity or with plain viscosity. They differ only at the cutoff: explicit order 6 falls below the reference there, pseudospectral piles energy up (2× at Nyquist), and compact lies between.
 

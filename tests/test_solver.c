@@ -1616,6 +1616,130 @@ static void test_pseudospectral(void)
     }
 }
 
+// 3/2 padding gives the Fourier-Galerkin nonlinear term: on a small grid,
+// against the direct convolution of the modal coefficients over every pair of
+// non-Nyquist modes whose sum is a non-Nyquist mode; and with it the
+// nonlinear term conserves energy and enstrophy in either form
+static void test_padding_convolution(int nx, int ny)
+{
+    const int N = nx * ny;
+    char name[128];
+    problem p;
+    problem_init_ext(&p, nx, ny, 1.0, 1.0, 1, FD_SPECTRAL, 100.0, 2, 3, 1E-3, 1E-10, NULL, 0.0, NULL, NULL, 2, 0, 2);
+    rk4_free(&p.ctx);
+    p.cfg.fourier = 1;
+    p.cfg.dealias = 2;
+    p.ctx = rk4_alloc(&p.cfg);
+    fill_pseudo_random(p.w.M, N, 29u);
+
+    // Modal coefficients c(m, n) of w: c = (1/N) sum_x w e^(-i k.x)
+    static double cr[10][10], ci[10][10];
+    int a, b, i, j;
+    for (a = 0; a < ny; a++)
+        for (b = 0; b < nx; b++)
+        {
+            double sr = 0.0, si = 0.0;
+            for (i = 0; i < ny; i++)
+                for (j = 0; j < nx; j++)
+                {
+                    double th = 2.0 * PI * ((double)a * i / ny + (double)b * j / nx);
+                    sr += MAt(p.w, i, j) * cos(th);
+                    si -= MAt(p.w, i, j) * sin(th);
+                }
+            cr[a][b] = sr / N;
+            ci[a][b] = si / N;
+        }
+    periodic_symbols sym;
+    periodic_symbols_of(&p.cfg, &sym);
+    // Coefficients of u, v, DX w, DY w; signed indices -n/2 < m < n/2 (no Nyquist)
+    static double fr[4][10][10], fi[4][10][10];
+    for (a = 0; a < ny; a++)
+        for (b = 0; b < nx; b++)
+        {
+            double psi = (a == 0 && b == 0) ? 0.0 : -1.0 / (sym.d2x[b] + sym.d2y[a]);
+            double mr[4] = {sym.d1y_re[a] * psi, -sym.d1x_re[b] * psi, sym.d1x_re[b], sym.d1y_re[a]};
+            double mi[4] = {sym.d1y_im[a] * psi, -sym.d1x_im[b] * psi, sym.d1x_im[b], sym.d1y_im[a]};
+            int nyq = (2 * a == ny) || (2 * b == nx);
+            for (int q = 0; q < 4; q++)
+            {
+                fr[q][a][b] = nyq ? 0.0 : mr[q] * cr[a][b] - mi[q] * ci[a][b];
+                fi[q][a][b] = nyq ? 0.0 : mr[q] * ci[a][b] + mi[q] * cr[a][b];
+            }
+        }
+    // N(k) = -sum over p + q = k exactly (signed) of u(p) wx(q) + v(p) wy(q)
+    double err = 0.0, peak = 0.0, *pad = (double *)malloc(N * sizeof(double));
+    fourier_nonlinear_padded(p.ctx.fourier, p.w.M, pad);
+    for (i = 0; i < ny; i++)
+        for (j = 0; j < nx; j++)
+        {
+            double val = 0.0;
+            for (int ky = -(ny - 1) / 2; 2 * ky < ny; ky++)
+                for (int kx = -(nx - 1) / 2; 2 * kx < nx; kx++)
+                {
+                    if (2 * (ky < 0 ? -ky : ky) >= ny || 2 * (kx < 0 ? -kx : kx) >= nx) continue;
+                    double nr = 0.0, ni = 0.0;
+                    for (int py = -(ny - 1) / 2; 2 * py < ny; py++)
+                        for (int px = -(nx - 1) / 2; 2 * px < nx; px++)
+                        {
+                            int qy = ky - py, qx = kx - px;
+                            if (2 * abs(qy) >= ny || 2 * abs(qx) >= nx) continue;
+                            int pa = (py + ny) % ny, pb = (px + nx) % nx, qa = (qy + ny) % ny, qb = (qx + nx) % nx;
+                            for (int q = 0; q < 2; q++)
+                            {
+                                nr -= fr[q][pa][pb] * fr[q + 2][qa][qb] - fi[q][pa][pb] * fi[q + 2][qa][qb];
+                                ni -= fr[q][pa][pb] * fi[q + 2][qa][qb] + fi[q][pa][pb] * fr[q + 2][qa][qb];
+                            }
+                        }
+                    double th = 2.0 * PI * ((double)ky * i / ny + (double)kx * j / nx);
+                    val += nr * cos(th) - ni * sin(th);
+                }
+            err = fmax(err, fabs(val - pad[i * nx + j]));
+            peak = fmax(peak, fabs(val));
+        }
+    snprintf(name, sizeof(name), "%dx%d: padded = direct convolution (max %.2e)", nx, ny, peak);
+    check(name, err / peak, 1E-13);
+    periodic_symbols_free(&sym);
+    free(pad);
+    problem_free(&p);
+}
+
+static void test_padding(void)
+{
+    char name[128];
+
+    printf("3/2 padding: the Fourier-Galerkin nonlinear term\n");
+    test_padding_convolution(10, 8);
+    test_padding_convolution(9, 7);
+
+    for (int form = 0; form < 2; form++)
+    {
+        problem q;
+        int t, B;
+        fourier_problem(&q, FD_SPECTRAL, 1, 2);
+        rk4_free(&q.ctx);
+        q.cfg.advection = form;
+        q.ctx = rk4_alloc(&q.cfg);
+        for (t = 0; t < 20; t++)
+            step(q.w, q.u, q.v, &q.ctx);
+        spectra *sp = spectra_setup(&q.cfg);
+        B = spectra_bins(sp);
+        double *PE = (double *)calloc(B, sizeof(double)), *PZ = (double *)calloc(B, sizeof(double)), pe = 0, pz = 0;
+        spectra_compute(sp, q.u, q.v, q.w, NULL, NULL, PE, PZ);
+        for (t = 0; t < B; t++)
+        {
+            pe = fmax(pe, fabs(PE[t] - (t ? PE[t - 1] : 0.0)));
+            pz = fmax(pz, fabs(PZ[t] - (t ? PZ[t - 1] : 0.0)));
+        }
+        snprintf(name, sizeof(name), "%s form, 20 forced steps: net transfers E %.1e, Z %.1e",
+                 form ? "skew-symmetric" : "advective", fabs(PE[B - 1]) / pe, fabs(PZ[B - 1]) / pz);
+        check(name, fmax(fabs(PE[B - 1]) / pe, fabs(PZ[B - 1]) / pz), 1E-13);
+        free(PE);
+        free(PZ);
+        spectra_free(sp);
+        problem_free(&q);
+    }
+}
+
 // The decaying-turbulence initial field: energy 1/2 <u^2 + v^2> as asked,
 // u, v the velocity of w (u_x + v_y = 0 and v_x - u_y = w, spectrally exact,
 // so to the order of the stencils with DX, DY), and the same field on a grid
@@ -3123,6 +3247,8 @@ static void run_gpu_tests(void)
     GPU_TEST(test_gpu_fourier(FD_COMPACT6, 0, "compact 6"));
     GPU_TEST(test_gpu_fourier(FD_SPECTRAL, 0, "pseudospectral"));
     GPU_TEST(test_gpu_fourier(FD_SPECTRAL, 1, "pseudospectral, 2/3 rule"));
+    GPU_TEST(test_gpu_fourier(FD_SPECTRAL, 2, "pseudospectral, 3/2 padding"));
+    GPU_TEST(test_gpu_fourier(FD_COMPACT6, 2, "compact 6, 3/2 padding"));
     GPU_TEST(test_gpu_spectra(0));
     GPU_TEST(test_gpu_spectra(1));
     GPU_TEST(test_gpu_hyperviscosity(2));
@@ -3197,6 +3323,7 @@ int main(int argc, char **argv)
     test_poisson_reuse();
     test_fourier_operators();
     test_pseudospectral();
+    test_padding();
     test_random_kick();
     test_budgets();
     test_cpu_operator_axes(13, 9);

@@ -104,6 +104,8 @@ static void usage(const char *prog)
            "                       or in Fourier space (fourier; default for compact6 and\n"
            "                       spectral, which needs it)\n");
     printf("  --dealias            with Fourier operators: the 2/3 rule\n");
+    printf("  --pad                with Fourier operators: dealiasing by 3/2 padding, which keeps\n"
+           "                       every mode\n");
     printf("  --integrals-interval N  write E, Z, P to output/integrals.csv every N steps\n"
            "                       (default 1; 0 = never)\n");
     printf("  --poisson-order N    2 (5-point, default) or 4 (compact 9-point) Poisson\n"
@@ -180,7 +182,7 @@ int main(int argc, char *argv[])
     int spectrum_interval = -1; // negative: with the VTK frames
     int advection = -1;         // 0 = advective, 1 = skew-symmetric nonlinear term; -1: the case's default
     int operators = -1;         // 0 = sparse products, 1 = Fourier space; -1: the order's default
-    int dealias = 0;            // 2/3 rule (Fourier operators only)
+    int dealias = 0;            // 1 = 2/3 rule, 2 = 3/2 padding (Fourier operators only)
     unsigned long long seed = 1;
     int forcing_given = 0;
 
@@ -214,6 +216,7 @@ int main(int argc, char *argv[])
         {"order", required_argument, 0, 'O'},
         {"operators", required_argument, 0, 'X'},
         {"dealias", no_argument, 0, 'L'},
+        {"pad", no_argument, 0, 'M'},
         {"cpu", no_argument, 0, 'c'},
         {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}};
@@ -334,7 +337,13 @@ int main(int argc, char *argv[])
                 ok = 0;
             break;
         case 'L':
-            dealias = 1;
+        case 'M':
+            if (dealias && dealias != (opt == 'L' ? 1 : 2))
+            {
+                printf("** Error: --dealias and --pad exclude each other **\n");
+                return 1;
+            }
+            dealias = opt == 'L' ? 1 : 2;
             break;
         case 'A':
             if (strcmp(optarg, "advective") == 0)
@@ -463,8 +472,8 @@ int main(int argc, char *argv[])
     }
     if ((order == FD_COMPACT6 || order == FD_SPECTRAL || operators == 1 || dealias) && !periodic)
     {
-        printf("** Error: --order compact6/spectral, --operators fourier and --dealias apply to the periodic "
-               "cases **\n");
+        printf("** Error: --order compact6/spectral, --operators fourier, --dealias and --pad apply to the "
+               "periodic cases **\n");
         return 1;
     }
     if (order == FD_SPECTRAL && !operators)
@@ -474,7 +483,7 @@ int main(int argc, char *argv[])
     }
     if (dealias && !operators)
     {
-        printf("** Error: --dealias needs --operators fourier **\n");
+        printf("** Error: --dealias and --pad need --operators fourier **\n");
         return 1;
     }
     if (velocity_order == 4 && (nx < 10 || ny < 10))
@@ -512,7 +521,10 @@ int main(int argc, char *argv[])
            : order == 4           ? "order 4"
            : order == 2           ? "order 2"
                                   : "order 6",
-           operators ? ", in Fourier space" : "", dealias ? ", 2/3 dealiased" : "");
+           operators ? ", in Fourier space" : "",
+           dealias == 1   ? ", 2/3 dealiased"
+           : dealias == 2 ? ", 3/2 padded"
+                          : "");
 #ifdef _OPENMP
     default_threads();
     printf("OpenMP threads: %d\n", omp_get_max_threads());
