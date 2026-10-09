@@ -18,11 +18,15 @@
         for every case and grid: the resolved range (to 10 %) of each scheme
         relative to explicit order 6, against the reference's energy at the
         grid's Nyquist shell relative to its peak; does the ordering of the
-        schemes follow that one parameter? With RE given for every case, a
-        second panel plots the same against the cell Reynolds number Re h
+        schemes follow that one parameter? With RE given for every case, two
+        more panels plot the same against the cell Reynolds number Re h
         (h = 1/n on the unit square), the resolution criterion of San and
-        Staples (Comput. Fluids 63, 2012).
+        Staples (Comput. Fluids 63, 2012), and against k_max l_eta, with
+        k_max = pi n and l_eta = (nu^3 / eta)^(1/6) the enstrophy-dissipation
+        length, eta the reference's enstrophy dissipation (the sum of its
+        D_Z column) at T, nu = 1 / RE.
 """
+import math
 import os
 import re
 import sys
@@ -63,13 +67,15 @@ def crossover(png, specs):
 
     points = {s: [] for s in SCHEMES}
     with_re = all(len(spec.split(":")) == 4 for spec in specs)
-    print(f"{'case':<10} {'grid':>5} {'E(K_N)/E_max':>12} {'Re h':>6}  K10 relative to order 6: " +
+    print(f"{'case':<10} {'grid':>5} {'E(K_N)/E_max':>12} {'Re h':>6} {'kl':>5}  K10 relative to order 6: " +
           ", ".join(SCHEMES[1:]))
     for spec in specs:
         case, ref_dir, t = spec.split(":")[:3]
         re_ = float(spec.split(":")[3]) if with_re else float("nan")
         _, ref = cascade.frame_at(os.path.join(ref_dir, "output"), float(t))
         peak = max(r["E"] for r in ref[1:])
+        nu = 1.0 / re_ if with_re else float("nan")
+        l_eta = (nu ** 3 / sum(r["D_Z"] for r in ref)) ** (1.0 / 6.0) if with_re else float("nan")
         for n in (256, 512):
             res = {}
             for s in SCHEMES:
@@ -81,16 +87,18 @@ def crossover(png, specs):
             occ = ref[res["o6"][3]]["E"] / peak
             rel = {s: res[s][0] / res["o6"][0] for s in res}
             for s in rel:
-                points[s].append((occ, rel[s], re_ / n))
-            print(f"{os.path.basename(case):<10} {n:>5} {occ:12.1e} {re_ / n:6.1f}  " +
+                points[s].append((occ, rel[s], re_ / n, math.pi * n * l_eta))
+            print(f"{os.path.basename(case):<10} {n:>5} {occ:12.1e} {re_ / n:6.1f} {math.pi * n * l_eta:5.2f}  " +
                   "  ".join(f"{rel.get(s, float('nan')):.2f}" for s in SCHEMES[1:]))
-    fig, axes = plt.subplots(1, 2 if with_re else 1, figsize=(11.5 if with_re else 6.5, 4.2), squeeze=False)
+    fig, axes = plt.subplots(1, 3 if with_re else 1, figsize=(15 if with_re else 6.5, 4.2), squeeze=False)
     style = {"o6": "k.", "compact6": "C1o", "spectral": "C0s", "spectral23": "C3^", "spectral32": "C2D"}
-    for col, (ax, label) in enumerate(zip(axes[0], ("reference E(K_Nyquist) / E_peak", "cell Reynolds number Re h"))):
+    axis_of = (0, 2, 3)  # index of the abscissa in each point
+    labels = ("reference E(K_Nyquist) / E_peak", "cell Reynolds number Re h", "k_max l_eta")
+    for col, (ax, label) in enumerate(zip(axes[0], labels)):
         for s in SCHEMES:
             if points[s]:
-                pts = sorted(points[s], key=lambda q: q[col * 2])
-                ax.semilogx([q[col * 2] for q in pts], [q[1] for q in pts], style[s], label=s,
+                pts = sorted(points[s], key=lambda q: q[axis_of[col]])
+                ax.semilogx([q[axis_of[col]] for q in pts], [q[1] for q in pts], style[s], label=s,
                             mfc="none" if s == "spectral32" else None)
         ax.axhline(1, color="gray", lw=0.8)
         ax.set_xlabel(label)

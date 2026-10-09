@@ -391,14 +391,16 @@ Schemes that reach higher wavenumbers also have a smaller advective time-step li
 
 In these decaying runs (one Reynolds number, one initial spectrum, two grids), pseudospectral resolves the most once the grid resolves the high-wavenumber tail (512²). Where the spectrum still carries energy at the cutoff (256²), nothing damps those modes, so energy piles up there and it falls behind compact. Removing the quadratic aliasing by 3/2 padding (on every mode but the Nyquist ones) leaves this unchanged: the pile-up is not caused by quadratic aliasing of the nonlinear term, and is consistent with energy accumulating at the truncation when it is not dissipated fast enough before it. The 2/3 rule caps the range at 2/3 of Nyquist by construction. Counting the time step, at equal resolved range compact is 22 % cheaper than explicit order 6 on 512² and 2.4× cheaper on 256²; pseudospectral is 26 % cheaper on 512² and 34 % dearer on 256² (methodology, §Resolution).
 
-**Across regimes.** Repeating the comparison with the Reynolds number (5·10³, 8·10⁴) and the initial spectrum (k₀ = 5, 20) varied, the ordering in decaying turbulence, before the runs decorrelate, is largely organized by one parameter: how much energy the flow carries at the grid's cutoff, `E(K_Nyquist)/E_max` of a 2048² reference. It is not sufficient on its own near the crossover, and it does not carry over to the forced runs.
+**Across regimes.** Repeating the comparison with the Reynolds number (5·10³, 8·10⁴) and the initial spectrum (k₀ = 5, 20) varied, the ordering in decaying turbulence, before the runs decorrelate, is not organized by the cell Reynolds number `Re·h` (the three 256² cases at `Re·h` = 78 fall in three regimes). It is organized by how well the grid resolves the flow's enstrophy-dissipation length `l_η = (ν³/η)^(1/6)`, with η the reference's enstrophy dissipation: ordered by `k_max·l_η` (`k_max = π/h`), the leading scheme changes monotonically in all ten cases. The energy at the cutoff, `E(K_Nyquist)/E_max` of a 2048² reference, orders them only approximately. Ten points place the boundaries roughly, and the organization does not carry over to the forced runs.
 
-- **Pseudospectral** leads clearly below about 10⁻⁸, where it resolves up to 1.7× the shells of explicit order 6 and costs 0.54–0.76× as much at equal range.
-- **Between about 10⁻⁷ and 2·10⁻⁶** pseudospectral and compact trade places; the crossover is not sharp.
-- **Compact** leads clearly near 5·10⁻⁶. Wherever the cutoff energy is below about 5·10⁻⁶ it resolves 1.3–1.6× the shells of explicit order 6 at 0.42–0.78× its cost.
-- **Above about 10⁻⁵**, under-resolved, neither beats explicit order 6.
+- **k_max·l_η ≲ 1** (under-resolved): explicit order 6 leads on range and cost.
+- **1 ≲ k_max·l_η ≲ 2**: compact leads (1.4–1.6× the shells of order 6, cost 0.44–0.74×). Wherever k_max·l_η ≳ 1 it resolves 1.3–1.6× the shells of order 6.
+- **k_max·l_η ≈ 2**: compact and pseudospectral are within 4 % of each other.
+- **k_max·l_η ≳ 2.5** (well resolved): pseudospectral leads, up to 1.7× the shells of order 6, at 0.54–0.76× its cost at equal range.
 - **The 2/3 rule** never leads on range or cost.
 - **3/2 padding** resolves the same range as unpadded spectral (within ±8 shells in all ten cases) and piles up the same energy at the cutoff, at 1.85× the cost per step: at best it matches explicit order 6 at equal range (1.00–1.31×).
+
+The boundaries sit near the classical thresholds for a resolved (k_max·l_η > 1) and a well-resolved (≥ 2) two-dimensional simulation (Lunasin et al. 2007).
 
 `tools/compare_schemes.py` computes the comparison and the plot (methodology, Fig. "crossover"). A paper-shaped draft of this comparison (#50–#56), with the related literature, is in [docs/paper/cnavier_schemes.pdf](docs/paper/cnavier_schemes.pdf). In forced turbulence the time-mean statistics carry about ±8 % sampling scatter from the random forcing, and within it the schemes are indistinguishable in the inertial range, with hyperviscosity or with plain viscosity. They differ only at the cutoff: explicit order 6 falls below the reference there, pseudospectral piles energy up (2× at Nyquist), and compact lies between.
 
