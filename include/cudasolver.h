@@ -41,6 +41,10 @@ extern "C"
     // the host. The mode tables of s are uploaded on the first call with s.
     void gpu_spectra(gpu_solver *g, const spectra *s, double *out);
 
+    // Poisson solves done so far (the first RK4 stage reuses the previous
+    // step's solve, so RK4 does four per step after the first)
+    long gpu_poisson_solves(const gpu_solver *g);
+
     // Copy fields between host and device. NULL arguments are skipped.
     void gpu_set_fields(gpu_solver *g, const mtrx *u, const mtrx *v, const mtrx *w);
     void gpu_get_fields(gpu_solver *g, mtrx *u, mtrx *v, mtrx *w);

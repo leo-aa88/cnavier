@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
+#include <string.h>
 #include "fluiddyn.h"
 #include "linearalg.h"
 
@@ -50,6 +51,9 @@ rk4_ctx rk4_alloc(const solver_config *cfg)
     ctx.k4 = initm(ny, nx);
     ctx.w_tmp = initm(ny, nx);
     ctx.rhs = initm(ny, nx);
+    ctx.w_solved = initm(ny, nx);
+    ctx.psi_valid = 0;
+    ctx.solves = 0;
     if ((cfg->poisson_order != 2 && cfg->poisson_order != 4) || (cfg->wall_closure != 0 && cfg->wall_closure != 1))
     {
         printf("** Error: poisson_order must be 2 or 4 and wall_closure 0 or 1 **\n");
@@ -108,6 +112,7 @@ void rk4_free(rk4_ctx *ctx)
     freem(&ctx->k4);
     freem(&ctx->w_tmp);
     freem(&ctx->rhs);
+    freem(&ctx->w_solved);
     fft_cleanup(ctx->fft);
     ctx->fft = NULL;
     periodic_cleanup(ctx->periodic);
@@ -123,8 +128,27 @@ void rk4_free(rk4_ctx *ctx)
     if (ctx->vw.M) freem(&ctx->vw);
 }
 
-// Solve nabla^2 psi = -w and recover u = dpsi/dy, v = -dpsi/dx.
-static void velocity_from_vorticity(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx)
+// Does w hold, wherever the Poisson solve reads it, the values ctx->psi was
+// solved for? The FFT solvers read all of w on a periodic grid and its
+// interior with walls (the compact right-hand side extrapolates its wall
+// values from the interior). The iterative solvers start from the previous
+// psi, so a second solve may converge further: never skipped for them.
+static int psi_is_current(mtrx w, const rk4_ctx *ctx)
+{
+    int i, nx = ctx->cfg.nx, ny = ctx->cfg.ny, edge = ctx->cfg.periodic ? 0 : 1;
+
+    if (!ctx->psi_valid || (!ctx->cfg.periodic && ctx->cfg.poisson_type != 3)) return 0;
+    for (i = edge; i < ny - edge; i++)
+        if (memcmp(&MAt(w, i, edge), &MAt(ctx->w_solved, i, edge), (size_t)(nx - 2 * edge) * sizeof(double)) != 0)
+            return 0;
+    return 1;
+}
+
+// Solve nabla^2 psi = -w and recover u = dpsi/dy, v = -dpsi/dx. The solve is
+// skipped when psi is already that of w (psi_is_current()): RK4's first stage
+// would otherwise repeat the last solve of the step before. The velocity is
+// recomputed from psi either way.
+static void solve_psi(mtrx w, rk4_ctx *ctx)
 {
     // Poisson solve: nabla^2 psi = -w
     negcpy(ctx->rhs, w);
@@ -149,6 +173,14 @@ static void velocity_from_vorticity(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx)
         printf("** Error: valid Poisson solver types are 1, 2 or 3 **\n");
         exit(1);
     }
+    mtrxcpy(ctx->w_solved, w);
+    ctx->psi_valid = 1;
+    ctx->solves++;
+}
+
+static void velocity_from_vorticity(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx)
+{
+    if (!psi_is_current(w, ctx)) solve_psi(w, ctx);
 
     // Recover u = dpsi/dy, v = -dpsi/dx
     spmv(ctx->cfg.DYv ? *ctx->cfg.DYv : *ctx->cfg.DY, ctx->psi.M, u.M);

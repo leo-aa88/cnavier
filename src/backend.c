@@ -36,9 +36,9 @@ static int on_gpu(const backend *b)
 #endif
 }
 
-// Arrays of nx*ny doubles: CPU workspace (14 and the FFT buffer) plus fields
+// Arrays of nx*ny doubles: CPU workspace (15 and the FFT buffer) plus fields
 // (3) and continuity scratch (2); on the GPU, host copies of the fields (3)
-#define CPU_ARRAYS 20
+#define CPU_ARRAYS 21
 #define GPU_ARRAYS 3
 
 double backend_host_memory(int nx, int ny, int prefer_gpu)

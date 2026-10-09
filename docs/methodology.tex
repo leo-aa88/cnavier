@@ -579,6 +579,8 @@ One RK4 timestep begins with the same wall-velocity and wall-vorticity update.  
 \end{enumerate}
 After combining $k_1$ through $k_4$, a fifth Poisson solve recovers velocity for the completed step, and the step ends like the Euler step: the wall velocities are imposed on copies of $u$ and $v$, and the boundary vorticity is overwritten with $D_xv-D_yu$ of those copies.
 
+The first stage of the next step would solve the Poisson equation for the same interior vorticity as the fifth solve of this one.  With the FFT solvers, which read only the interior of $\omega$ (all of it on a periodic grid), that solve is skipped and the velocity is recovered from the stored $\psi$.  RK4 thus does four solves per step after the first, and the results are bitwise the same.  The CPU compares the interior of $\omega$ with a copy of the field last solved for; the GPU, which owns its fields, keeps a flag that every change to the interior of $\omega$ clears.  The random kick changes $\omega$ at the start of every step, so forced runs still do five solves.  The iterative solvers start from the previous $\psi$, so a second solve can converge further, and they are never skipped.  The gain shows what a solve costs.  The cavity's sine-transform solve is a large share of a step: $11$--$12\,\%$ faster on the CPU ($129^2$, $257^2$), $8$--$12\,\%$ on the GPU ($257^2$, $513^2$).  The periodic solve is cheap: $2$--$3\,\%$ on the GPU ($512^2$, $1024^2$) and no measurable change on the CPU.
+
 \subsection{Pseudocode}
 
 \begin{lstlisting}[language={}]

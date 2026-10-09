@@ -1314,6 +1314,78 @@ static void test_damping_stability(void)
         }
 }
 
+// A 32x32 RK4 problem for cached_solves()
+static void reuse_problem(problem *p, int periodic, int poisson_type, int kicks, int closure)
+{
+    static const wall_bc lid = {{0, 0, 0, 1}, {0, 0, 0, 0}};
+    problem_init_ext(p, 32, 32, 1.0, 1.0, periodic, 6, 400.0, 2, poisson_type, 1E-3, 1E-12, periodic ? NULL : &lid,
+                     0.0, NULL, NULL, 2, closure, 2);
+    if (kicks)
+    {
+        rk4_free(&p->ctx);
+        p->cfg.forcing.random_rate = 0.5;
+        p->cfg.forcing.random_kf = 4.0;
+        p->cfg.forcing.random_dk = 1.0;
+        p->cfg.forcing.random_seed = 3;
+        p->ctx = rk4_alloc(&p->cfg);
+    }
+    if (periodic) fill_pseudo_random(p->w.M, 32 * 32, 17u);
+}
+
+// Poisson solves of 10 RK4 steps, and the largest difference from the same
+// run with the cache of the last solve defeated before every step
+static long cached_solves(int periodic, int poisson_type, int kicks, int closure, double *diff)
+{
+    int i, t, N = 32 * 32;
+    problem a, b;
+    long solves;
+
+    reuse_problem(&a, periodic, poisson_type, kicks, closure);
+    reuse_problem(&b, periodic, poisson_type, kicks, closure);
+    for (t = 0; t < 10; t++)
+    {
+        b.ctx.psi_valid = 0;
+        step(a.w, a.u, a.v, &a.ctx);
+        step(b.w, b.u, b.v, &b.ctx);
+    }
+    *diff = 0.0;
+    for (i = 0; i < N; i++)
+        *diff = fmax(*diff, fabs(a.w.M[i] - b.w.M[i]) + fabs(a.u.M[i] - b.u.M[i]) + fabs(a.v.M[i] - b.v.M[i]));
+    solves = a.ctx.solves;
+    problem_free(&a);
+    problem_free(&b);
+    return solves;
+}
+
+// RK4's first stage reuses the previous step's Poisson solve when the interior
+// of w has not changed since (FFT solvers only), with results bitwise the same
+static void test_poisson_reuse(void)
+{
+    static const struct
+    {
+        const char *name;
+        int periodic, poisson_type, kicks, closure;
+        long expect;
+    } cases[] = {
+        {"periodic", 1, 3, 0, 0, 41},
+        {"cavity, FFT", 0, 3, 0, 0, 41},
+        {"cavity, FFT, Briley closure (first-step solve reused)", 0, 3, 0, 1, 41},
+        {"cavity, SOR (never reused)", 0, 2, 0, 0, 50},
+        {"periodic with random kicks (w changes)", 1, 3, 1, 0, 50},
+    };
+    char name[128];
+    double diff;
+
+    printf("RK4: the first stage reuses the last Poisson solve\n");
+    for (unsigned c = 0; c < sizeof(cases) / sizeof(cases[0]); c++)
+    {
+        long solves = cached_solves(cases[c].periodic, cases[c].poisson_type, cases[c].kicks, cases[c].closure, &diff);
+        snprintf(name, sizeof(name), "%s: %ld solves in 10 steps (expected %ld), bitwise as without reuse",
+                 cases[c].name, solves, cases[c].expect);
+        check(name, solves == cases[c].expect ? diff : INFINITY, 0.0);
+    }
+}
+
 // The decaying-turbulence initial field: energy 1/2 <u^2 + v^2> as asked,
 // u, v the velocity of w (u_x + v_y = 0 and v_x - u_y = w, spectrally exact,
 // so to the order of the stencils with DX, DY), and the same field on a grid
@@ -2481,6 +2553,46 @@ static void test_gpu_forcing(int time_scheme, const char *label)
     problem_free(&p);
 }
 
+// The GPU reuses the last Poisson solve at the first RK4 stage like the CPU:
+// the same solve counts, and the same fields
+static void test_gpu_poisson_reuse(int periodic, int kicks, long expect)
+{
+    int t, n = 32, N = n * n;
+    wall_bc lid = {{0, 0, 0, 1}, {0, 0, 0, 0}};
+    char name[128];
+    problem p;
+    problem_init_ext(&p, n, n, 1.0, 1.0, periodic, 6, 400.0, 2, 3, 1E-3, 1E-12, periodic ? NULL : &lid, 0.0, NULL,
+                     NULL, 2, 0, 2);
+    if (kicks)
+    {
+        rk4_free(&p.ctx);
+        p.cfg.forcing.random_rate = 0.5;
+        p.cfg.forcing.random_kf = 4.0;
+        p.cfg.forcing.random_dk = 1.0;
+        p.cfg.forcing.random_seed = 3;
+        p.ctx = rk4_alloc(&p.cfg);
+    }
+    if (periodic) fill_pseudo_random(p.w.M, N, 17u);
+    gpu_solver *g = gpu_for(&p);
+    mtrx w = initm(n, n);
+
+    gpu_set_fields(g, &p.u, &p.v, &p.w);
+    for (t = 0; t < 10; t++)
+    {
+        step(p.w, p.u, p.v, &p.ctx);
+        gpu_step(g);
+    }
+    gpu_get_fields(g, NULL, NULL, &w);
+    snprintf(name, sizeof(name), "%s%s: %ld solves in 10 steps (CPU %ld, expected %ld); w vs CPU",
+             periodic ? "periodic" : "cavity", kicks ? " with kicks" : "", gpu_poisson_solves(g), p.ctx.solves,
+             expect);
+    check(name,
+          gpu_poisson_solves(g) == expect && p.ctx.solves == expect ? rel_diff(w.M, p.w.M, N) : INFINITY, 1E-11);
+    freem(&w);
+    gpu_free(g);
+    problem_free(&p);
+}
+
 // Hyperviscosity strong enough to dominate near the cutoff: the GPU applies it
 // in spectral space, the CPU by p sparse products, and the two agree
 static void test_gpu_hyperviscosity(int p_order)
@@ -2689,6 +2801,10 @@ static void run_gpu_tests(void)
     GPU_TEST(test_gpu_source(33, 33, 50, 2, "RK4 + FFT"));
     GPU_TEST(test_gpu_periodic(48, 33, 50, 2, "RK4"));
     GPU_TEST(test_gpu_integrals());
+    printf("GPU: RK4's first stage reuses the last Poisson solve\n");
+    GPU_TEST(test_gpu_poisson_reuse(1, 0, 41));
+    GPU_TEST(test_gpu_poisson_reuse(0, 0, 41));
+    GPU_TEST(test_gpu_poisson_reuse(1, 1, 50));
     GPU_TEST(test_gpu_spectra(0));
     GPU_TEST(test_gpu_spectra(1));
     GPU_TEST(test_gpu_hyperviscosity(2));
@@ -2759,6 +2875,7 @@ int main(int argc, char **argv)
     test_drag_decay();
     test_random_initial_field();
     test_damping_stability();
+    test_poisson_reuse();
     test_random_kick();
     test_budgets();
     test_cpu_operator_axes(13, 9);

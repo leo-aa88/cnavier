@@ -87,6 +87,8 @@ struct gpu_solver
     double *kick_cx, *kick_sx, *kick_cy, *kick_sy; // of random_forcing
     mtrx source_host;                              // ... and the host field cfg.vorticity_source fills
     long steps;                                    // steps taken; the time is cfg.t0 + steps * cfg.dt
+    int psi_of_w;                                  // psi was solved for the current interior of w
+    long solves;                                   // Poisson solves done
 
     // Convergence state of the iterative Poisson solvers, kept on the device
     // so that a batch of sweeps runs without waiting for the host
@@ -605,10 +607,20 @@ static void solve_poisson(gpu_solver *g, const double *w)
         poisson_redblack(g, w);
 }
 
-// Solve nabla^2 psi = -w and recover u = dpsi/dy, v = -dpsi/dx
+// Solve nabla^2 psi = -w and recover u = dpsi/dy, v = -dpsi/dx. The solve is
+// skipped when psi is already that of w: RK4's first stage would otherwise
+// repeat the last solve of the step before. psi_of_w is set by a solve for
+// g->w and cleared by everything that changes the interior of g->w (the wall
+// entries, which the FFT solvers do not read, may change). The iterative
+// solvers start from the previous psi and are never skipped, as on the CPU.
 static void velocity_from_vorticity(gpu_solver *g, const double *w)
 {
-    solve_poisson(g, w);
+    if (!(w == g->w && g->psi_of_w && (g->cfg.periodic || g->cfg.poisson_type == 3)))
+    {
+        solve_poisson(g, w);
+        g->solves++;
+        g->psi_of_w = w == g->w;
+    }
     LAUNCH(velocity_kernel, g->n, g->DXv, g->DYv, g->psi, g->u, g->v, g->n);
 }
 
@@ -1114,6 +1126,7 @@ void gpu_step(gpu_solver *g)
         LAUNCH(kick_rows_kernel, g->kicks->modes * g->ny, g->kick_cy, g->kick_sy, g->kick_ky, g->kick_phase, g->ny,
                g->cfg.dy, g->kicks->modes * g->ny);
         LAUNCH(kick_kernel, n, g->w, g->kick_cx, g->kick_sx, g->kick_cy, g->kick_sy, g->kicks->modes, g->nx, g->ny, n);
+        g->psi_of_w = 0;
         if (g->cfg.time_scheme == 1) velocity_from_vorticity(g, g->w);
     }
     // hypodrag needs the psi of w, which a first step does not have yet
@@ -1128,6 +1141,7 @@ void gpu_step(gpu_solver *g)
         add_vorticity_source(g, t, g->k1);
         add_forcing_terms(g, g->k1, g->w);
         LAUNCH(axpy_kernel, n, g->w, dt, g->k1, g->w, n);
+        g->psi_of_w = 0;
         velocity_from_vorticity(g, g->w);
     }
     else
@@ -1141,6 +1155,7 @@ void gpu_step(gpu_solver *g)
         LAUNCH(axpy_kernel, n, g->w, dt, g->k3, g->w_tmp, n);
         dwdt(g, g->w_tmp, g->k4, t + dt);
         LAUNCH(rk4_combine_kernel, n, g->w, dt / 6.0, g->k1, g->k2, g->k3, g->k4, n);
+        g->psi_of_w = 0;
 
         // Final Poisson solve so u, v are consistent with w_{n+1}
         velocity_from_vorticity(g, g->w);
@@ -1322,7 +1337,16 @@ void gpu_set_fields(gpu_solver *g, const mtrx *u, const mtrx *v, const mtrx *w)
 
     if (u) CUDA_CHECK(cudaMemcpy(g->u, u->M, bytes, cudaMemcpyHostToDevice));
     if (v) CUDA_CHECK(cudaMemcpy(g->v, v->M, bytes, cudaMemcpyHostToDevice));
-    if (w) CUDA_CHECK(cudaMemcpy(g->w, w->M, bytes, cudaMemcpyHostToDevice));
+    if (w)
+    {
+        CUDA_CHECK(cudaMemcpy(g->w, w->M, bytes, cudaMemcpyHostToDevice));
+        g->psi_of_w = 0;
+    }
+}
+
+long gpu_poisson_solves(const gpu_solver *g)
+{
+    return g->solves;
 }
 
 void gpu_get_fields(gpu_solver *g, mtrx *u, mtrx *v, mtrx *w)
