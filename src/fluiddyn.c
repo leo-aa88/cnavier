@@ -147,8 +147,11 @@ static int psi_is_current(mtrx w, const rk4_ctx *ctx)
 // Solve nabla^2 psi = -w and recover u = dpsi/dy, v = -dpsi/dx. The solve is
 // skipped when psi is already that of w (psi_is_current()): RK4's first stage
 // would otherwise repeat the last solve of the step before. The velocity is
-// recomputed from psi either way.
-static void solve_psi(mtrx w, rk4_ctx *ctx)
+// recomputed from psi either way. remember: record w for that comparison; only
+// the solves of the step's own w that the next RK4 first stage may repeat do,
+// so the stage solves and runs with random kicks (which change w every step)
+// do not pay for a copy of w.
+static void solve_psi(mtrx w, int remember, rk4_ctx *ctx)
 {
     // Poisson solve: nabla^2 psi = -w
     negcpy(ctx->rhs, w);
@@ -173,14 +176,17 @@ static void solve_psi(mtrx w, rk4_ctx *ctx)
         printf("** Error: valid Poisson solver types are 1, 2 or 3 **\n");
         exit(1);
     }
-    mtrxcpy(ctx->w_solved, w);
-    ctx->psi_valid = 1;
+    // Only a solve that a later call can reuse is worth a copy of w (never
+    // one of the iterative solvers, psi_is_current())
+    remember = remember && (ctx->cfg.periodic || ctx->cfg.poisson_type == 3);
+    if (remember) mtrxcpy(ctx->w_solved, w);
+    ctx->psi_valid = remember;
     ctx->solves++;
 }
 
-static void velocity_from_vorticity(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx)
+static void velocity_from_vorticity(mtrx w, mtrx u, mtrx v, int remember, rk4_ctx *ctx)
 {
-    if (!psi_is_current(w, ctx)) solve_psi(w, ctx);
+    if (!psi_is_current(w, ctx)) solve_psi(w, remember, ctx);
 
     // Recover u = dpsi/dy, v = -dpsi/dx
     spmv(ctx->cfg.DYv ? *ctx->cfg.DYv : *ctx->cfg.DY, ctx->psi.M, u.M);
@@ -326,7 +332,7 @@ void dwdt(mtrx w, mtrx u, mtrx v, mtrx out, double t, rk4_ctx *ctx)
     // wall vorticity follows the velocity, so it has to be set again at every
     // RK4 stage: set once per step, it lags the interior and limits RK4 to
     // first order in time. A periodic grid has no walls.
-    velocity_from_vorticity(w, u, v, ctx);
+    velocity_from_vorticity(w, u, v, 0, ctx);
     if (!ctx->cfg.periodic)
     {
         apply_wall_bc(u, v, &ctx->cfg.bc);
@@ -415,8 +421,9 @@ void rk4(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx)
             MAt(w, i, j) += (dt / 6.0) * (MAt(ctx->k1, i, j) + 2.0 * MAt(ctx->k2, i, j) + 2.0 * MAt(ctx->k3, i, j) + MAt(ctx->k4, i, j));
     }
 
-    // Final Poisson solve so u, v are consistent with w_{n+1}
-    velocity_from_vorticity(w, u, v, ctx);
+    // Final Poisson solve so u, v are consistent with w_{n+1}; the next
+    // step's first stage can reuse it unless a kick changes w first
+    velocity_from_vorticity(w, u, v, !ctx->kicks, ctx);
 }
 
 // ---------------------------------------------------------------------------
@@ -572,7 +579,7 @@ void step(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx)
     // Vorticity BCs: w = dv/dx - du/dy evaluated at boundaries (walls only).
     // The formula from psi needs psi, which a first step does not have yet.
     if (!ctx->cfg.periodic && ctx->cfg.wall_closure == 1 && ctx->steps == 0)
-        velocity_from_vorticity(w, u, v, ctx);
+        velocity_from_vorticity(w, u, v, 1, ctx);
     if (!ctx->cfg.periodic)
     {
         apply_wall_bc(u, v, bc);
@@ -586,7 +593,7 @@ void step(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx)
     {
         random_forcing_draw(ctx->kicks);
         random_forcing_add(ctx->kicks, w, ctx->cfg.dy);
-        if (ctx->cfg.time_scheme == 1) velocity_from_vorticity(w, u, v, ctx);
+        if (ctx->cfg.time_scheme == 1) velocity_from_vorticity(w, u, v, 0, ctx);
     }
 
     if (ctx->cfg.time_scheme == 1)
@@ -597,7 +604,7 @@ void step(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx)
         const double *f = vorticity_source_at(ctx->cfg.t0 + (double)ctx->steps * dt, ctx);
         const forcing_config *fc = &ctx->cfg.forcing;
         // hypodrag needs the psi of w, which a first step does not have yet
-        if (fc->hypodrag > 0.0 && ctx->steps == 0 && !ctx->kicks) velocity_from_vorticity(w, u, v, ctx);
+        if (fc->hypodrag > 0.0 && ctx->steps == 0 && !ctx->kicks) velocity_from_vorticity(w, u, v, 0, ctx);
         derivatives(w, ctx);
         if (fc->drag != 0.0 || ctx->kolmogorov || fc->hyperviscosity > 0.0 || fc->hypodrag > 0.0 ||
             ctx->cfg.advection == 1)
@@ -613,7 +620,7 @@ void step(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx)
         }
 
         euler(w, ctx->dwdx, ctx->dwdy, ctx->d2wdx2, ctx->d2wdy2, u, v, f, ctx->cfg.Re, dt);
-        velocity_from_vorticity(w, u, v, ctx);
+        velocity_from_vorticity(w, u, v, 0, ctx);
     }
     else
     {
