@@ -103,8 +103,9 @@ struct gpu_solver
     cufftHandle plan_r2c, plan_c2r;
     double *plam_x, *plam_y; // eigenvalues of DX2 (nx/2+1 of them) and DY2 (ny)
 
-    // Spectra on the device (gpu_spectra()), set up on first use for sp_of
-    const spectra *sp_of;
+    // Spectra on the device (gpu_spectra()), set up on first use for the
+    // spectra object with spectra_id() sp_id (0: none yet)
+    unsigned long sp_id;
     int sp_bins;
     int *sp_bin_ptr, *sp_modes;            // the modes of each shell, in index order
     double *sp_weight, *sp_lap, *sp_ratio; // spectra_tables()
@@ -1259,7 +1260,7 @@ static void spectra_upload(gpu_solver *g, const spectra *s)
     CUDA_CHECK(cudaMemcpy(g->sp_weight, weight, modes * sizeof(double), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(g->sp_lap, lap, modes * sizeof(double), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(g->sp_ratio, ratio, modes * sizeof(double), cudaMemcpyHostToDevice));
-    g->sp_of = s;
+    g->sp_id = spectra_id(s);
     g->sp_bins = bins;
     free(ptr);
     free(list);
@@ -1278,7 +1279,7 @@ void gpu_spectra(gpu_solver *g, const spectra *s, double *out)
         printf("** Error: spectra need a periodic grid **\n");
         exit(1);
     }
-    if (g->sp_of != s) spectra_upload(g, s);
+    if (g->sp_id != spectra_id(s)) spectra_upload(g, s);
     B = g->sp_bins;
 
     // The nonlinear term of the current fields, in the solver's form

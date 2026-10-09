@@ -81,6 +81,10 @@ void spectra_all(spectra *s, mtrx u, mtrx v, mtrx w, double *out);
 // eigenvalue of DX2 + DY2 and A/Q
 void spectra_tables(const spectra *s, const int **bin, const double **weight, const double **lap,
                     const double **ratio);
+// An identifier distinct for every spectra_setup() of the process, so that a
+// cache of the tables (gpu_spectra()) is not fooled by a new spectra object at
+// a freed one's address
+unsigned long spectra_id(const spectra *s);
 // Write output/spectrum-1-<n>.csv (k, E, Z, PE, PZ, DE, DZ, FE, FZ) for time t
 // from the columns of spectra_all()
 void spectra_write_frame(const spectra *s, const double *out, double t);

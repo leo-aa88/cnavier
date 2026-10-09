@@ -93,7 +93,8 @@ struct spectra
     double *in, *nl; // real field, nonlinear term
     double *wx, *wy; // derivatives of w
     fftw_complex *uh, *vh, *wh, *nh;
-    fftw_plan plan; // r2c of `in` into a spectrum
+    fftw_plan plan;   // r2c of `in` into a spectrum
+    unsigned long id; // distinct for every spectra_setup() of the run
 };
 
 // |symbol|^2 of a circulant first-derivative operator at wavenumber k: the
@@ -124,7 +125,9 @@ spectra *spectra_setup(const solver_config *cfg)
         printf("** Error: spectra need a periodic grid **\n");
         exit(1);
     }
+    static unsigned long next_id = 0;
     s->cfg = *cfg;
+    s->id = ++next_id;
     s->nx = nx;
     s->ny = ny;
     s->kx = nx / 2 + 1;
@@ -256,7 +259,8 @@ void spectra_compute(spectra *s, mtrx u, mtrx v, mtrx w, double *E, double *Z, d
     free(TZ);
 }
 
-void spectra_dissipation(spectra *s, mtrx w, double *DE, double *DZ, double *FE, double *FZ)
+// spectra_dissipation() from the spectrum of w already in s->wh
+static void dissipation_from_spectrum(spectra *s, double *DE, double *DZ, double *FE, double *FZ)
 {
     int b, k, n = s->nx * s->ny, modes = s->kx * s->ny;
     const forcing_config *fc = &s->cfg.forcing;
@@ -269,7 +273,6 @@ void spectra_dissipation(spectra *s, mtrx w, double *DE, double *DZ, double *FE,
         if (FE) FE[b] = 0.0;
         if (FZ) FZ[b] = 0.0;
     }
-    transform(s, w.M, s->wh);
     // The mean vorticity (zero in a physical periodic flow) carries no energy
     // and feels only the drag
     if (FZ) FZ[0] = fc->drag * (s->wh[0][0] * s->wh[0][0] + s->wh[0][1] * s->wh[0][1]) * inv;
@@ -289,11 +292,23 @@ void spectra_dissipation(spectra *s, mtrx w, double *DE, double *DZ, double *FE,
     }
 }
 
+void spectra_dissipation(spectra *s, mtrx w, double *DE, double *DZ, double *FE, double *FZ)
+{
+    transform(s, w.M, s->wh);
+    dissipation_from_spectrum(s, DE, DZ, FE, FZ);
+}
+
 void spectra_all(spectra *s, mtrx u, mtrx v, mtrx w, double *out)
 {
     size_t B = (size_t)s->bins;
+    // spectra_compute() leaves the spectrum of w in s->wh: four transforms, not five
     spectra_compute(s, u, v, w, out, out + B, out + 2 * B, out + 3 * B);
-    spectra_dissipation(s, w, out + 4 * B, out + 5 * B, out + 6 * B, out + 7 * B);
+    dissipation_from_spectrum(s, out + 4 * B, out + 5 * B, out + 6 * B, out + 7 * B);
+}
+
+unsigned long spectra_id(const spectra *s)
+{
+    return s->id;
 }
 
 void spectra_tables(const spectra *s, const int **bin, const double **weight, const double **lap,

@@ -2569,6 +2569,27 @@ static void test_gpu_spectra(int advection)
         snprintf(name, sizeof(name), "%s vs host (largest %.2e)", cols[q], peak);
         check(name, peak > 0.0 ? diff / peak : INFINITY, 1E-12);
     }
+    // A new spectra object with other tables (a 2 x 1 domain: other shells),
+    // possibly at the freed one's address, must be uploaded again
+    spectra_free(sp);
+    solver_config wide = p.cfg;
+    wide.dx = 2.0 / nx;
+    sp = spectra_setup(&wide);
+    int B2 = spectra_bins(sp);
+    double *dev2 = (double *)malloc((size_t)SPECTRA_COLUMNS * B2 * sizeof(double));
+    double *host2 = (double *)malloc((size_t)SPECTRA_COLUMNS * B2 * sizeof(double));
+    double diff2 = 0.0, peak2 = 0.0;
+    gpu_spectra(g, sp, dev2);
+    spectra_all(sp, u, v, w, host2);
+    for (b = 0; b < SPECTRA_COLUMNS * B2; b++)
+    {
+        diff2 = fmax(diff2, fabs(dev2[b] - host2[b]));
+        peak2 = fmax(peak2, fabs(host2[b]));
+    }
+    snprintf(name, sizeof(name), "a new spectra object (%d shells, was %d) is uploaded again", B2, B);
+    check(name, B2 != B ? diff2 / peak2 : INFINITY, 1E-12);
+    free(dev2);
+    free(host2);
     freem(&u);
     freem(&v);
     freem(&w);
