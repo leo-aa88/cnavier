@@ -5,6 +5,7 @@
 
 #include "linearalg.h"
 #include "fluiddyn.h"
+#include "diagnostics.h"
 
 #ifdef __cplusplus
 extern "C"
@@ -34,6 +35,11 @@ extern "C"
     // Energy, enstrophy and palinstrophy, as compute_integrals() in
     // diagnostics.c, by reductions on the device
     void gpu_integrals(gpu_solver *g, double *E, double *Z, double *P, double *I);
+
+    // spectra_all() of the current fields (periodic grids), computed on the
+    // device: only the SPECTRA_COLUMNS * spectra_bins(s) results are copied to
+    // the host. The mode tables of s are uploaded on the first call with s.
+    void gpu_spectra(gpu_solver *g, const spectra *s, double *out);
 
     // Copy fields between host and device. NULL arguments are skipped.
     void gpu_set_fields(gpu_solver *g, const mtrx *u, const mtrx *v, const mtrx *w);

@@ -71,7 +71,24 @@ void spectra_compute(spectra *s, mtrx u, mtrx v, mtrx w, double *E, double *Z, d
 // order of the scheme; the difference grows where A/Q departs from 1, near the
 // grid cutoff. Arrays of spectra_bins() values; any may be NULL.
 void spectra_dissipation(spectra *s, mtrx w, double *DE, double *DZ, double *FE, double *FZ);
+// All of the above into out, SPECTRA_COLUMNS arrays of spectra_bins() values
+// one after the other: E, Z, PE, PZ, DE, DZ, FE, FZ
+#define SPECTRA_COLUMNS 8
+void spectra_all(spectra *s, mtrx u, mtrx v, mtrx w, double *out);
+// The per-mode tables, for a device implementation (cudasolver.cu): for each
+// of the ny * (nx/2 + 1) modes of the half spectrum, row-major, its shell, its
+// weight (2 for a mode that stands for its conjugate too, else 1), its
+// eigenvalue of DX2 + DY2 and A/Q
+void spectra_tables(const spectra *s, const int **bin, const double **weight, const double **lap,
+                    const double **ratio);
+// An identifier distinct for every spectra_setup() of the process, so that a
+// cache of the tables (gpu_spectra()) is not fooled by a new spectra object at
+// a freed one's address
+unsigned long spectra_id(const spectra *s);
 // Write output/spectrum-1-<n>.csv (k, E, Z, PE, PZ, DE, DZ, FE, FZ) for time t
+// from the columns of spectra_all()
+void spectra_write_frame(const spectra *s, const double *out, double t);
+// spectra_all() and spectra_write_frame()
 void spectra_write(spectra *s, mtrx u, mtrx v, mtrx w, double t);
 void spectra_free(spectra *s);
 
