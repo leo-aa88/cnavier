@@ -97,7 +97,8 @@ static void usage(const char *prog)
     printf("  --tf TF              final time\n");
     printf("  --output-interval N  write VTK every N iterations (0 = never)\n");
     printf("  --re RE              Reynolds number\n");
-    printf("  --order N            order of the finite differences: 2, 4 or 6 (default 6)\n");
+    printf("  --order N            order of the finite differences: 2, 4 or 6 (default 6),\n"
+           "                       or compact6 (periodic cases: Lele's sixth-order compact)\n");
     printf("  --integrals-interval N  write E, Z, P to output/integrals.csv every N steps\n"
            "                       (default 1; 0 = never)\n");
     printf("  --poisson-order N    2 (5-point, default) or 4 (compact 9-point) Poisson\n"
@@ -308,7 +309,10 @@ int main(int argc, char *argv[])
             ok = parse_double(optarg, &peak_k) && peak_k > 0.;
             break;
         case 'O':
-            ok = parse_int(optarg, &order) && (order == 2 || order == 4 || order == 6);
+            if (strcmp(optarg, "compact6") == 0)
+                order = FD_COMPACT6;
+            else
+                ok = parse_int(optarg, &order) && (order == 2 || order == 4 || order == 6);
             break;
         case 'A':
             if (strcmp(optarg, "advective") == 0)
@@ -384,7 +388,10 @@ int main(int argc, char *argv[])
     // processes can still take memory after this check, so it is a guard
     // against the clear cases only; backend_create() checks again for the
     // backend it actually uses.
-    double mem_needed = (double)nx * ny * (velocity_order == 4 ? 6.0 : 4.0) * (7.0 * (sizeof(double) + sizeof(int)) + sizeof(int)) + backend_host_memory(nx, ny, use_gpu);
+    // The compact operators are banded circulants about 65 entries wide on
+    // average (81 for the first derivatives, 49 for the second)
+    double row_entries = order == FD_COMPACT6 ? fmin(65.0, (double)(nx > ny ? nx : ny)) : 7.0;
+    double mem_needed = (double)nx * ny * (velocity_order == 4 ? 6.0 : 4.0) * (row_entries * (sizeof(double) + sizeof(int)) + sizeof(int)) + backend_host_memory(nx, ny, use_gpu);
     double mem_avail = available_memory();
     if (mem_avail >= 0. && mem_needed > mem_avail)
     {
@@ -428,6 +435,11 @@ int main(int argc, char *argv[])
                "the periodic cases have none **\n");
         return 1;
     }
+    if (order == FD_COMPACT6 && !periodic)
+    {
+        printf("** Error: --order compact6 applies to the periodic cases **\n");
+        return 1;
+    }
     if (velocity_order == 4 && (nx < 10 || ny < 10))
     {
         printf("** Error: --velocity-order 4 needs at least 10 grid points in x and y **\n");
@@ -457,7 +469,10 @@ int main(int argc, char *argv[])
     if (periodic) printf("Nonlinear term: %s\n", advection == 1 ? "skew-symmetric" : "advective");
     if (hyperviscosity > 0. || hypodrag > 0.)
         printf("Damping: hyperviscosity %g, order %d | hypodrag %g\n", hyperviscosity, hyper_order, hypodrag);
-    printf("Grid: %d x %d | dt: %lf | tf: %lf\n", nx, ny, dt, tf);
+    printf("Grid: %d x %d | dt: %lf | tf: %lf | derivatives: %s\n", nx, ny, dt, tf,
+           order == FD_COMPACT6 ? "compact, order 6" : order == 4 ? "order 4"
+                                                   : order == 2   ? "order 2"
+                                                                  : "order 6");
 #ifdef _OPENMP
     default_threads();
     printf("OpenMP threads: %d\n", omp_get_max_threads());
