@@ -393,7 +393,7 @@ In these decaying runs (one Reynolds number, one initial spectrum, two grids), p
 
 **Across regimes.** Repeating the comparison with the Reynolds number (5·10³, 8·10⁴) and the initial spectrum (k₀ = 5, 20) varied, the ordering in decaying turbulence, before the runs decorrelate, is not organized by the cell Reynolds number `Re·h` (the three 256² cases at `Re·h` = 78 fall in three regimes). It is organized by how well the grid resolves the flow's enstrophy-dissipation length `l_η = (ν³/η)^(1/6)`, with η the reference's enstrophy dissipation: ordered by `k_max·l_η` (`k_max = π/h`), the leading scheme changes monotonically in all ten cases. The energy at the cutoff, `E(K_Nyquist)/E_max` of a 2048² reference, orders them only approximately. Ten points place the boundaries roughly, and the organization does not carry over to the forced runs.
 
-- **k_max·l_η ≲ 1** (under-resolved): explicit order 6 leads on range and cost.
+- **k_max·l_η ≲ 1** (under-resolved for every scheme): explicit order 6 has the smallest bandwidth error and cost. That makes it the least bad under-resolved run, not a resolved one.
 - **1 ≲ k_max·l_η ≲ 2**: compact leads (1.4–1.6× the shells of order 6, cost 0.44–0.74×). Wherever k_max·l_η ≳ 1 it resolves 1.3–1.6× the shells of order 6.
 - **k_max·l_η ≈ 2**: compact and pseudospectral are within 4 % of each other.
 - **k_max·l_η ≳ 2.5** (well resolved): pseudospectral leads, up to 1.7× the shells of order 6, at 0.54–0.76× its cost at equal range.
