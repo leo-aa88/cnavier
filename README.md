@@ -2,7 +2,7 @@
 
 Explicit incompressible Navier-stokes solver written in C based on finite-difference schemes.
 
-## Results
+## Example
 
 ![Re=1000 lid-driven cavity flow](re1000.gif)
 
