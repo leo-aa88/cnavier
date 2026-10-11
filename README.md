@@ -1,8 +1,6 @@
 # cnavier
 
-Explicit incompressible Navier-Stokes solver written in C.
-
-Solves the 2D lid-driven cavity problem using the **vorticity-streamfunction formulation**, which eliminates pressure from the equations and enforces incompressibility exactly.
+Explicit incompressible Navier-stokes solver written in C based on finite-difference schemes.
 
 ## Results
 
