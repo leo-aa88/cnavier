@@ -7,6 +7,7 @@
 #include "utils.h"
 #include "diagnostics.h"
 #include "fourier.h"
+#include "polar.h"
 #ifdef USE_CUDA
 #include "cudasolver.h"
 #endif
@@ -73,6 +74,12 @@ backend *backend_create(const solver_config *cfg, int prefer_gpu)
     b->cfg = *cfg;
 
 #ifdef USE_CUDA
+    // The GPU solver is Cartesian only
+    if (prefer_gpu && cfg->polar)
+    {
+        printf("The polar grid runs on the CPU only - using the CPU\n");
+        prefer_gpu = 0;
+    }
     if (prefer_gpu)
     {
         b->gpu = gpu_init(&b->cfg);
@@ -160,7 +167,15 @@ void backend_continuity(backend *b, double *cmax, double *cmin)
         return;
     }
 #endif
-    if (b->ws.fourier)
+    if (b->cfg.polar)
+    {
+        // The whole divergence into dudx; the stage buffers k1, k2 are free
+        // between steps
+        polar_divergence(b->cfg.polar, b->cfg.DX, b->cfg.DY, b->u.M, b->v.M, b->dudx.M, b->ws.k1.M, b->ws.k2.M);
+        for (k = 0; k < n; k++)
+            b->dvdy.M[k] = 0.0;
+    }
+    else if (b->ws.fourier)
     {
         // The whole divergence into dudx
         fourier_divergence(b->ws.fourier, b->u.M, b->v.M, b->dudx.M);

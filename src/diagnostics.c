@@ -5,6 +5,7 @@
 #include "diagnostics.h"
 #include "poisson.h"
 #include "utils.h"
+#include "polar.h"
 
 // Velocity at node (i, j) for the integrals: the wall velocity on a wall node
 // (left and right walls win at the corners, as in apply_wall_bc), else the
@@ -64,6 +65,32 @@ flow_integrals compute_integrals_with(const solver_config *cfg, fourier_ops *fou
     {
         spmv(*cfg->DX, w.M, wx);
         spmv(*cfg->DY, w.M, wy);
+    }
+    if (cfg->polar)
+    {
+        // Area means on the polar grid: dA = r^2 dxi dtheta, trapezoidal in
+        // xi; |grad w|^2 = (w_th^2 + w_xi^2) / r^2; u = v = 0 on the
+        // cylinder (wall_ut 0). The forcing is not used there.
+        const polar_grid *g = cfg->polar;
+        double area = 0.0;
+        for (i = 0; i < ny; i++)
+        {
+            double weight = ((i == 0 || i == ny - 1) ? 0.5 : 1.0) * g->r[i] * g->r[i];
+            for (j = 0; j < nx; j++)
+            {
+                int k = i * nx + j;
+                double uu = i == 0 ? g->wall_ut : u.M[k], vv = i == 0 ? 0.0 : v.M[k];
+                sE += weight * (uu * uu + vv * vv);
+                sZ += weight * w.M[k] * w.M[k];
+                sP += weight * (wx[k] * wx[k] + wy[k] * wy[k]) * g->inv_r2[i];
+                area += weight;
+            }
+        }
+        r.E = 0.5 * sE / area;
+        r.Z = 0.5 * sZ / area;
+        r.P = 0.5 * sP / area;
+        r.I = r.I_disc = 0.0;
+        return r;
     }
     for (i = 0; i < ny; i++)
         for (j = 0; j < nx; j++)

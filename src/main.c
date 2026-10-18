@@ -14,6 +14,8 @@
 #include "threads.h"
 #include "backend.h"
 #include "diagnostics.h"
+#include "polar.h"
+#include "cylinder.h"
 #ifdef _OPENMP
 #include <omp.h>
 #endif
@@ -59,7 +61,8 @@ enum flow_case
     CASE_SHEAR_LAYER,
     CASE_KOLMOGOROV,
     CASE_FORCED,
-    CASE_DECAYING
+    CASE_DECAYING,
+    CASE_CYLINDER // polar grid only (--geometry polar)
 };
 
 #define CASE_PI 3.14159265358979323846
@@ -140,6 +143,20 @@ static void usage(const char *prog)
     printf("  --seed S             seed of the random forcing and initial field (default 1)\n");
     printf("  --spectrum-interval N  periodic cases: write output/spectrum-1-<n>.csv every N\n"
            "                       steps (default: with the VTK frames; 0 = never)\n");
+    printf("  --geometry NAME      cartesian (default: every case above) or polar: the flow\n"
+           "                       past a circular cylinder of diameter 1 on a log-polar\n"
+           "                       grid (--case cylinder, the only polar case), the\n"
+           "                       options below and --re (default 40), --dt (default: from\n"
+           "                       the stability limits), --tf (default 300), --order,\n"
+           "                       --poisson-order, --wall-closure (default briley),\n"
+           "                       --output-interval (default 0: the final state only)\n");
+    printf("  --ntheta N           polar: grid points in theta (default 256)\n");
+    printf("  --nr N               polar: grid points in r (default: square cells)\n");
+    printf("  --r-inf R            polar: outer radius in diameters (default 40)\n");
+    printf("  --outer-bc NAME      polar: farfield (default; Schlichting wake and a mass\n"
+           "                       correction, Gautier et al. 2013) or freestream\n");
+    printf("  --steady-tol TOL     polar: stop once max |dw/dt| < TOL (default 1e-6; 0 = never)\n");
+    printf("  --diag-interval N    polar: steps between diagnostics (default 100)\n");
 #ifdef USE_CUDA
     printf("  --cpu                run on the CPU instead of the GPU\n");
 #endif
@@ -185,6 +202,11 @@ int main(int argc, char *argv[])
     int dealias = 0;            // 1 = 2/3 rule, 2 = 3/2 padding (Fourier operators only)
     unsigned long long seed = 1;
     int forcing_given = 0;
+    // Polar grid (--geometry polar) and which shared options were given
+    int polar = 0, ntheta = 256, nr = 0, outer_bc = POLAR_FARFIELD, diag_interval = 100;
+    double r_inf = 40., steady_tol = 1E-6;
+    int re_given = 0, dt_given = 0, tf_given = 0, output_given = 0, closure_given = 0, grid_given = 0,
+        polar_given = 0, case_given = 0, other_given = 0;
 
     // Command-line overrides
     static struct option long_opts[] = {
@@ -217,6 +239,13 @@ int main(int argc, char *argv[])
         {"operators", required_argument, 0, 'X'},
         {"dealias", no_argument, 0, 'L'},
         {"pad", no_argument, 0, 'M'},
+        {"geometry", required_argument, 0, 'G'},
+        {"ntheta", required_argument, 0, 'T'},
+        {"nr", required_argument, 0, 'R'},
+        {"r-inf", required_argument, 0, 'I'},
+        {"outer-bc", required_argument, 0, 'B'},
+        {"steady-tol", required_argument, 0, 'Y'},
+        {"diag-interval", required_argument, 0, 'Z'},
         {"cpu", no_argument, 0, 'c'},
         {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}};
@@ -224,11 +253,51 @@ int main(int argc, char *argv[])
     while ((opt = getopt_long(argc, argv, "", long_opts, &opt_index)) != -1)
     {
         int ok = 1;
+        // Options that a polar run refuses (it has no use for them)
+        if (strchr("nxyiaKNeqWsHPDgSAXLMu", opt)) other_given = 1;
         switch (opt)
         {
+        case 'G':
+            if (strcmp(optarg, "cartesian") == 0)
+                polar = 0;
+            else if (strcmp(optarg, "polar") == 0)
+                polar = 1;
+            else
+                ok = 0;
+            break;
+        case 'T':
+            ok = parse_int(optarg, &ntheta) && ntheta >= 8 && ntheta <= MAX_GRID;
+            polar_given = 1;
+            break;
+        case 'R':
+            ok = parse_int(optarg, &nr) && nr >= 8 && nr <= MAX_GRID;
+            polar_given = 1;
+            break;
+        case 'I':
+            ok = parse_double(optarg, &r_inf) && r_inf > 1.;
+            polar_given = 1;
+            break;
+        case 'B':
+            if (strcmp(optarg, "farfield") == 0)
+                outer_bc = POLAR_FARFIELD;
+            else if (strcmp(optarg, "freestream") == 0)
+                outer_bc = POLAR_FREESTREAM;
+            else
+                ok = 0;
+            polar_given = 1;
+            break;
+        case 'Y':
+            ok = parse_double(optarg, &steady_tol) && steady_tol >= 0.;
+            polar_given = 1;
+            break;
+        case 'Z':
+            ok = parse_int(optarg, &diag_interval) && diag_interval >= 1;
+            polar_given = 1;
+            break;
         case 'n':
             ok = parse_int(optarg, &nx);
             ny = nx;
+            grid_given = 1;
             break;
         case 'x':
             ok = parse_int(optarg, &nx);
@@ -238,18 +307,25 @@ int main(int argc, char *argv[])
             break;
         case 'd':
             ok = parse_double(optarg, &dt);
+            dt_given = 1;
             break;
         case 'f':
             ok = parse_double(optarg, &tf);
+            tf_given = 1;
             break;
         case 'o':
             ok = parse_int(optarg, &output_interval);
+            output_given = 1;
             break;
         case 'r':
             ok = parse_double(optarg, &Re) && Re > 0.;
+            re_given = 1;
             break;
         case 'k':
-            if (strcmp(optarg, "cavity") == 0)
+            case_given = 1;
+            if (strcmp(optarg, "cylinder") == 0)
+                flow = CASE_CYLINDER;
+            else if (strcmp(optarg, "cavity") == 0)
                 flow = CASE_CAVITY;
             else if (strcmp(optarg, "taylor-green") == 0)
                 flow = CASE_TAYLOR_GREEN;
@@ -268,6 +344,7 @@ int main(int argc, char *argv[])
             ok = parse_int(optarg, &poisson_order) && (poisson_order == 2 || poisson_order == 4);
             break;
         case 'w':
+            closure_given = 1;
             if (strcmp(optarg, "velocity") == 0)
                 wall_closure = 0;
             else if (strcmp(optarg, "briley") == 0)
@@ -384,6 +461,85 @@ int main(int argc, char *argv[])
         printf("** Error: unexpected argument '%s' **\n", argv[optind]);
         usage(argv[0]);
         return 1;
+    }
+
+    // The polar grid: its own run (cylinder.c), the Cartesian code below untouched
+    if (!polar && (flow == CASE_CYLINDER || polar_given))
+    {
+        printf("** Error: --case cylinder, --ntheta, --nr, --r-inf, --outer-bc, --steady-tol and --diag-interval "
+               "need --geometry polar **\n");
+        return 1;
+    }
+    if (polar)
+    {
+        (void)grid_given;
+        if (case_given && flow != CASE_CYLINDER)
+        {
+            printf("** Error: the polar grid has one case, cylinder **\n");
+            return 1;
+        }
+        if (other_given)
+        {
+            printf("** Error: with --geometry polar the grid is set by --ntheta and --nr; the forcing, periodic-case "
+                   "and --velocity-order options do not apply **\n");
+            return 1;
+        }
+        if (order != 2 && order != 4 && order != 6)
+        {
+            printf("** Error: --geometry polar needs --order 2, 4 or 6 **\n");
+            return 1;
+        }
+        if (poisson_type != 3)
+        {
+            printf("** Error: --geometry polar needs the FFT Poisson solver (poisson_type = 3) **\n");
+            return 1;
+        }
+        if (dt_given && !(dt > 0.))
+        {
+            printf("** Error: dt and tf must be positive and finite **\n");
+            return 1;
+        }
+        if (tf_given && !(tf > 0.))
+        {
+            printf("** Error: dt and tf must be positive and finite **\n");
+            return 1;
+        }
+        if (output_interval < 0)
+        {
+            printf("** Error: output interval must not be negative **\n");
+            return 1;
+        }
+        if (nr > 0 && nr < 8)
+        {
+            printf("** Error: --nr must be at least 8 **\n");
+            return 1;
+        }
+#ifdef _OPENMP
+        default_threads();
+        printf("OpenMP threads: %d\n", omp_get_max_threads());
+#endif
+        cylinder_options co;
+        co.ntheta = ntheta;
+        co.nr = nr;
+        co.r_inf = r_inf;
+        co.Re = re_given ? Re : 40.;
+        co.dt = dt_given ? dt : 0.;
+        co.tf = tf_given ? tf : 300.;
+        co.order = order;
+        co.poisson_order = poisson_order;
+        co.wall_closure = closure_given ? wall_closure : 1;
+        co.time_scheme = time_scheme;
+        co.outer_bc = outer_bc;
+        co.steady_tol = steady_tol;
+        co.diag_interval = diag_interval;
+        co.output_interval = output_given ? output_interval : 0;
+        co.use_gpu = use_gpu;
+        if (co.dt > 0. && !(co.tf / co.dt >= 1.))
+        {
+            printf("** Error: tf/dt gives %g timesteps; it must be at least 1 **\n", co.tf / co.dt);
+            return 1;
+        }
+        return cylinder_run(&co);
     }
 
     // Reject what the solver cannot handle. The tests on dt and tf are
@@ -625,7 +781,7 @@ int main(int argc, char *argv[])
     freesm(sIy);
 
     // Everything that defines the run, for whichever backend runs it
-    solver_config cfg;
+    solver_config cfg = {0};
     cfg.nx = nx;
     cfg.ny = ny;
     cfg.dx = dx;

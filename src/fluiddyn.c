@@ -5,6 +5,7 @@
 #include "fluiddyn.h"
 #include "linearalg.h"
 #include "fourier.h"
+#include "polar.h"
 
 void euler(mtrx w, mtrx dwdx, mtrx dwdy, mtrx d2wdx2, mtrx d2wdy2, mtrx u, mtrx v, const double *f,
            double Re, double dt)
@@ -70,7 +71,20 @@ rk4_ctx rk4_alloc(const solver_config *cfg)
         printf("** Error: periodic boundaries need the FFT Poisson solver (poisson_type 3) **\n");
         exit(1);
     }
-    ctx.fft = cfg->poisson_type == 3 && !cfg->periodic ? fft_setup(nx, ny) : NULL;
+    if (cfg->polar)
+    {
+        const polar_grid *g = cfg->polar;
+        if (g->ntheta != nx || g->nr != ny || cfg->periodic || cfg->poisson_type != 3 || cfg->fourier ||
+            cfg->advection != 0 || cfg->DXv || cfg->DYv)
+        {
+            printf("** Error: a polar grid needs nx = ntheta, ny = nr, walls (periodic 0), the FFT Poisson solver "
+                   "(poisson_type 3), the sparse operators and the advective form **\n");
+            exit(1);
+        }
+    }
+    ctx.fft = cfg->poisson_type == 3 && !cfg->periodic && !cfg->polar ? fft_setup(nx, ny) : NULL;
+    ctx.polar = cfg->polar ? polar_poisson_setup(cfg->polar, cfg->DX2, cfg->poisson_order) : NULL;
+    ctx.polar_version = 0;
     if ((cfg->fourier && !cfg->periodic) || (cfg->dealias && !cfg->fourier) || cfg->dealias < 0 || cfg->dealias > 2)
     {
         printf("** Error: the Fourier operators need a periodic grid, and dealiasing the Fourier operators **\n");
@@ -130,6 +144,8 @@ void rk4_free(rk4_ctx *ctx)
     freem(&ctx->w_solved);
     fft_cleanup(ctx->fft);
     ctx->fft = NULL;
+    polar_poisson_free(ctx->polar);
+    ctx->polar = NULL;
     periodic_cleanup(ctx->periodic);
     ctx->periodic = NULL;
     fourier_free(ctx->fourier);
@@ -155,6 +171,13 @@ static int psi_is_current(mtrx w, const rk4_ctx *ctx)
     int i, nx = ctx->cfg.nx, ny = ctx->cfg.ny, edge = ctx->cfg.periodic ? 0 : 1;
 
     if (!ctx->psi_valid || (!ctx->cfg.periodic && ctx->cfg.poisson_type != 3)) return 0;
+    if (ctx->cfg.polar)
+    {
+        // Every column is interior in theta; the solve also read the outer
+        // boundary values, which may have changed since
+        if (ctx->polar_version != ctx->cfg.polar->version) return 0;
+        return memcmp(&MAt(w, 1, 0), &MAt(ctx->w_solved, 1, 0), (size_t)(ny - 2) * nx * sizeof(double)) == 0;
+    }
     for (i = edge; i < ny - edge; i++)
         if (memcmp(&MAt(w, i, edge), &MAt(ctx->w_solved, i, edge), (size_t)(nx - 2 * edge) * sizeof(double)) != 0)
             return 0;
@@ -172,7 +195,12 @@ static void solve_psi(mtrx w, int remember, rk4_ctx *ctx)
 {
     // Poisson solve: nabla^2 psi = -w
     negcpy(ctx->rhs, w);
-    if (ctx->cfg.periodic)
+    if (ctx->polar)
+    {
+        polar_poisson_solve(ctx->polar, w.M, ctx->cfg.polar->psi_out, ctx->psi.M);
+        ctx->polar_version = ctx->cfg.polar->version;
+    }
+    else if (ctx->cfg.periodic)
         poisson_periodic(ctx->periodic, ctx->rhs, ctx->psi);
     else if (ctx->cfg.poisson_type == 1)
         poisson(ctx->rhs, ctx->psi, ctx->psi_scratch, ctx->cfg.dx, ctx->cfg.dy,
@@ -218,6 +246,12 @@ static void velocity_from_vorticity(mtrx w, mtrx u, mtrx v, int remember, rk4_ct
         return;
     }
     if (!psi_is_current(w, ctx)) solve_psi(w, remember, ctx);
+    if (ctx->cfg.polar)
+    {
+        // u = u_theta = -(1/r) DY psi, v = u_r = (1/r) DX psi (polar.h)
+        polar_velocity(ctx->cfg.polar, ctx->cfg.DX, ctx->cfg.DY, ctx->psi.M, u.M, v.M);
+        return;
+    }
 
     // Recover u = dpsi/dy, v = -dpsi/dx
     spmv(ctx->cfg.DYv ? *ctx->cfg.DYv : *ctx->cfg.DY, ctx->psi.M, u.M);
@@ -292,6 +326,11 @@ static void set_wall_vorticity(mtrx w, mtrx u, mtrx v, const rk4_ctx *ctx)
     int i, j, nx = ctx->cfg.nx, ny = ctx->cfg.ny;
     const smtrx *DX = ctx->cfg.DX, *DY = ctx->cfg.DY;
 
+    if (ctx->cfg.polar)
+    {
+        polar_boundary_vorticity(ctx->cfg.polar, ctx->cfg.wall_closure, DX, DY, w, &ctx->psi, u, v);
+        return;
+    }
     if (ctx->cfg.wall_closure == 1)
     {
         set_wall_vorticity_psi(w, ctx);
@@ -364,6 +403,15 @@ static void add_forcing_terms(mtrx out, mtrx w, rk4_ctx *ctx)
             MAt(out, i, j) += -drag * MAt(w, i, j) + (ctx->kolmogorov ? ctx->kolmogorov[i] : 0.0);
 }
 
+// The wall velocities: the four walls of wall_bc, or the cylinder of a polar grid
+static void impose_walls(mtrx u, mtrx v, const rk4_ctx *ctx)
+{
+    if (ctx->cfg.polar)
+        polar_apply_bc(ctx->cfg.polar, u, v);
+    else
+        apply_wall_bc(u, v, &ctx->cfg.bc);
+}
+
 // out = -u*(dw/dx) - v*(dw/dy) + (1/Re)*(d2w/dx2 + d2w/dy2) + f(t). Also sets
 // u, v from w's interior and the wall velocities, and w's boundary from u, v.
 void dwdt(mtrx w, mtrx u, mtrx v, mtrx out, double t, rk4_ctx *ctx)
@@ -378,11 +426,34 @@ void dwdt(mtrx w, mtrx u, mtrx v, mtrx out, double t, rk4_ctx *ctx)
     velocity_from_vorticity(w, u, v, 0, ctx);
     if (!ctx->cfg.periodic)
     {
-        apply_wall_bc(u, v, &ctx->cfg.bc);
+        impose_walls(u, v, ctx);
         set_wall_vorticity(w, u, v, ctx);
     }
 
     derivatives(w, ctx);
+
+    if (ctx->cfg.polar)
+    {
+        // The same terms with the metric factors of the polar grid (polar.h):
+        // 1/r on the advection, 1/r^2 on the Laplacian, one pair per row
+        const polar_grid *g = ctx->cfg.polar;
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static) if (ny * nx >= OMP_MIN_WORK)
+#endif
+        for (i = 0; i < ny; i++)
+        {
+            int j;
+            double a = g->inv_r[i], d = g->inv_r2[i] / ctx->cfg.Re;
+            for (j = 0; j < nx; j++)
+                MAt(out, i, j) = -a * (MAt(u, i, j) * MAt(ctx->dwdx, i, j) + MAt(v, i, j) * MAt(ctx->dwdy, i, j)) +
+                                 d * (MAt(ctx->d2wdx2, i, j) + MAt(ctx->d2wdy2, i, j));
+        }
+        const double *fs = vorticity_source_at(t, ctx);
+        if (fs)
+            for (i = 0; i < nx * ny; i++)
+                out.M[i] += fs[i];
+        return;
+    }
 
     // RHS: dw/dt = -u*dw/dx - v*dw/dy + (1/Re)*(d2w/dx2 + d2w/dy2)
 #ifdef _OPENMP
@@ -652,7 +723,6 @@ void apply_wall_bc(mtrx u, mtrx v, const wall_bc *bc)
 void step(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx)
 {
     double dt = ctx->cfg.dt;
-    const wall_bc *bc = &ctx->cfg.bc;
 
     // Vorticity BCs: w = dv/dx - du/dy evaluated at boundaries (walls only).
     // The formula from psi needs psi, which a first step does not have yet.
@@ -660,7 +730,7 @@ void step(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx)
         velocity_from_vorticity(w, u, v, 1, ctx);
     if (!ctx->cfg.periodic)
     {
-        apply_wall_bc(u, v, bc);
+        impose_walls(u, v, ctx);
         set_wall_vorticity(w, u, v, ctx);
     }
 
@@ -674,7 +744,17 @@ void step(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx)
         if (ctx->cfg.time_scheme == 1) velocity_from_vorticity(w, u, v, 0, ctx);
     }
 
-    if (ctx->cfg.time_scheme == 1)
+    if (ctx->cfg.time_scheme == 1 && ctx->cfg.polar)
+    {
+        // Euler on a polar grid: the right-hand side of dwdt() (whose solve
+        // repeats the one that gave u, v and is skipped), then the solve
+        int k, n = ctx->cfg.nx * ctx->cfg.ny;
+        dwdt(w, u, v, ctx->k1, ctx->cfg.t0 + (double)ctx->steps * dt, ctx);
+        for (k = 0; k < n; k++)
+            w.M[k] += dt * ctx->k1.M[k];
+        velocity_from_vorticity(w, u, v, 1, ctx);
+    }
+    else if (ctx->cfg.time_scheme == 1)
     {
         // Euler: single RHS evaluation, then one Poisson solve. The source,
         // the forcing and damping terms and the skew-symmetric correction go
@@ -718,7 +798,7 @@ void step(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx)
     {
         mtrxcpy(ctx->k1, u);
         mtrxcpy(ctx->k2, v);
-        apply_wall_bc(ctx->k1, ctx->k2, bc);
+        impose_walls(ctx->k1, ctx->k2, ctx);
         set_wall_vorticity(w, ctx->k1, ctx->k2, ctx);
     }
     ctx->steps++;

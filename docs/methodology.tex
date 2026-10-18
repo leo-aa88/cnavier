@@ -1416,6 +1416,84 @@ The strongest parts of the present methodology are the exact discrete streamfunc
 For educational CFD, numerical experimentation, backend comparisons, and as a foundation for further research-oriented development, these characteristics make the project both useful and unusually auditable.  For publication-quality quantitative claims, the next step is not to complicate the code immediately, but to formalize its grid convention and add systematic temporal/spatial convergence and benchmark-error measurements.
 
 % =============================================================================
+\section{Polar Grid: Flow Past a Circular Cylinder}
+\label{sec:polar}
+% =============================================================================
+
+With \code{--geometry polar} (\code{solver_config.polar} set; the default, \code{NULL}, is the Cartesian solver of the previous sections, unchanged) the same vorticity--streamfunction solver runs on a log-polar grid around a circular cylinder of diameter $D=1$ (radius $R=\tfrac12$) in a uniform stream $U=1$, with $\Rey=UD/\nu$.
+
+\subsection{Conformal coordinates}
+The radius is mapped as $r=R\,e^{\xi}$, with $\xi\in[0,\xi_\infty]$, $\xi_\infty=\ln(r_\infty/R)$, and $\theta\in[0,2\pi)$, both uniform.  The map is conformal with scale factor $h=r$, so
+\begin{align}
+  \psi_{\xi\xi}+\psi_{\theta\theta} &= -r^2\omega, \\
+  u_r=\frac1r\,\psi_\theta,\qquad u_\theta &= -\frac1r\,\psi_\xi, \\
+  \frac{\partial\omega}{\partial t} &= -\frac{u_\theta\,\omega_\theta+u_r\,\omega_\xi}{r}+\frac{\omega_{\xi\xi}+\omega_{\theta\theta}}{\Rey\,r^2}.
+\end{align}
+In the computational plane these are the Cartesian equations with one factor per row: $1/r$ on the advection and $1/r^2$ on the Laplacian.  The fields keep the solver's layout: column $j$ is $\theta_j=j\,\Delta\theta$, $\Delta\theta=2\pi/n_\theta$ (periodic, built with \code{SDiff1_periodic} and \code{SDiff2_periodic}); row $i$ is $\xi_i=i\,\Delta\xi$ (built with \code{SDiff1} and \code{SDiff2} and their one-sided end rows), with the cylinder on row~0.  The solver's $u$ is $u_\theta$ and its $v$ is $u_r$.  The pair $(\theta,\xi)$ is left-handed where $(r,\theta)$ is right-handed, so the velocity is $u=-D_y\psi/r$, $v=D_x\psi/r$, with the opposite signs of the Cartesian $u=D_y\psi$, $v=-D_x\psi$.  The divergence $(D_y(rv)+D_x(ru))/r^2=(D_yD_x-D_xD_y)\psi/r^2$ vanishes to round-off, because the Kronecker operators commute.  By default the cells are square, $\Delta\xi\approx\Delta\theta$, so the cell size grows linearly with $r$, and an outer radius of $40D$ costs $n_r\approx 0.7\,n_\theta$ points.  $\theta=0$ points downstream.  The cosine and sine tables are mirror-symmetric to the last bit, with $\cos\theta=0$ exactly at $\theta=\pi/2$ and $3\pi/2$, so the scheme preserves the symmetry of the flow about the wake axis to round-off.
+
+\subsection{Poisson solver}
+A real FFT in $\theta$ gives, for each mode $m$,
+\begin{equation}
+  \delta_{\xi\xi}\hat\psi_m+s_m\hat\psi_m=\widehat{(-r^2\omega)}_m,\qquad \hat\psi_m(0)=0,\quad \hat\psi_m(\xi_\infty)=\widehat{(\psi_{\rm out})}_m,
+\end{equation}
+where $s_m$ is the symbol of $D_{\theta\theta}$ (read from the operator's first row, as for the periodic solver), so that the $\theta$ part of the Poisson operator matches the transport's.  In $\xi$ the operator is the three-point one (\code{--poisson-order 2}) or the compact fourth-order one, $\delta^2\hat\psi+s_m(1+\Delta\xi^2\delta^2/12)\hat\psi=(1+\Delta\xi^2\delta^2/12)\hat f$ (\code{--poisson-order 4}), which is still tridiagonal.  Its right-hand side on the boundary rows is extrapolated (cubically) from the interior.  Each mode is solved by the Thomas algorithm with factors computed once.  The systems are diagonally dominant for every $s_m\le 0$.
+
+\subsection{Boundary conditions}
+\paragraph{Cylinder.}  No slip: $\psi=0$, $u=v=0$ on row~0.  The wall vorticity is $\omega_w=-\psi_{\xi\xi}/R^2$, from Briley's third-order formula in $\xi$ (\code{--wall-closure briley}, the default here), or $\omega_w=(D_y(ru)-D_x(rv))/r^2$ with the one-sided rows (\code{velocity}).
+\paragraph{Outer boundary.}  The Poisson solver needs one boundary type for every $\theta$, so $\psi$ is Dirichlet, $\psi=\psi_{\rm out}(\theta)$.  On the inflow part ($\cos\theta<0$) $\omega=0$, and on the outflow part it has zero normal gradient.  With \code{--outer-bc freestream}, $\psi_{\rm out}=r_\infty\sin\theta$.  With \code{farfield} (the default), following Gautier, Biau and Lamballais~\cite{gautier2013} the far velocity is $\bm u_\infty+\bm u_1+\bm u_2$.  $\bm u_1$ is the Schlichting wake, with deficit
+\begin{equation}
+  d=\frac{C_D\sqrt{\Rey}}{4\sqrt\pi}\,\frac{e^{-\Rey\,r(1-\cos\theta)/2}}{\sqrt r}
+\end{equation}
+in $u_x$ and $u_y=-\tfrac12\sin\theta\,d$.  $\bm u_2$ is a uniform radial outflow that returns the flux the deficit removes (Hasan et al.), which is what makes $\psi_{\rm out}=r_\infty\sin\theta+\int_0^\theta r_\infty(\bm u_1+\bm u_2)\cdot\bm e_r\,\dd\theta'$ single-valued.  The integral is done by FFT.  The condition carries the drag coefficient of the body: the run follows its own $C_D$, under-relaxed by $\tfrac12$ at every diagnostic step from $t=5$ on, and the boundary values change only between steps.
+
+\subsection{Time step and diagnostics}
+The viscous term is stiffest on the cylinder, so the limits are those of the uniform $(\theta,\xi)$ grid at Reynolds number $\Rey R^2$, and the Courant limit uses the smallest cell $R\min(\Delta\xi,\Delta\theta)$ and the speed $2U$, the peak of potential flow.  Without \code{--dt} the step is $0.9$ of the smaller limit.  The run stops at steady state, when $\max|\partial\omega/\partial t|$ over the interior falls below \code{--steady-tol}.
+\begin{itemize}[leftmargin=2em]
+  \item \textbf{Forces} from the wall vorticity alone.  The friction is $\tau=\nu\omega_w$.  On a no-slip wall the $\theta$-momentum equation gives $\partial p/\partial\theta=R\nu\,\partial\omega/\partial r=\nu\,\omega_\xi$, so integrating by parts, $C_{D,p}=\nu\oint\omega_\xi\sin\theta\,\dd\theta$ and $C_{D,f}=-\nu\oint\omega_w\sin\theta\,\dd\theta$ (trapezoidal, spectrally accurate for these periodic integrands).  The wall pressure, integrated by FFT, is written to \code{output/cylinder_surface.csv}.
+  \item \textbf{Separation angle} $\theta_s$ (from the front stagnation point): the zero of $\omega_w$ on the upper surface, by cubic interpolation.  \textbf{Wake length} $L_w/D$: the zero of $u_r$ on the wake axis, less $R$.  \textbf{Recirculation centre} $(a,b)$: the minimum of $\psi$ in the upper bubble, refined by parabolas; $a$ downstream of the rear stagnation point, $b$ the distance between the two centres.
+  \item The velocity at any point by cubic Lagrange interpolation in $(\xi,\theta)$, for the reference value at $(x,y)=(3,3)$; the asymmetry $\max|\omega(\theta)+\omega(-\theta)|$; and the continuity check.
+\end{itemize}
+The GPU backend is Cartesian only.  A polar configuration runs on the CPU, with a message, even when the GPU is asked for.
+
+\subsection{Verification and validation}
+\code{tests/test_polar.c} checks the following.
+\begin{itemize}[leftmargin=2em]
+  \item The Poisson solver against potential flow, $\psi=A(r-R^2/r)\sin\theta$: observed orders 2.00 and 3.99.  The second-order operator also reproduces its own discrete system to $2\times10^{-14}$.
+  \item The velocity signs and its divergence ($3\times10^{-15}$).
+  \item A manufactured solution of the full solver, $\psi=g(t)(r-R)^2(r_\infty-r)^3T(\theta)$, with three $\theta$ modes and its source in closed form.  It converges at second order with order-2 operators and at about 2.7 with orders 4 and 6, the compact Poisson operator and Briley's closure.
+  \item The diagnostics on fields with known answers.
+  \item The symmetry of the impulsive start, and the CPU fallback.
+\end{itemize}
+The validation is against the reference solution of Gautier et al.~\cite{gautier2013} at $\Rey=40$, a pseudo-spectral computation on $200\times1024$ points with $r_\infty=40D$: $C_D=1.4931$, $L_w/D=2.2360$, $\theta_s=126.39^\circ$, $(a,b)/D=(0.71,0.59)$.  \Cref{tab:cylinder} gives the steady states (order 6, RK4, far-field boundary unless stated), from \code{tools/cylinder_validate.py}.
+\begin{table}[ht]
+\centering
+\caption{Steady flow past a cylinder at $\Rey=40$ against Gautier et al.~\cite{gautier2013}.}
+\label{tab:cylinder}
+\begin{tabular}{@{}lrlllll@{}}
+\toprule
+Grid ($n_\theta\times n_r$) & $r_\infty$ & Outer & $C_D$ & $L_w/D$ & $\theta_s$ ($^\circ$) & $(a,b)/D$ \\
+\midrule
+$64\times46$ & 40 & far field & 1.4716 & 2.2587 & 126.291 & 0.81, 0.59 \\
+$128\times90$ & 40 & far field & 1.4903 & 2.2459 & 126.359 & 0.70, 0.60 \\
+$256\times180$ & 40 & far field & 1.4969 & 2.2431 & 126.356 & 0.70, 0.59 \\
+$256\times180$, Poisson order 4 & 40 & far field & 1.4972 & 2.2421 & 126.354 & 0.70, 0.59 \\
+$256\times168$ & 30 & far field & 1.5002 & 2.2429 & 126.347 & 0.70, 0.59 \\
+$256\times189$ & 50 & far field & 1.4953 & 2.2428 & 126.361 & 0.70, 0.59 \\
+$256\times180$ & 40 & free stream & 1.5134 & 2.2473 & 126.300 & 0.70, 0.59 \\
+\midrule
+Gautier et al. & 40 & & 1.4931 & 2.2360 & 126.395 & 0.71, 0.59 \\
+\bottomrule
+\end{tabular}
+\end{table}
+From $128\times90$ up, the far-field runs are within $0.5\%$ of the reference in $C_D$ and $L_w/D$ and within $0.05^\circ$ in $\theta_s$, inside the $10\%$ scatter of the published values ($1.48<C_D<1.62$).  The remaining difference comes from the outer boundary, not the grid.
+\begin{itemize}[leftmargin=2em]
+  \item $C_D$ converges at an observed order of $1.5$, to $1.5006$ by Richardson extrapolation.
+  \item $L_w/D$ is grid-converged with the compact Poisson operator: $2.2420$ on $128\times90$ and $2.2421$ on $256\times180$.
+  \item $C_D$ changes by $0.3\%$ between $r_\infty=30$ and $50$, in the opposite direction to the reference's own trend.  The reference extrapolates the velocity from the interior at the outer boundary, where the far-field model here fixes $\psi$.
+\end{itemize}
+The free-stream boundary gives $C_D$ $1.4\%$ high and accelerates the centreline flow spuriously to $u_x=1$ near the outflow, the ``Dirichlet'' behaviour of the reference's Figure~1.  Every run is symmetric to $2\times10^{-14}$ and divergence-free to $3\times10^{-13}$.
+
+% =============================================================================
 \appendix
 \section{Mapping Between Equations and Source Code}
 % =============================================================================
@@ -1440,6 +1518,9 @@ Velocity recovery & \code{velocity\_from\_vorticity()} / \code{velocity\_kernel}
 Divergence diagnostic & main-loop CSR operations / \code{continuity\_kernel} \\
 Ghia centerlines & \code{print\_centerline()} in \code{src/utils.c} \\
 Verification suite & \code{tests/test\_solver.c} \\
+Polar grid, Poisson solver, cylinder diagnostics & \code{src/polar.c} (\code{polar.h}) \\
+Flow past a cylinder & \code{cylinder\_run()} in \code{src/cylinder.c} \\
+Polar tests & \code{tests/test\_polar.c} \\
 \bottomrule
 \end{longtable}
 
@@ -1458,7 +1539,7 @@ with \code{main} observed at commit
 on 6 October 2026.  Numerical details in this manual describe the source code at that repository state; later commits may change defaults or algorithms.
 
 % =============================================================================
-\begin{thebibliography}{9}
+\begin{thebibliography}{99}
 
 \bibitem{ghia1982}
 U. Ghia, K. N. Ghia, and C. T. Shin,
@@ -1507,6 +1588,9 @@ U. Frisch, S. Kurien, R. Pandit, W. Pauls, S. S. Ray, A. Wirth and J.-Z. Zhu,
 \bibitem{canuto2006}
 C. Canuto, M. Y. Hussaini, A. Quarteroni and T. A. Zang,
 \emph{Spectral Methods: Fundamentals in Single Domains}, Springer, 2006.
+
+\bibitem{gautier2013}
+R.~Gautier, D.~Biau and E.~Lamballais, A reference solution of the flow over a circular cylinder at $\mathrm{Re}=40$, \emph{Computers \& Fluids} \textbf{75} (2013) 103--111; arXiv:1310.6641.
 
 \end{thebibliography}
 

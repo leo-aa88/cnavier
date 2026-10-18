@@ -1,0 +1,9 @@
+quantity,value,source
+cd,1.4931,Gautier et al. 2013 Table 2 (200x1024; r_inf = 40)
+wake_length,2.2360,Gautier et al. 2013 Table 2 (L_w/D from the rear stagnation point)
+separation_angle,126.3945,Gautier et al. 2013 Table 2 (degrees from the front stagnation point)
+vortex_a,0.71,Gautier et al. 2013 Table 1 (a/D)
+vortex_b,0.59,Gautier et al. 2013 Table 1 (b/D)
+ux_3_3,1.0670111347099145,Gautier et al. 2013 Appendix A (x = 3; y = 3)
+uy_3_3,0.015134054077428072,Gautier et al. 2013 Appendix A (x = 3; y = 3)
+w_3_3,-6.5845796777125321e-06,Gautier et al. 2013 Appendix A (x = 3; y = 3)

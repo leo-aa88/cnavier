@@ -74,6 +74,15 @@ typedef struct solver_config
     // Built-in drag, Kolmogorov forcing and random forcing (forcing.h); all
     // zero for none
     forcing_config forcing;
+
+    // Polar grid around a cylinder (polar.h), or NULL for the Cartesian
+    // solver (the default). With it, x is theta (periodic, DX and DX2 built
+    // from SDiff1_periodic and SDiff2_periodic) and y is xi (DY and DY2 from
+    // SDiff1 and SDiff2, the cylinder on row 0); periodic is 0, poisson_type
+    // 3 (the polar FFT solver, of order poisson_order) and the forcing,
+    // Fourier operators and DXv, DYv are not used. Owned by the caller, like
+    // the operators; its outer boundary values may be changed between steps.
+    const struct polar_grid *polar;
 } solver_config;
 
 // CPU workspace: everything needed to advance a timestep without allocating
@@ -99,6 +108,8 @@ typedef struct
     mtrx uw, vw;                      // scratch of the skew-symmetric form (cfg.advection 1 only)
     struct fourier_ops *fourier;      // the operators in Fourier space (cfg.fourier only)
     random_forcing *kicks;            // random forcing, else NULL
+    struct polar_poisson *polar;      // polar Poisson solver (cfg.polar), else NULL
+    long polar_version;               // cfg.polar->version that psi was solved with
     long steps;                       // steps taken; the time is cfg.t0 + steps * cfg.dt
 } rk4_ctx;
 

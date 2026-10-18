@@ -88,3 +88,27 @@ rm -f output/spectrum-1-*.csv
     --integrals-interval 0 --advection skew > cascade.txt
 python3 "$here/../tools/cascade.py" check output --kf 8 --from 3 --below 1,6 --above 10,20 --conserves-enstrophy \
     --min-pi-z 50
+
+# The flow past a cylinder at Re = 40 on a coarse polar grid (--geometry
+# polar; 96 x 57, r_inf = 20, about 20 s) against the reference solution of
+# Gautier et al. (2013): C_D 1.4931, L_w/D 2.2360, theta_s 126.39 deg. The
+# current code is within 0.2% (C_D), 0.3% (L_w/D) and 0.06 deg; the steady
+# flow is symmetric and divergence-free to round-off.
+echo "Regression: cylinder at Re = 40 (polar grid) against Gautier et al. (2013)"
+"$bin" --geometry polar --ntheta 96 --r-inf 20 --diag-interval 500 > cylinder.txt
+cd_=$(sed -n 's/^  C_D *\([^ ]*\) .*/\1/p' cylinder.txt)
+lw=$(sed -n 's/^  L_w\/D *\([^ ]*\) .*/\1/p' cylinder.txt)
+ts=$(sed -n 's/^  theta_s *\([^ ]*\) .*/\1/p' cylinder.txt)
+asym=$(sed -n 's/.*asymmetry max |w(theta) + w(-theta)| = \([^ ]*\)$/\1/p' cylinder.txt)
+cont=$(sed -n 's/^Continuity max: \([^ ]*\) | min: \([^ ]*\) .*/\1 \2/p' cylinder.txt)
+if grep -q "^Steady at" cylinder.txt && awk -v c="$cd_" -v l="$lw" -v t="$ts" -v a="$asym" -v k="$cont" 'BEGIN {
+    split(k, m, " "); e = m[1] + 0; if (-m[2] > e) e = -m[2]
+    ok = (c / 1.4931 - 1) ^ 2 < 0.02 ^ 2 && (l / 2.2360 - 1) ^ 2 < 0.02 ^ 2 && (t - 126.3945) ^ 2 < 0.3 ^ 2 &&
+         a + 0 < 1e-12 && e < 1e-12
+    exit !ok }'; then
+    echo "  [ ok ] steady; C_D $cd_, L_w/D $lw, theta_s $ts (within 2%, 2%, 0.3 deg); asymmetry $asym; continuity $cont"
+else
+    echo "  [FAIL] C_D '$cd_', L_w/D '$lw', theta_s '$ts', asymmetry '$asym', continuity '$cont'"
+    tail -12 cylinder.txt
+    exit 1
+fi

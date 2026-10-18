@@ -20,6 +20,7 @@
 #include "diagnostics.h"
 #include "backend.h"
 #include "utils.h"
+#include "test_polar.h"
 #ifdef USE_CUDA
 #include "cudasolver.h"
 #endif
@@ -94,6 +95,7 @@ static void problem_init_ext(problem *p, int nx, int ny, double Lx, double Ly, i
     freesm(sIx);
     freesm(sIy);
 
+    p->cfg = (solver_config){0};
     p->cfg.nx = nx;
     p->cfg.ny = ny;
     p->cfg.dx = dx;
@@ -3355,6 +3357,7 @@ int main(int argc, char **argv)
 #endif
     test_backend();
     test_config_copied();
+    test_polar(check);
 #ifdef USE_CUDA
     run_gpu_tests();
 #endif

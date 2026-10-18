@@ -33,6 +33,7 @@ At each timestep:
 - **Time integration**: explicit Euler (1st order) or classical RK4 (4th order in time; the wall vorticity is updated at every stage and at the end of each step)
 - **Poisson solver**: three options — Gauss-Seidel, SOR, or FFTW3-based direct DST-I solver (default)
 - **Boundaries**: the lid-driven cavity (four walls), or a doubly periodic domain with a periodic FFT Poisson solver (Taylor-Green vortex and double shear layer cases)
+- **Polar grid** (opt-in, `--geometry polar`): the flow past a circular cylinder on a log-polar grid, validated at Re = 40 against the reference solution of Gautier, Biau and Lamballais (2013) (see [Flow past a cylinder](#flow-past-a-cylinder-polar-grid))
 - **Sparse operators**: 2D derivative operators built as CSR sparse matrices via Kronecker products, replacing dense O(n³) matrix-vector multiplies with O(7n) SpMV
 - **GPU acceleration**: optional CUDA backend that runs the whole time loop on an NVIDIA GPU (see [CUDA](#cuda-gpu))
 - **2-D turbulence** (periodic grid): Kolmogorov and random forcing, drag, hyperviscosity and hypodrag, an enstrophy-conserving skew-symmetric nonlinear term, decaying turbulence, and spectra and spectral fluxes with exact discrete budgets (see [2-D turbulence](#two-dimensional-turbulence))
@@ -243,6 +244,12 @@ A few numerical parameters can be overridden without recompiling; anything not g
 | `--wall-closure NAME` | Wall vorticity: `velocity` (`dv/dx − du/dy`, default) or `briley` (third order, from the stream function) |
 | `--velocity-order N` | `2` (default) or `4`: fourth-order derivative rows next to the walls for `u`, `v` from the stream function. These three options apply to walls only |
 | `--case NAME` | `cavity` (default): the lid-driven cavity. On a doubly periodic unit square: `taylor-green`, a decaying vortex compared with the exact solution at the end; `shear-layer`, a double shear layer that rolls up; `kolmogorov`, Kolmogorov forcing from a small random perturbation; `forced`, random forcing with drag from rest; or `decaying`, decaying turbulence from a random-phase field of energy ½ (see [Periodic boundaries](#periodic-boundaries) and [Forcing and drag](#forcing-and-drag)) |
+| `--geometry NAME` | `cartesian` (default; every case above) or `polar`: the flow past a cylinder on a log-polar grid (`--case cylinder`, its only case; see [Flow past a cylinder](#flow-past-a-cylinder-polar-grid)). The options below apply to `polar` only and are refused without it |
+| `--ntheta N`, `--nr N` | Polar: grid points in θ (default 256) and in r (default: square cells, `dξ ≈ dθ`) |
+| `--r-inf R` | Polar: outer radius in cylinder diameters (default 40) |
+| `--outer-bc NAME` | Polar: `farfield` (default; the Schlichting wake and a mass correction, Gautier et al. 2013) or `freestream` (ψ of the free stream) |
+| `--steady-tol TOL` | Polar: stop once `max \|dω/dt\| < TOL` (default 1e-6; `0` runs to `--tf`) |
+| `--diag-interval N` | Polar: steps between lines of `output/cylinder_history.csv` and steady-state checks (default 100) |
 | `--cpu` | CUDA builds only: run on the CPU instead of the GPU |
 | `--help` | Show the option list |
 
@@ -402,6 +409,65 @@ The boundaries sit near the classical thresholds for a resolved (k_max·l_η > 1
 
 `tools/compare_schemes.py` computes the comparison and the plot (methodology, Fig. "crossover"). A paper-shaped draft of this comparison (#50–#56), with the related literature, is in [docs/paper/cnavier_schemes.pdf](docs/paper/cnavier_schemes.pdf). In forced turbulence the time-mean statistics carry about ±8 % sampling scatter from the random forcing, and within it the schemes are indistinguishable in the inertial range, with hyperviscosity or with plain viscosity. They differ only at the cutoff: explicit order 6 falls below the reference there, pseudospectral piles energy up (2× at Nyquist), and compact lies between.
 
+### Flow past a cylinder (polar grid)
+
+`--geometry polar` runs the same vorticity-streamfunction solver on a log-polar grid around a circular cylinder of diameter 1 in a uniform stream (`--case cylinder`, the only polar case; `Re = U D / ν`, default 40). Cartesian geometry stays the default, and every case above is unchanged by it. With `r = R e^ξ` and uniform `ξ`, `θ`, the map is conformal:
+
+```
+ψ_ξξ + ψ_θθ = −r² ω                                   (Poisson)
+u_r = (1/r) ψ_θ,   u_θ = −(1/r) ψ_ξ                   (velocity)
+∂ω/∂t = −(u_θ ω_θ + u_r ω_ξ)/r + (ω_ξξ + ω_θθ)/(Re r²) (transport)
+```
+
+These are the Cartesian equations with a factor `1/r` or `1/r²` on each row. θ takes the place of the periodic `x`, and ξ that of `y` with walls, with the cylinder on row 0. Square cells (`dξ ≈ dθ`) grow linearly with `r`, so an outer radius of 40 diameters costs only `n_r ≈ 0.7 n_θ` points.
+- **Poisson solve:** a real FFT in θ, then one tridiagonal solve in ξ per mode, three-point or compact fourth order (`--poisson-order 4`).
+- **Cylinder wall:** no slip, with the wall vorticity from Briley's formula (default here) or from the velocity.
+- **Outer boundary:** ψ is Dirichlet. `farfield` (default) adds to the free stream the Schlichting wake of the body's own drag coefficient (followed during the run) and a mass correction, as in Gautier, Biau and Lamballais (2013). `freestream` uses ψ = r sin θ only. ω is 0 on inflow and has zero gradient on outflow.
+- **Backend:** CPU only; a CUDA build falls back to the CPU for it with a message.
+
+The run stops at steady state (`max |∂ω/∂t| < --steady-tol`) and compares itself with the reference solution of Gautier et al. (2013, [arXiv:1310.6641](https://arxiv.org/abs/1310.6641); `tests/reference/cylinder_re40.csv`):
+
+```bash
+./cnavier --geometry polar --ntheta 128          # 128 x 90, r_inf = 40: about a minute on one core
+# Steady at t = 145.29 after 29000 steps (max |dw/dt| = 6.690e-07)
+#   C_D          1.49030   reference   1.4931   (-0.19%); pressure 0.97236, friction 0.51794, C_L 7.09e-17
+#   L_w/D        2.24592   reference   2.2360   (+0.44%)
+#   theta_s     126.3594   reference 126.3945   (-0.035 deg)
+```
+
+It writes:
+- `output/cylinder_history.csv`: C_D (pressure and friction parts), L_w/D, θ_s and `max |∂ω/∂t|` over time
+- `output/cylinder_surface.csv`: wall vorticity and wall pressure against θ
+- `output/cylinder_centreline.csv`: u_x on the symmetry axis
+- VTK structured grids of the vorticity (with the velocity) and the stream function, in Cartesian coordinates
+
+The drag comes from the wall vorticity alone: friction `ν ω_w`, and the pressure from `∂p/∂θ = ν ∂ω/∂ξ` on the wall.
+
+**Validation at Re = 40.** The table gives the steady states with order 6, RK4 and Poisson order 2 unless stated (`tools/cylinder_validate.py run/table/plot`). The reference is the 200 × 1024 pseudo-spectral solution with r_inf = 40.
+
+| grid (θ × r) | r_inf | outer boundary | C_D | L_w/D | θ_s (deg) | a/D, b/D | u_x, u_y at (3, 3) |
+|---|---|---|---|---|---|---|---|
+| 64 × 46 | 40 | far field | 1.4716 (−1.44 %) | 2.2587 (+1.02 %) | 126.291 | 0.81, 0.59 | 1.0691, 0.0148 |
+| 128 × 90 | 40 | far field | 1.4903 (−0.19 %) | 2.2459 (+0.44 %) | 126.359 | 0.70, 0.60 | 1.0714, 0.0150 |
+| 256 × 180 | 40 | far field | 1.4969 (+0.26 %) | 2.2431 (+0.32 %) | 126.356 | 0.70, 0.59 | 1.0711, 0.0149 |
+| 256 × 180, `--poisson-order 4` | 40 | far field | 1.4972 (+0.27 %) | 2.2421 (+0.27 %) | 126.354 | 0.70, 0.59 | 1.0711, 0.0149 |
+| 256 × 168 | 30 | far field | 1.5002 (+0.48 %) | 2.2429 (+0.31 %) | 126.347 | 0.70, 0.59 | 1.0725, 0.0147 |
+| 256 × 189 | 50 | far field | 1.4953 (+0.15 %) | 2.2428 (+0.30 %) | 126.361 | 0.70, 0.59 | 1.0705, 0.0150 |
+| 256 × 180 | 40 | free stream | 1.5134 (+1.36 %) | 2.2473 (+0.51 %) | 126.300 | 0.70, 0.59 | 1.0780, 0.0140 |
+| Gautier et al. (2013) | 40 | | 1.4931 | 2.2360 | 126.395 | 0.71, 0.59 | 1.0670, 0.0151 |
+
+- **Spread from the reference.** All far-field runs from 128 × 90 up are within 0.5 % of the reference in C_D and L_w/D and within 0.05° in θ_s. That is well inside the 10 % scatter of the published values the paper collects (1.48 < C_D < 1.62, 2.13 < L_w/D < 2.35).
+- **What limits it is the outer boundary, not the grid.**
+  - On 64, 128 and 256 points, C_D converges at an observed order of 1.5, to 1.5006 (+0.5 %) by Richardson extrapolation.
+  - L_w/D is grid-converged with the compact Poisson operator: 2.2420 on 128 and 2.2421 on 256, which is +0.27 %.
+  - Moving the boundary from r_inf = 30 to 50 changes C_D by 0.3 %, in the opposite direction to the reference's own trend (+0.25 %).
+  - The reference extrapolates the velocity from the interior solution at the outer boundary. Here the far-field model fixes ψ there, and the vorticity has zero gradient on outflow.
+- **The free-stream boundary** blocks the wake: C_D +1.4 %, and a spurious acceleration of the centreline flow to `u_x = 1` over the last ten diameters, the "Dirichlet" curve of the paper's Fig. 1. The far-field boundary removes most of it, ending at the Schlichting deficit `u_x ≈ 0.79`, with a mild upturn in the last few diameters (below).
+- **Round-off checks.** Every run is symmetric about the wake axis to 2e-14 and divergence-free to 3e-13.
+- **Cost.** 128 × 90 takes a minute on one core. 256 × 180 takes 110 000 steps at 5.6 ms (6 threads), about 11 minutes.
+
+![Centreline velocity and wall vorticity at Re = 40](docs/figures/cylinder_re40.png)
+
 ### Grid
 The grid is nodal: node `j` sits at `x = j·Lx/(nx−1)` and node `i` at `y = i·Ly/(ny−1)`, so the first and last row and column of nodes lie on the walls. `nx` and `ny` are independent. Fields are stored as `ny` rows of `nx` values (`x` varies fastest), which is also the layout of the VTK files. Wall velocities are imposed on those nodes, ψ = 0 there for every Poisson solver, and the centerline CSVs are written at the node coordinates (interpolated onto `x = Lx/2` or `y = Ly/2` when no node lies on the centerline, i.e. for an even number of nodes).
 
@@ -434,6 +500,14 @@ builds and runs `test_cnavier`:
 - **Turbulence terms**: with drag, hypodrag and hyperviscosity (orders 2 and 3) the discrete energy and enstrophy budgets close to the time-stepping error; the skew-symmetric nonlinear term conserves enstrophy to round-off (the advective one is off by 40–70 % of the largest shell transfer on a random field) and converges at orders 2, 4 and 6; the decaying-turbulence initial field has the asked energy and is the same on a grid twice as fine; the GPU matches the CPU with all of these at once.
 - **Periodic boundaries**: the periodic operators differentiate at their nominal order and annihilate constants; the periodic Poisson solver solves `(DX2 + DY2) ψ = f` to round-off on odd and even grid sizes, with zero-mean ψ.
 - **Backends**: driving the solver through `backend.c` gives exactly what calling it directly gives, and every solver ignores changes to the caller's configuration after it is created.
+- **Polar grid** (`tests/test_polar.c`):
+  - **Poisson solver:** checked against potential flow past the cylinder, converging at orders 2.00 and 3.99. The three-point operator reproduces its own discrete system to round-off.
+  - **Velocity:** the signs of the velocity, and its divergence at round-off.
+  - **Manufactured solution of the full solver**, with no slip on the cylinder and three θ modes: second order with order-2 operators, about 2.7 with orders 4 and 6 and the compact Poisson operator.
+  - **Diagnostics:** forces, wall pressure, separation angle, wake length, vortex centre and interpolation, on fields with known answers.
+  - **Far-field boundary:** ψ is odd in θ, with the expected deficit.
+  - **Impulsive start:** mirror-symmetric to round-off.
+  - **Backend:** a polar configuration runs on the CPU even when the GPU is asked for.
 - **OpenMP** (with `OPENMP=1`): results on 1 and on 4 threads are bitwise identical above the size where loops go parallel.
 
 ```bash
@@ -463,7 +537,7 @@ A CUDA build tested on a machine without a GPU therefore does **not** count as a
 | Command | What it checks |
 |---|---|
 | `make test-cli` | Invalid command lines (NaN, garbage after numbers, grids out of range, unstable `dt`, ...) are refused with exit status 1 and an error message, and write nothing. A crash counts as a failure |
-| `make regression` | 100 steps of the default case against `tests/reference/`, and the steady default case within 0.004 (`u`) and 0.010 (`v`) of the Ghia et al. (1982) data stored in `tests/reference/`. Non-finite values fail; a self-test checks that. The periodic Taylor-Green vortex against its exact solution on 32² and 64², at sixth order, and its energy in `integrals.csv`; laminar Kolmogorov flow; the dual cascade of forced turbulence on 64² (flux signs and enstrophy conservation, with `tools/cascade.py`) |
+| `make regression` | 100 steps of the default case against `tests/reference/`, and the steady default case within 0.004 (`u`) and 0.010 (`v`) of the Ghia et al. (1982) data stored in `tests/reference/`. Non-finite values fail; a self-test checks that. The periodic Taylor-Green vortex against its exact solution on 32² and 64², at sixth order, and its energy in `integrals.csv`; laminar Kolmogorov flow; the dual cascade of forced turbulence on 64² (flux signs and enstrophy conservation, with `tools/cascade.py`); the cylinder at Re = 40 on a coarse polar grid (96 × 57, r_inf = 20, about 20 s) within 2 % (C_D, L_w/D) and 0.3° (θ_s) of Gautier et al. (2013), divergence-free and symmetric to round-off |
 | `make test-asan` | The test suite and a short run under AddressSanitizer and UndefinedBehaviorSanitizer |
 | `make valgrind` | The test suite and a short run under valgrind; any leak, including memory still reachable at exit, fails |
 | `make format-check` | Formatting against `.clang-format` (`make format` applies it) |
@@ -577,6 +651,8 @@ cnavier/
 │   ├── diagnostics.c   # Energy, enstrophy, palinstrophy; spectra and fluxes
 │   ├── forcing.c       # Kolmogorov and random forcing
 │   ├── fourier.c       # Periodic grids: operator symbols, operators applied in Fourier space
+│   ├── polar.c         # Polar grid: Poisson solver, boundary conditions, cylinder diagnostics, VTK
+│   ├── cylinder.c      # The flow past a cylinder (--geometry polar)
 │   ├── cudasolver.cu   # CUDA backend (built only with CUDA=1)
 │   └── utils.c         # VTK output, random utilities
 ├── include/
@@ -590,20 +666,24 @@ cnavier/
 │   ├── diagnostics.h
 │   ├── forcing.h
 │   ├── fourier.h
+│   ├── polar.h
+│   ├── cylinder.h
 │   └── utils.h
 ├── tests/
 │   ├── test_solver.c   # Unit and solver tests, GPU-vs-CPU checks
+│   ├── test_polar.c    # Polar grid: Poisson solver, manufactured solution, diagnostics
 │   ├── mms.c, mms.h    # Manufactured solution: exact fields, vorticity source, error norms, ablation
 │   ├── convergence.c   # Spatial convergence study (make convergence)
 │   ├── ablation.c      # What limits the spatial order (make ablation)
 │   ├── cli.sh          # Command-line tests
 │   ├── regression.sh   # Stored-result and Ghia et al. checks
-│   └── reference/      # Stored results and the Ghia et al. data
+│   └── reference/      # Stored results, the Ghia et al. data, the cylinder reference values
 ├── tools/
 │   ├── cascade.py      # Spectra: time averages, plots, flux and budget checks, comparisons
 │   ├── snapshots.py    # Vorticity frames side by side
 │   ├── modified_wavenumber.py # Modified wavenumbers of the periodic schemes
-│   └── compare_schemes.py # The schemes of one case against a reference; the crossover plot
+│   ├── compare_schemes.py # The schemes of one case against a reference; the crossover plot
+│   └── cylinder_validate.py # Cylinder runs against Gautier et al. (2013): runs, tables, plots
 ├── output/             # VTK output files
 ├── Re1000_cavity_flow_example.png
 ├── Re1000_cavity_flow_example.mp4

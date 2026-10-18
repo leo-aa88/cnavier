@@ -78,7 +78,7 @@ $(CONFIG): FORCE | $(OBJ_DIR)
 	@echo '$(CC) $(CC_FLAGS) $(NVCC) $(NVCC_FLAGS) $(NVCC_WERROR)' | cmp -s - $@ || echo '$(CC) $(CC_FLAGS) $(NVCC) $(NVCC_FLAGS) $(NVCC_WERROR)' > $@
 
 # Tests: make test (add CUDA=1 to also check the GPU backend against the CPU)
-$(TEST_BIN): $(OBJ_DIR)/test_solver.o $(OBJ_DIR)/mms.o $(filter-out $(OBJ_DIR)/main.o, $(OBJ_FILES))
+$(TEST_BIN): $(OBJ_DIR)/test_solver.o $(OBJ_DIR)/test_polar.o $(OBJ_DIR)/mms.o $(filter-out $(OBJ_DIR)/main.o, $(OBJ_FILES))
 	$(CC) $(CC_FLAGS) $^ -I$(HDR_DIR) -o $@ $(CC_LIBS)
 
 test: $(OBJ_DIR) $(TEST_BIN)
