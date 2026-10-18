@@ -606,6 +606,8 @@ static void test_polar_config(void)
     REFUSED(c.DYv = &p.DY);
     REFUSED(c.nx = c.nx - 1);
     REFUSED(c.ny = c.ny + 1);
+    REFUSED(c.bc.u[3] = 1.0);
+    REFUSED(c.bc.v[0] = 0.5);
 #undef REFUSED
     snprintf(name, sizeof(name), "each of %d unsupported options refused (count not refused)", cases);
     check(name, cases - refused, 0.0);
@@ -754,6 +756,64 @@ static void test_polar_boundary_change(void)
     ops_free(&q);
 }
 
+// backend_psi() before the first step and after backend_set_fields() is the
+// polar Poisson solve of w, and calling it changes no step
+static void test_polar_backend_psi(void)
+{
+    polar_ops p = ops_make(32, 0, 0.5, 4.0, 4);
+    solver_config cfg = polar_cfg(&p);
+    int k, nt = p.g.ntheta, nr = p.g.nr, n = nt * nr;
+    mtrx u = initm(nr, nt), v = initm(nr, nt), w = initm(nr, nt), ref = initm(nr, nt);
+    polar_poisson *s = polar_poisson_setup(&p.g, &p.DX2, cfg.poisson_order);
+    backend *a = backend_create(&cfg, 0), *b = backend_create(&cfg, 0);
+    double d;
+
+    printf("\nPolar grid: backend_psi()\n");
+    // Before the first step: w = 0, psi the potential flow of the grid
+    const mtrx *psi = backend_psi(a);
+    polar_poisson_solve(s, w.M, p.g.psi_out, ref.M);
+    d = 0.0;
+    for (k = 0; k < n; k++)
+        d = fmax(d, fabs(psi->M[k] - ref.M[k]));
+    check("before the first step: the Poisson solve of w (potential flow)", d, 0.0);
+    for (k = 0; k < 10; k++)
+    {
+        backend_step(a);
+        backend_step(b);
+    }
+    backend_get_fields(a, &u, &v, &w);
+    for (k = 0; k < n; k++)
+        w.M[k] *= 1.1;
+    backend_set_fields(a, &u, &v, &w);
+    backend_set_fields(b, &u, &v, &w);
+    psi = backend_psi(a);
+    polar_poisson_solve(s, w.M, p.g.psi_out, ref.M);
+    d = 0.0;
+    for (k = 0; k < n; k++)
+        d = fmax(d, fabs(psi->M[k] - ref.M[k]));
+    check("after backend_set_fields(): the Poisson solve of the new w", d, 0.0);
+    for (k = 0; k < 10; k++)
+    {
+        backend_step(a);
+        backend_step(b);
+    }
+    mtrx *wa, *wb;
+    backend_fields(a, NULL, NULL, &wa);
+    backend_fields(b, NULL, NULL, &wb);
+    d = 0.0;
+    for (k = 0; k < n; k++)
+        d = fmax(d, fabs(wa->M[k] - wb->M[k]));
+    check("steps with and without backend_psi() calls (w, bitwise)", d, 0.0);
+    backend_free(a);
+    backend_free(b);
+    polar_poisson_free(s);
+    freem(&u);
+    freem(&v);
+    freem(&w);
+    freem(&ref);
+    ops_free(&p);
+}
+
 void test_polar(check_fn fn)
 {
     check = fn;
@@ -765,4 +825,5 @@ void test_polar(check_fn fn)
     test_polar_config();
     test_polar_integrals();
     test_polar_boundary_change();
+    test_polar_backend_psi();
 }

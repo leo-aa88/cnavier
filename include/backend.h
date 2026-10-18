@@ -32,9 +32,13 @@ const char *backend_device(const backend *b);
 // One full timestep
 void backend_step(backend *b);
 
-// The stream function of the current fields: the CPU solver's own, the one
-// u and v were computed from, current until the next backend_step(); NULL on
-// the GPU, which does not keep it on the host
+// The stream function of the current w, valid until the next backend_step()
+// or backend_set_fields(). After a step it is the CPU solver's own, the one
+// u and v were computed from. Before the first step and after
+// backend_set_fields() it is solved for w on demand (once), by the solver's
+// Poisson solve, without changing the solver's state, so the steps that
+// follow are the same with or without the call. NULL on the GPU, which does
+// not keep it on the host.
 const mtrx *backend_psi(backend *b);
 
 // Max and min of du/dx + dv/dy for the current velocity field

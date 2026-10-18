@@ -26,6 +26,11 @@ struct backend
     // CPU solver only: workspace, and scratch for the continuity check
     rk4_ctx ws;
     mtrx dudx, dvdy;
+
+    // CPU: ws.psi is that of w (set by a step); else psi, solved on demand
+    // by backend_psi() if psi_solved (cleared by backend_set_fields())
+    int psi_fresh, psi_solved;
+    mtrx psi;
 };
 
 static int on_gpu(const backend *b)
@@ -122,6 +127,7 @@ void backend_free(backend *b)
     }
 #endif
     rk4_free(&b->ws);
+    if (b->psi.M) freem(&b->psi);
     freem(&b->u);
     freem(&b->v);
     freem(&b->w);
@@ -154,11 +160,17 @@ void backend_step(backend *b)
     }
 #endif
     step(b->w, b->u, b->v, &b->ws);
+    b->psi_fresh = 1;
 }
 
 const mtrx *backend_psi(backend *b)
 {
-    return on_gpu(b) ? NULL : &b->ws.psi;
+    if (on_gpu(b)) return NULL;
+    if (b->psi_fresh) return &b->ws.psi;
+    if (!b->psi.M) b->psi = initm(b->cfg.ny, b->cfg.nx);
+    if (!b->psi_solved) stream_function_of(b->w, &b->ws, b->psi);
+    b->psi_solved = 1;
+    return &b->psi;
 }
 
 void backend_continuity(backend *b, double *cmax, double *cmin)
@@ -248,7 +260,9 @@ void backend_set_fields(backend *b, const mtrx *u, const mtrx *v, const mtrx *w)
         return;
     }
 #endif
-    // Arrays from backend_fields() are already the solver's
+    // Arrays from backend_fields() are already the solver's. A new w needs
+    // a new stream function (backend_psi())
+    if (w) b->psi_fresh = b->psi_solved = 0;
     if (u && u->M != b->u.M) mtrxcpy(b->u, *u);
     if (v && v->M != b->v.M) mtrxcpy(b->v, *v);
     if (w && w->M != b->w.M) mtrxcpy(b->w, *w);

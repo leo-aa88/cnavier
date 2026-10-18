@@ -59,6 +59,7 @@ expect nonzero --geometry polar --outer-bc wall
 expect nonzero --geometry polar --dt 1
 expect nonzero --geometry polar --dt -1
 expect nonzero --geometry polar --tf 0
+expect nonzero --geometry polar --tf 0.001
 expect nonzero --geometry polar --steady-tol -1
 expect nonzero --geometry polar --diag-interval 0
 expect nonzero --dt inf

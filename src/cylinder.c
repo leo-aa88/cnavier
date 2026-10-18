@@ -71,11 +71,14 @@ int cylinder_run(const cylinder_options *o)
     double h = R * fmin(g.dxi, g.dtheta);
     dt_limits lim = time_step_limits(&d_t2, &d_x2, h, o->Re * R * R, 2.0, 1.0, o->time_scheme);
     if (dt <= 0.0) dt = round_down_3(0.9 * lim.suggest);
-    if (dt > lim.accept)
+    if (dt > lim.accept || !(o->tf / dt >= 1.0))
     {
-        printf("** Error: dt = %g is too large; use --dt %.3g or less (Courant limit %.3g, stability limit of the "
-               "viscous term on the cylinder %.3g) **\n",
-               dt, round_down_3(lim.suggest), round_down_3(lim.courant), round_down_3(lim.viscous));
+        if (dt > lim.accept)
+            printf("** Error: dt = %g is too large; use --dt %.3g or less (Courant limit %.3g, stability limit of "
+                   "the viscous term on the cylinder %.3g) **\n",
+                   dt, round_down_3(lim.suggest), round_down_3(lim.courant), round_down_3(lim.viscous));
+        else
+            printf("** Error: tf/dt gives %g timesteps (dt = %g); it must be at least 1 **\n", o->tf / dt, dt);
         polar_grid_free(&g);
         freesm(d_t);
         freesm(d_t2);

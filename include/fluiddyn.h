@@ -81,8 +81,9 @@ typedef struct solver_config
     // SDiff1 and SDiff2, the cylinder on row 0). rk4_alloc() requires
     // periodic 0, poisson_type 3 (the polar FFT solver, of order
     // poisson_order), the sparse operators (fourier, dealias 0), the
-    // advective form, no DXv, DYv and no forcing (every field of forcing
-    // zero), and exits otherwise; vorticity_source is applied as on the
+    // advective form, no DXv, DYv, no forcing (every field of forcing zero)
+    // and no wall_bc walls (bc zero; the cylinder's velocity is
+    // polar_grid.wall_ut), and exits otherwise; vorticity_source is applied as on the
     // Cartesian grid. Owned by the caller, like the operators; its outer
     // boundary values may be changed between steps, through the setters of
     // polar.h only.
@@ -116,6 +117,13 @@ typedef struct
     long polar_version;               // cfg.polar->version that psi was solved with
     long steps;                       // steps taken; the time is cfg.t0 + steps * cfg.dt
 } rk4_ctx;
+
+// The stream function of w into out (ny x nx), by the solver's own Poisson
+// solve, leaving the solver's state as it was: its psi, which the next step
+// still reads (the wall closure from psi at the start of a step, the
+// hypodrag), and whether a later step may reuse it. Between steps only (it
+// uses the stage buffers).
+void stream_function_of(mtrx w, rk4_ctx *ctx, mtrx out);
 
 // Why a configuration with cfg->polar cannot run (the requirements in
 // solver_config.polar), or NULL if it can, or if cfg->polar is NULL.

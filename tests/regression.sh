@@ -142,11 +142,12 @@ fi
 
 # The steady-state check measures the rate of change over the steps actually
 # taken since the previous diagnostic. Here the last interval is 1 step of a
-# --diag-interval 250 (251 steps), far from steady (max |dw/dt| about 0.27 at
-# t = 10.8): the run must stop unsteady, not count that step as 250 and pass
-# --steady-tol 2e-3.
+# --diag-interval 250 (dt and tf fix 251 steps), far from steady (max |dw/dt|
+# about 0.27 at t = 10.8): the run must stop unsteady, not count that step as
+# 250 and pass --steady-tol 2e-3.
 echo "Regression: cylinder steady-state check on a short last interval"
-"$bin" --geometry polar --ntheta 32 --r-inf 5 --tf 10.83 --diag-interval 250 --steady-tol 2e-3 > unsteady.txt
+"$bin" --geometry polar --ntheta 32 --r-inf 5 --dt 0.0431 --tf 10.83 --diag-interval 250 --steady-tol 2e-3 \
+    > unsteady.txt
 if grep -q "^Stopped at t = 10.8181 after 251 steps" unsteady.txt; then
     echo "  [ ok ] $(grep '^Stopped' unsteady.txt)"
 else

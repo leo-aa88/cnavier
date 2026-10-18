@@ -44,6 +44,12 @@ const char *polar_config_error(const solver_config *cfg)
         cfg->dealias || cfg->advection != 0 || cfg->DXv || cfg->DYv)
         return "a polar grid needs nx = ntheta, ny = nr, walls (periodic 0), the FFT Poisson solver "
                "(poisson_type 3), the sparse operators and the advective form";
+    // The cylinder's velocity is polar_grid.wall_ut; the four walls of bc do
+    // not exist
+    for (int k = 0; k < 4; k++)
+        if (cfg->bc.u[k] != 0.0 || cfg->bc.v[k] != 0.0)
+            return "a polar grid has no wall_bc walls: bc must be zero (the cylinder's velocity is "
+                   "polar_grid.wall_ut)";
     // The polar right-hand side has no forcing terms: refuse them rather than
     // run without them
     if (fc->drag != 0.0 || fc->kolmogorov_amp != 0.0 || fc->random_rate != 0.0 || fc->hyperviscosity != 0.0 ||
@@ -274,6 +280,29 @@ static void velocity_from_vorticity(mtrx w, mtrx u, mtrx v, int remember, rk4_ct
     spmv(ctx->cfg.DYv ? *ctx->cfg.DYv : *ctx->cfg.DY, ctx->psi.M, u.M);
     spmv(ctx->cfg.DXv ? *ctx->cfg.DXv : *ctx->cfg.DX, ctx->psi.M, v.M);
     negcpy(v, v);
+}
+
+void stream_function_of(mtrx w, rk4_ctx *ctx, mtrx out)
+{
+    mtrx own = ctx->psi;
+    int valid = ctx->psi_valid;
+    long version = ctx->polar_version;
+
+    // Solve into out instead of the solver's psi, which the next step still
+    // reads; and restore everything that decides whether it may reuse it
+    zerosm(out);
+    ctx->psi = out;
+    if (ctx->fourier)
+    {
+        // u, v land in the stage buffers k1, k2, unused between steps
+        fourier_poisson(ctx->fourier, w.M, out.M, ctx->k1.M, ctx->k2.M);
+        ctx->solves++;
+    }
+    else
+        solve_psi(w, 0, ctx);
+    ctx->psi = own;
+    ctx->psi_valid = valid;
+    ctx->polar_version = version;
 }
 
 // First and second derivatives of w into the workspace
