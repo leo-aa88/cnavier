@@ -28,8 +28,10 @@ struct backend
     mtrx dudx, dvdy;
 
     // CPU: ws.psi is that of w (set by a step); else psi, solved on demand
-    // by backend_psi() if psi_solved (cleared by backend_set_fields())
+    // by backend_psi() if psi_solved (cleared by backend_set_fields()) for
+    // the outer boundary values of version psi_version (polar grids)
     int psi_fresh, psi_solved;
+    long psi_version;
     mtrx psi;
 };
 
@@ -165,11 +167,16 @@ void backend_step(backend *b)
 
 const mtrx *backend_psi(backend *b)
 {
+    // On a polar grid psi also depends on the outer boundary values, which
+    // may change between steps: a psi solved for other values is not current
+    long version = b->cfg.polar ? b->cfg.polar->version : 0;
+
     if (on_gpu(b)) return NULL;
-    if (b->psi_fresh) return &b->ws.psi;
+    if (b->psi_fresh && (!b->cfg.polar || b->ws.polar_version == version)) return &b->ws.psi;
     if (!b->psi.M) b->psi = initm(b->cfg.ny, b->cfg.nx);
-    if (!b->psi_solved) stream_function_of(b->w, &b->ws, b->psi);
+    if (!b->psi_solved || b->psi_version != version) stream_function_of(b->w, &b->ws, b->psi);
     b->psi_solved = 1;
+    b->psi_version = version;
     return &b->psi;
 }
 

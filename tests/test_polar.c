@@ -804,6 +804,47 @@ static void test_polar_backend_psi(void)
     for (k = 0; k < n; k++)
         d = fmax(d, fabs(wa->M[k] - wb->M[k]));
     check("steps with and without backend_psi() calls (w, bitwise)", d, 0.0);
+
+    // psi depends on the outer boundary too, which may change between steps
+    // (a and b share the grid): after a step, and on a psi already solved on
+    // demand, a change makes backend_psi() solve again with the new values
+    double *psi_b = (double *)malloc((size_t)nt * sizeof(double)), *zero = (double *)calloc((size_t)nt, sizeof(double));
+    for (k = 0; k < nt; k++)
+        psi_b[k] = 1.1 * p.g.r_inf * p.g.sin_t[k];
+    polar_dirichlet_set(&p.g, psi_b, zero);
+    psi = backend_psi(a);
+    backend_get_fields(a, &u, &v, &w);
+    polar_poisson_solve(s, w.M, p.g.psi_out, ref.M);
+    d = 0.0;
+    for (k = 0; k < n; k++)
+        d = fmax(d, fabs(psi->M[k] - ref.M[k]));
+    check("boundary changed after a step: the solve with the new boundary", d, 0.0);
+    backend_set_fields(a, &u, &v, &w);
+    backend_set_fields(b, &u, &v, &w);
+    (void)backend_psi(a); // solved on demand and kept
+    for (k = 0; k < nt; k++)
+        psi_b[k] = 0.9 * p.g.r_inf * p.g.sin_t[k] + 0.05 * p.g.cos_t[k];
+    polar_dirichlet_set(&p.g, psi_b, zero);
+    psi = backend_psi(a);
+    polar_poisson_solve(s, w.M, p.g.psi_out, ref.M);
+    d = 0.0;
+    for (k = 0; k < n; k++)
+        d = fmax(d, fabs(psi->M[k] - ref.M[k]));
+    check("boundary changed after an on-demand solve: solved again", d, 0.0);
+    for (k = 0; k < 5; k++)
+    {
+        backend_step(a);
+        backend_step(b);
+    }
+    backend_fields(a, NULL, NULL, &wa);
+    backend_fields(b, NULL, NULL, &wb);
+    d = 0.0;
+    for (k = 0; k < n; k++)
+        d = fmax(d, fabs(wa->M[k] - wb->M[k]));
+    check("  and the steps after are still those without the calls (w, bitwise)", d, 0.0);
+    free(psi_b);
+    free(zero);
+
     backend_free(a);
     backend_free(b);
     polar_poisson_free(s);
