@@ -436,7 +436,7 @@ The run stops at steady state (`max |∂ω/∂t| < --steady-tol`) and compares i
 ```
 
 It writes:
-- `output/cylinder_history.csv`: C_D (pressure and friction parts), L_w/D, θ_s and `max |∂ω/∂t|` over time
+- `output/cylinder_history.csv`: C_D (pressure and friction parts), L_w/D, θ_s, `max |∂ω/∂t|` (over the steps since the previous line) and the area means E, Z, P over time
 - `output/cylinder_surface.csv`: wall vorticity and wall pressure against θ
 - `output/cylinder_centreline.csv`: u_x on the symmetry axis
 - VTK structured grids of the vorticity (with the velocity) and the stream function, in Cartesian coordinates
@@ -537,7 +537,7 @@ A CUDA build tested on a machine without a GPU therefore does **not** count as a
 | Command | What it checks |
 |---|---|
 | `make test-cli` | Invalid command lines (NaN, garbage after numbers, grids out of range, unstable `dt`, ...) are refused with exit status 1 and an error message, and write nothing. A crash counts as a failure |
-| `make regression` | 100 steps of the default case against `tests/reference/`, and the steady default case within 0.004 (`u`) and 0.010 (`v`) of the Ghia et al. (1982) data stored in `tests/reference/`. Non-finite values fail; a self-test checks that. The periodic Taylor-Green vortex against its exact solution on 32² and 64², at sixth order, and its energy in `integrals.csv`; laminar Kolmogorov flow; the dual cascade of forced turbulence on 64² (flux signs and enstrophy conservation, with `tools/cascade.py`); the cylinder at Re = 40 on a coarse polar grid (96 × 57, r_inf = 20, about 20 s) within 2 % (C_D, L_w/D) and 0.3° (θ_s) of Gautier et al. (2013), divergence-free and symmetric to round-off |
+| `make regression` | 100 steps of the default case against `tests/reference/`, and the steady default case within 0.004 (`u`) and 0.010 (`v`) of the Ghia et al. (1982) data stored in `tests/reference/`. Non-finite values fail; a self-test checks that. The periodic Taylor-Green vortex against its exact solution on 32² and 64², at sixth order, and its energy in `integrals.csv`; laminar Kolmogorov flow; the dual cascade of forced turbulence on 64² (flux signs and enstrophy conservation, with `tools/cascade.py`); the cylinder at Re = 40 on a coarse polar grid (96 × 57, r_inf = 20, about 20 s): C_D, L_w/D, θ_s and E, Z, P within 1e-4 of the stored results in `tests/reference/cylinder_regression.csv`, steady, divergence-free and symmetric to round-off, and as a sanity check within 1 % / 1 % / 0.2° of Gautier et al. (2013); and the steady-state check on a final diagnostic interval shorter than the others (a run that has not converged must say so) |
 | `make test-asan` | The test suite and a short run under AddressSanitizer and UndefinedBehaviorSanitizer |
 | `make valgrind` | The test suite and a short run under valgrind; any leak, including memory still reachable at exit, fails |
 | `make format-check` | Formatting against `.clang-format` (`make format` applies it) |
@@ -550,6 +550,13 @@ The results in `tests/reference/` are deterministic, so `make regression` fails 
 mkdir -p /tmp/ref/output && (cd /tmp/ref && $OLDPWD/cnavier --tf 0.5 --output-interval 0)
 cp /tmp/ref/output/centerline_u_sim.csv tests/reference/centerline_u_short.csv
 cp /tmp/ref/output/centerline_v_sim.csv tests/reference/centerline_v_short.csv
+```
+
+and for the cylinder, the last line of its history:
+
+```bash
+mkdir -p /tmp/cyl/output && (cd /tmp/cyl && $OLDPWD/cnavier --geometry polar --ntheta 96 --r-inf 20 --diag-interval 500)
+python3 -c "import csv; r = list(csv.DictReader(open('/tmp/cyl/output/cylinder_history.csv')))[-1]; print('quantity,value'); [print(q + ',' + r[q]) for q in ('cd', 'wake_length', 'separation_angle', 'E', 'Z', 'P')]" > tests/reference/cylinder_regression.csv
 ```
 
 ### Spatial convergence

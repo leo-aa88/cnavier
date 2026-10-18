@@ -205,8 +205,8 @@ int main(int argc, char *argv[])
     // Polar grid (--geometry polar) and which shared options were given
     int polar = 0, ntheta = 256, nr = 0, outer_bc = POLAR_FARFIELD, diag_interval = 100;
     double r_inf = 40., steady_tol = 1E-6;
-    int re_given = 0, dt_given = 0, tf_given = 0, output_given = 0, closure_given = 0, grid_given = 0,
-        polar_given = 0, case_given = 0, other_given = 0;
+    int re_given = 0, dt_given = 0, tf_given = 0, output_given = 0, closure_given = 0, polar_given = 0,
+        case_given = 0, other_given = 0;
 
     // Command-line overrides
     static struct option long_opts[] = {
@@ -266,11 +266,12 @@ int main(int argc, char *argv[])
                 ok = 0;
             break;
         case 'T':
-            ok = parse_int(optarg, &ntheta) && ntheta >= 8 && ntheta <= MAX_GRID;
+            // The minimums (with the square-cell nr) are polar_grid_make()'s
+            ok = parse_int(optarg, &ntheta) && ntheta >= 1 && ntheta <= MAX_GRID;
             polar_given = 1;
             break;
         case 'R':
-            ok = parse_int(optarg, &nr) && nr >= 8 && nr <= MAX_GRID;
+            ok = parse_int(optarg, &nr) && nr >= 1 && nr <= MAX_GRID;
             polar_given = 1;
             break;
         case 'I':
@@ -297,7 +298,6 @@ int main(int argc, char *argv[])
         case 'n':
             ok = parse_int(optarg, &nx);
             ny = nx;
-            grid_given = 1;
             break;
         case 'x':
             ok = parse_int(optarg, &nx);
@@ -472,7 +472,6 @@ int main(int argc, char *argv[])
     }
     if (polar)
     {
-        (void)grid_given;
         if (case_given && flow != CASE_CYLINDER)
         {
             printf("** Error: the polar grid has one case, cylinder **\n");
@@ -489,11 +488,6 @@ int main(int argc, char *argv[])
             printf("** Error: --geometry polar needs --order 2, 4 or 6 **\n");
             return 1;
         }
-        if (poisson_type != 3)
-        {
-            printf("** Error: --geometry polar needs the FFT Poisson solver (poisson_type = 3) **\n");
-            return 1;
-        }
         if (dt_given && !(dt > 0.))
         {
             printf("** Error: dt and tf must be positive and finite **\n");
@@ -507,11 +501,6 @@ int main(int argc, char *argv[])
         if (output_interval < 0)
         {
             printf("** Error: output interval must not be negative **\n");
-            return 1;
-        }
-        if (nr > 0 && nr < 8)
-        {
-            printf("** Error: --nr must be at least 8 **\n");
             return 1;
         }
 #ifdef _OPENMP

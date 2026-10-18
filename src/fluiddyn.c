@@ -34,6 +34,25 @@ void euler(mtrx w, mtrx dwdx, mtrx dwdy, mtrx d2wdx2, mtrx d2wdy2, mtrx u, mtrx 
 #include <stdlib.h>
 #include "poisson.h"
 
+const char *polar_config_error(const solver_config *cfg)
+{
+    const polar_grid *g = cfg->polar;
+    const forcing_config *fc = &cfg->forcing;
+
+    if (!g) return NULL;
+    if (g->ntheta != cfg->nx || g->nr != cfg->ny || cfg->periodic || cfg->poisson_type != 3 || cfg->fourier ||
+        cfg->dealias || cfg->advection != 0 || cfg->DXv || cfg->DYv)
+        return "a polar grid needs nx = ntheta, ny = nr, walls (periodic 0), the FFT Poisson solver "
+               "(poisson_type 3), the sparse operators and the advective form";
+    // The polar right-hand side has no forcing terms: refuse them rather than
+    // run without them
+    if (fc->drag != 0.0 || fc->kolmogorov_amp != 0.0 || fc->random_rate != 0.0 || fc->hyperviscosity != 0.0 ||
+        fc->hypodrag != 0.0)
+        return "a polar grid takes no drag, Kolmogorov or random forcing, hyperviscosity or hypodrag (only "
+               "vorticity_source)";
+    return NULL;
+}
+
 rk4_ctx rk4_alloc(const solver_config *cfg)
 {
     rk4_ctx ctx;
@@ -73,12 +92,10 @@ rk4_ctx rk4_alloc(const solver_config *cfg)
     }
     if (cfg->polar)
     {
-        const polar_grid *g = cfg->polar;
-        if (g->ntheta != nx || g->nr != ny || cfg->periodic || cfg->poisson_type != 3 || cfg->fourier ||
-            cfg->advection != 0 || cfg->DXv || cfg->DYv)
+        const char *err = polar_config_error(cfg);
+        if (err)
         {
-            printf("** Error: a polar grid needs nx = ntheta, ny = nr, walls (periodic 0), the FFT Poisson solver "
-                   "(poisson_type 3), the sparse operators and the advective form **\n");
+            printf("** Error: %s **\n", err);
             exit(1);
         }
     }

@@ -26,7 +26,7 @@
 // solver needs one type for every theta), from psi_out; w is set as follows.
 enum polar_outer_bc
 {
-    POLAR_DIRICHLET,  // psi = psi_out, w = w_out, both set by the caller
+    POLAR_DIRICHLET,  // psi = psi_out, w = w_out, both given to polar_dirichlet_set()
     POLAR_FREESTREAM, // psi = r_inf sin(theta); w = 0 on inflow, zero normal gradient on outflow
     POLAR_FARFIELD    // psi from the Schlichting wake and a mass correction (polar_farfield_set()); w as freestream
 };
@@ -42,18 +42,27 @@ typedef struct polar_grid
     double *cos_t, *sin_t; // cos and sin of theta_j, [ntheta]
     int outer_bc;          // enum polar_outer_bc
     double wall_ut;        // tangential velocity of the cylinder surface (0: at rest)
-    double *psi_out;       // psi on the outer boundary, [ntheta]
-    double *w_out;         // w on the outer boundary (POLAR_DIRICHLET), [ntheta]
+    double *psi_out;       // psi on the outer boundary, [ntheta] (read only: see below)
+    double *w_out;         // w on the outer boundary (POLAR_DIRICHLET), [ntheta] (read only)
     double cd;             // C_D of the far-field condition (POLAR_FARFIELD)
     double Re;             // Reynolds number of the far-field condition
-    // Changed by every change of psi_out, so that a solver does not reuse a
-    // stream function solved for the old boundary values
+    // Bumped by every change of psi_out, so that a solver does not reuse a
+    // stream function solved for the old boundary values. The setters
+    // polar_freestream_set(), polar_farfield_set() and polar_dirichlet_set()
+    // are the only legal way to change outer_bc, psi_out and w_out; writing
+    // them directly leaves version as it was, and the solver may then keep a
+    // stale stream function.
     long version;
 } polar_grid;
 
+// Fewest points in xi: the compact Poisson operator extrapolates its
+// right-hand side to the boundary rows from four interior rows
+#define POLAR_MIN_NR 6
+
 // Grid of ntheta x nr points between R and r_inf, outer condition freestream.
 // nr <= 0: square cells, dxi as close to dtheta as a whole number of cells
-// allows. Free with polar_grid_free().
+// allows. Exits unless ntheta >= 8 and nr >= POLAR_MIN_NR (the square-cell nr
+// included). Free with polar_grid_free().
 polar_grid polar_grid_make(int ntheta, int nr, double R, double r_inf);
 void polar_grid_free(polar_grid *g);
 // The number of points in xi for square cells
@@ -66,10 +75,12 @@ int polar_square_nr(int ntheta, double R, double r_inf);
 //   d = cd sqrt(Re) / (4 sqrt(pi)) exp(-Re r (1 - cos theta) / 2) / sqrt(r)
 // in u_x, with u_y = -(sin theta / 2) d (Gautier et al. 2013), and a uniform
 // radial outflow that returns the flux the deficit removes (Hasan et al.
-// 2005), so that psi_out is single-valued. Both bump g->version; call them
-// between steps only.
+// 2005), so that psi_out is single-valued. polar_dirichlet_set(): psi_out and
+// w_out copied from the arrays (ntheta values each), outer_bc
+// POLAR_DIRICHLET. All three bump g->version; call them between steps only.
 void polar_freestream_set(polar_grid *g);
 void polar_farfield_set(polar_grid *g, double cd, double Re);
+void polar_dirichlet_set(polar_grid *g, const double *psi_out, const double *w_out);
 
 // Exact solution with w = 0: potential flow past the cylinder inside the
 // circle r_inf with psi = r_inf sin(theta) there, psi = A (r - R^2/r) sin(theta)
@@ -133,9 +144,11 @@ polar_forces polar_wall_forces(const polar_grid *g, const smtrx *DY, const doubl
 // -1 if the wall vorticity does not change sign (no separation)
 double polar_separation_angle(const polar_grid *g, const double *w);
 
-// Length of the recirculation bubble from the rear stagnation point: where
-// u_r (v) on theta = 0 turns from negative to positive, minus R. 0 if there is
-// no reverse flow.
+// Length of the recirculation bubble from the rear stagnation point, in
+// diameters D = 2R: where u_r (v) on theta = 0 turns from negative to
+// positive, minus R. 0 if there is no reverse flow next to the cylinder;
+// (r_inf - R) / D, the whole domain, if u_r stays negative out to the outer
+// boundary.
 double polar_wake_length(const polar_grid *g, const double *v);
 
 // Centre of the upper recirculation bubble: the minimum of psi on

@@ -90,12 +90,39 @@ python3 "$here/../tools/cascade.py" check output --kf 8 --from 3 --below 1,6 --a
     --min-pi-z 50
 
 # The flow past a cylinder at Re = 40 on a coarse polar grid (--geometry
-# polar; 96 x 57, r_inf = 20, about 20 s) against the reference solution of
-# Gautier et al. (2013): C_D 1.4931, L_w/D 2.2360, theta_s 126.39 deg. The
-# current code is within 0.2% (C_D), 0.3% (L_w/D) and 0.06 deg; the steady
-# flow is symmetric and divergence-free to round-off.
-echo "Regression: cylinder at Re = 40 (polar grid) against Gautier et al. (2013)"
+# polar; 96 x 57, r_inf = 20, about 20 s). It is deterministic, so its final
+# C_D, L_w/D, theta_s and the area means E, Z, P (the last line of
+# output/cylinder_history.csv) are compared with the stored values in
+# tests/reference/cylinder_regression.csv to 1e-4 (relative): the run stops at
+# max |dw/dt| < 1e-6, so this gate is tight against the numerics yet not
+# against the step at which the run happens to stop. Regenerate the file
+# deliberately if the numerics change (the README says how). Separately, the
+# run must be steady, symmetric and divergence-free to round-off, and close to
+# the reference solution of Gautier et al. (2013): a sanity check only, the
+# coarse grid and the small domain being 0.2% (C_D), 0.3% (L_w/D) and 0.06
+# deg away.
+echo "Regression: cylinder at Re = 40 (polar grid) against stored results and Gautier et al. (2013)"
 "$bin" --geometry polar --ntheta 96 --r-inf 20 --diag-interval 500 > cylinder.txt
+python3 - "$here/reference/cylinder_regression.csv" output/cylinder_history.csv <<'PY'
+import csv, math, sys
+ref = {r["quantity"]: float(r["value"]) for r in csv.DictReader(open(sys.argv[1]))}
+last = list(csv.DictReader(open(sys.argv[2])))[-1]
+cols = {"cd": "cd", "wake_length": "wake_length", "separation_angle": "separation_angle", "E": "E", "Z": "Z", "P": "P"}
+worst, bad = 0.0, []
+for q, c in cols.items():
+    if c not in last:
+        bad.append("%s missing from the history" % c)
+        continue
+    v = float(last[c])
+    e = abs(v - ref[q]) / abs(ref[q]) if math.isfinite(v) else math.inf
+    worst = max(worst, e)
+    if not e <= 1e-4:
+        bad.append("%s %.10g (stored %.10g)" % (q, v, ref[q]))
+if bad:
+    print("  [FAIL] against tests/reference/cylinder_regression.csv (1e-4): " + "; ".join(bad))
+    sys.exit(1)
+print("  [ ok ] C_D, L_w/D, theta_s, E, Z, P vs stored results: max relative diff %.1e (limit 1e-4)" % worst)
+PY
 cd_=$(sed -n 's/^  C_D *\([^ ]*\) .*/\1/p' cylinder.txt)
 lw=$(sed -n 's/^  L_w\/D *\([^ ]*\) .*/\1/p' cylinder.txt)
 ts=$(sed -n 's/^  theta_s *\([^ ]*\) .*/\1/p' cylinder.txt)
@@ -103,12 +130,26 @@ asym=$(sed -n 's/.*asymmetry max |w(theta) + w(-theta)| = \([^ ]*\)$/\1/p' cylin
 cont=$(sed -n 's/^Continuity max: \([^ ]*\) | min: \([^ ]*\) .*/\1 \2/p' cylinder.txt)
 if grep -q "^Steady at" cylinder.txt && awk -v c="$cd_" -v l="$lw" -v t="$ts" -v a="$asym" -v k="$cont" 'BEGIN {
     split(k, m, " "); e = m[1] + 0; if (-m[2] > e) e = -m[2]
-    ok = (c / 1.4931 - 1) ^ 2 < 0.02 ^ 2 && (l / 2.2360 - 1) ^ 2 < 0.02 ^ 2 && (t - 126.3945) ^ 2 < 0.3 ^ 2 &&
+    ok = (c / 1.4931 - 1) ^ 2 < 0.01 ^ 2 && (l / 2.2360 - 1) ^ 2 < 0.01 ^ 2 && (t - 126.3945) ^ 2 < 0.2 ^ 2 &&
          a + 0 < 1e-12 && e < 1e-12
     exit !ok }'; then
-    echo "  [ ok ] steady; C_D $cd_, L_w/D $lw, theta_s $ts (within 2%, 2%, 0.3 deg); asymmetry $asym; continuity $cont"
+    echo "  [ ok ] steady, asymmetry $asym, continuity $cont; sanity vs Gautier et al.: C_D $cd_, L_w/D $lw, theta_s $ts (within 1%, 1%, 0.2 deg)"
 else
     echo "  [FAIL] C_D '$cd_', L_w/D '$lw', theta_s '$ts', asymmetry '$asym', continuity '$cont'"
     tail -12 cylinder.txt
+    exit 1
+fi
+
+# The steady-state check measures the rate of change over the steps actually
+# taken since the previous diagnostic. Here the last interval is 1 step of a
+# --diag-interval 250 (251 steps), far from steady (max |dw/dt| about 0.27 at
+# t = 10.8): the run must stop unsteady, not count that step as 250 and pass
+# --steady-tol 2e-3.
+echo "Regression: cylinder steady-state check on a short last interval"
+"$bin" --geometry polar --ntheta 32 --r-inf 5 --tf 10.83 --diag-interval 250 --steady-tol 2e-3 > unsteady.txt
+if grep -q "^Stopped at t = 10.8181 after 251 steps" unsteady.txt; then
+    echo "  [ ok ] $(grep '^Stopped' unsteady.txt)"
+else
+    echo "  [FAIL] expected 'Stopped at t = 10.8181 after 251 steps', got: $(grep -E '^(Steady|Stopped)' unsteady.txt)"
     exit 1
 fi

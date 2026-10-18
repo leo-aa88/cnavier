@@ -32,6 +32,11 @@ const char *backend_device(const backend *b);
 // One full timestep
 void backend_step(backend *b);
 
+// The stream function of the current fields: the CPU solver's own, the one
+// u and v were computed from, current until the next backend_step(); NULL on
+// the GPU, which does not keep it on the host
+const mtrx *backend_psi(backend *b);
+
 // Max and min of du/dx + dv/dy for the current velocity field
 void backend_continuity(backend *b, double *cmax, double *cmin);
 

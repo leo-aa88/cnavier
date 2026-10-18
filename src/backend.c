@@ -156,6 +156,11 @@ void backend_step(backend *b)
     step(b->w, b->u, b->v, &b->ws);
 }
 
+const mtrx *backend_psi(backend *b)
+{
+    return on_gpu(b) ? NULL : &b->ws.psi;
+}
+
 void backend_continuity(backend *b, double *cmax, double *cmin)
 {
     int k, n = b->cfg.nx * b->cfg.ny;

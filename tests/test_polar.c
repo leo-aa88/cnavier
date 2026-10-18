@@ -11,6 +11,7 @@
 #include "poisson.h"
 #include "fluiddyn.h"
 #include "backend.h"
+#include "diagnostics.h"
 #include "polar.h"
 #include "test_polar.h"
 
@@ -291,10 +292,11 @@ static void polar_mms_run_scheme(int ntheta, int order, int poisson_order, int c
     mms_polar m;
     mms_polar_init(&m, R, ri, Re);
     m.g = &p.g;
-    p.g.outer_bc = POLAR_DIRICHLET;
-    for (j = 0; j < nt; j++)
-        p.g.psi_out[j] = p.g.w_out[j] = 0.0;
-    p.g.version++;
+    {
+        double *zero = (double *)calloc((size_t)nt, sizeof(double));
+        polar_dirichlet_set(&p.g, zero, zero);
+        free(zero);
+    }
 
     smtrx dt2 = SDiff2_periodic(nt, order, p.g.dtheta), dx2 = SDiff2(nr, order, p.g.dxi);
     double dt = dt_frac * max_stable_dt(&dt2, &dx2, Re * R * R, time_scheme);
@@ -433,6 +435,16 @@ static void test_polar_diagnostics(void)
         for (j = 0; j < nt; j++)
             v[i * nt + j] = p.g.r[i] - 1.6;
     check("wake length of a known profile", fabs(polar_wake_length(&p.g, v) - 1.1), 1E-4);
+    // The sign change between the last two rows: the root is bracketed by
+    // them (not extrapolated from the rows before)
+    double rc = 0.5 * (p.g.r[nr - 2] + p.g.r[nr - 1]);
+    for (i = 0; i < nr; i++)
+        v[(size_t)i * nt] = p.g.r[i] - rc;
+    check("wake length with the sign change on the last row",
+          fabs(polar_wake_length(&p.g, v) - (rc - 0.5) / 1.0), 1E-3);
+    for (i = 0; i < nr; i++)
+        v[(size_t)i * nt] = -1.0;
+    check("reverse flow out to the boundary: (r_inf - R) / D", fabs(polar_wake_length(&p.g, v) - 9.5), 0.0);
 
     // Interpolation of a smooth field: u_r = cos, u_theta = -sin is the
     // uniform stream u_x = 1, u_y = 0; w = x y / 10
@@ -533,6 +545,215 @@ static void test_polar_backend(void)
     ops_free(&p);
 }
 
+// A polar configuration of the solver: RK4, compact Poisson, Briley
+static solver_config polar_cfg(polar_ops *p)
+{
+    solver_config cfg = {0};
+    cfg.nx = p->g.ntheta;
+    cfg.ny = p->g.nr;
+    cfg.dx = p->g.dtheta;
+    cfg.dy = p->g.dxi;
+    cfg.Re = 40.0;
+    cfg.dt = 1E-3;
+    cfg.time_scheme = 2;
+    cfg.poisson_type = 3;
+    cfg.poisson_order = 4;
+    cfg.wall_closure = 1;
+    cfg.DX = &p->DX;
+    cfg.DY = &p->DY;
+    cfg.DX2 = &p->DX2;
+    cfg.DY2 = &p->DY2;
+    cfg.polar = &p->g;
+    return cfg;
+}
+
+// Every option the polar right-hand side does not implement is refused, not
+// ignored; vorticity_source is honoured
+static void test_polar_config(void)
+{
+    polar_ops p = ops_make(32, 0, 0.5, 4.0, 4);
+    solver_config ok = polar_cfg(&p), c;
+    int cases = 0, refused = 0;
+    char name[96];
+
+    printf("\nPolar grid: configuration\n");
+    check("a valid polar configuration is accepted", polar_config_error(&ok) != NULL, 0.0);
+    c = ok;
+    c.vorticity_source = mms_polar_source;
+    check("  with a vorticity source", polar_config_error(&c) != NULL, 0.0);
+    c = ok;
+    c.polar = NULL;
+    check("a Cartesian configuration has no polar error", polar_config_error(&c) != NULL, 0.0);
+#define REFUSED(stmt)                              \
+    do                                             \
+    {                                              \
+        c = ok;                                    \
+        stmt;                                      \
+        cases++;                                   \
+        refused += polar_config_error(&c) != NULL; \
+    } while (0)
+    REFUSED(c.forcing.drag = 0.1);
+    REFUSED(c.forcing.kolmogorov_amp = 1.0);
+    REFUSED(c.forcing.random_rate = 0.1);
+    REFUSED(c.forcing.hyperviscosity = 1E-6);
+    REFUSED(c.forcing.hypodrag = 1.0);
+    REFUSED(c.fourier = 1);
+    REFUSED(c.dealias = 1);
+    REFUSED(c.advection = 1);
+    REFUSED(c.periodic = 1);
+    REFUSED(c.poisson_type = 2);
+    REFUSED(c.DXv = &p.DX);
+    REFUSED(c.DYv = &p.DY);
+    REFUSED(c.nx = c.nx - 1);
+    REFUSED(c.ny = c.ny + 1);
+#undef REFUSED
+    snprintf(name, sizeof(name), "each of %d unsupported options refused (count not refused)", cases);
+    check(name, cases - refused, 0.0);
+    ops_free(&p);
+}
+
+// The area means of the polar branch of compute_integrals() against fields
+// with known integrals between R = 1/2 and r_inf = 4, all three second order
+// (the trapezoidal rule in xi, for the integrals and the area alike). E and
+// Z: u_theta = r - R, u_r = 0 (no slip on the cylinder), w = r. P: w = xi,
+// which every row of DY (the one-sided ones too) differentiates exactly, so
+// |grad w|^2 = 1/r^2 and P = (1/2) 2 pi ln(r_inf/R) / area.
+static double polar_integrals_error(int ntheta, double *eE, double *eZ, double *eP)
+{
+    const double R = 0.5, ri = 4.0;
+    polar_ops p = ops_make(ntheta, 0, R, ri, 6);
+    solver_config cfg = polar_cfg(&p);
+    int i, j, nt = p.g.ntheta, nr = p.g.nr;
+    mtrx u = initm(nr, nt), v = initm(nr, nt), w = initm(nr, nt);
+    double *wx = (double *)calloc((size_t)nt * nr, sizeof(double)), *wy = (double *)calloc((size_t)nt * nr, sizeof(double));
+    for (i = 0; i < nr; i++)
+        for (j = 0; j < nt; j++)
+        {
+            MAt(u, i, j) = p.g.r[i] - R;
+            MAt(w, i, j) = p.g.r[i];
+        }
+    flow_integrals fi = compute_integrals(&cfg, u, v, w, wx, wy);
+    for (i = 0; i < nr; i++)
+        for (j = 0; j < nt; j++)
+            MAt(w, i, j) = i * p.g.dxi;
+    flow_integrals fp = compute_integrals(&cfg, u, v, w, wx, wy);
+    // Area pi (ri^2 - R^2); E = (1/2) 2 pi int (r - R)^2 r dr / area,
+    // Z = (1/2) 2 pi int r^3 dr / area, P = 1/2
+    double area = PI * (ri * ri - R * R), P = PI * log(ri / R) / area;
+#define FE(r) ((r) * (r) * (r) * (r) / 4.0 - 2.0 * R * (r) * (r) * (r) / 3.0 + R * R * (r) * (r) / 2.0)
+    double E = PI * (FE(ri) - FE(R)) / area, Z = PI * (ri * ri * ri * ri - R * R * R * R) / 4.0 / area;
+#undef FE
+    *eE = fabs(fi.E - E) / E;
+    *eZ = fabs(fi.Z - Z) / Z;
+    *eP = fabs(fp.P - P) / P;
+    freem(&u);
+    freem(&v);
+    freem(&w);
+    free(wx);
+    free(wy);
+    ops_free(&p);
+    return fmax(*eE, fmax(*eZ, *eP));
+}
+
+static void test_polar_integrals(void)
+{
+    double a[3], b[3];
+    char name[128];
+    printf("\nPolar grid: energy, enstrophy, palinstrophy (area means)\n");
+
+    // The mean of a constant is exact: the area is summed by the same rule.
+    // u_theta = 1 with the cylinder moving at 1 (its row takes wall_ut), w = 1
+    {
+        polar_ops p = ops_make(48, 0, 0.5, 4.0, 6);
+        solver_config cfg = polar_cfg(&p);
+        int k, n = p.g.ntheta * p.g.nr;
+        mtrx u = initm(p.g.nr, p.g.ntheta), v = initm(p.g.nr, p.g.ntheta), w = initm(p.g.nr, p.g.ntheta);
+        double *wx = (double *)calloc((size_t)n, sizeof(double)), *wy = (double *)calloc((size_t)n, sizeof(double));
+        p.g.wall_ut = 1.0;
+        for (k = 0; k < n; k++)
+            u.M[k] = w.M[k] = 1.0;
+        for (k = 0; k < p.g.ntheta; k++)
+            u.M[k] = 0.0; // replaced by wall_ut
+        flow_integrals fi = compute_integrals(&cfg, u, v, w, wx, wy);
+        check("constants: E = Z = 1/2, P = 0 to round-off", fabs(fi.E - 0.5) + fabs(fi.Z - 0.5) + fabs(fi.P), 1E-14);
+        freem(&u);
+        freem(&v);
+        freem(&w);
+        free(wx);
+        free(wy);
+        ops_free(&p);
+    }
+
+    polar_integrals_error(64, &a[0], &a[1], &a[2]);
+    polar_integrals_error(128, &b[0], &b[1], &b[2]);
+    printf("  relative errors on 64 / 128 points: E %.2e / %.2e, Z %.2e / %.2e, P %.2e / %.2e\n", a[0], b[0], a[1], b[1],
+           a[2], b[2]);
+    check("E, Z, P within 5e-3 of the exact means on 128 points", fmax(b[0], fmax(b[1], b[2])), 5E-3);
+    snprintf(name, sizeof(name), "E, Z, P converge at second order: %.2f, %.2f, %.2f; 1.9 - min", log2(a[0] / b[0]),
+             log2(a[1] / b[1]), log2(a[2] / b[2]));
+    check(name, 1.9 - fmin(log2(a[0] / b[0]), fmin(log2(a[1] / b[1]), log2(a[2] / b[2]))), 0.0);
+}
+
+// A change of the outer boundary values between steps reaches the next
+// step: a solver whose boundary changes after 20 steps takes the same next
+// step, bitwise, as a fresh solver started from its state with the new
+// boundary (without the version check in psi_is_current() the first RK4
+// stage would reuse the stream function of the old boundary). And the
+// solver's stream function (backend_psi()) is the one that gave its velocity.
+static void test_polar_boundary_change(void)
+{
+    polar_ops p = ops_make(32, 0, 0.5, 4.0, 4), q = ops_make(32, 0, 0.5, 4.0, 4);
+    solver_config cp = polar_cfg(&p), cq = polar_cfg(&q);
+    int i, k, nt = p.g.ntheta, nr = p.g.nr, n = nt * nr;
+    double *psi_b = (double *)malloc((size_t)nt * sizeof(double)), *w_b = (double *)calloc((size_t)nt, sizeof(double));
+    mtrx u0 = initm(nr, nt), v0 = initm(nr, nt), w0 = initm(nr, nt), *u, *v, *w, *wq;
+    double *us = (double *)malloc((size_t)n * sizeof(double)), *vs = (double *)malloc((size_t)n * sizeof(double));
+
+    printf("\nPolar grid: outer boundary changed between steps\n");
+    for (k = 0; k < nt; k++)
+        psi_b[k] = 1.2 * p.g.r_inf * p.g.sin_t[k] + 0.3 * p.g.cos_t[(2 * k) % nt];
+    backend *a = backend_create(&cp, 0);
+    for (k = 0; k < 20; k++)
+        backend_step(a);
+    backend_get_fields(a, &u0, &v0, &w0);
+    polar_dirichlet_set(&p.g, psi_b, w_b);
+    polar_dirichlet_set(&q.g, psi_b, w_b);
+    backend_step(a);
+    backend *b = backend_create(&cq, 0);
+    backend_set_fields(b, &u0, &v0, &w0);
+    backend_step(b);
+    backend_fields(a, &u, &v, &w);
+    backend_fields(b, NULL, NULL, &wq);
+    double d = 0.0;
+    for (k = 0; k < n; k++)
+        d = fmax(d, fabs(w->M[k] - wq->M[k]));
+    check("the step after the change equals a fresh solver's (w, bitwise)", d, 0.0);
+
+    // u, v from the solver's own psi, on the interior rows (the cylinder row
+    // of u, v holds the wall velocity only after polar_apply_bc())
+    const mtrx *psi = backend_psi(a);
+    polar_velocity(&p.g, &p.DX, &p.DY, psi->M, us, vs);
+    d = 0.0;
+    for (i = 1; i < nr; i++)
+        for (k = 0; k < nt; k++)
+            d = fmax(d, fabs(us[i * nt + k] - MAt(*u, i, k)) + fabs(vs[i * nt + k] - MAt(*v, i, k)));
+    for (k = 0; k < nt; k++)
+        d = fmax(d, fabs(MAt(*psi, nr - 1, k) - psi_b[k]));
+    check("backend_psi() gives the solver's u, v and the new boundary (bitwise)", d, 0.0);
+
+    backend_free(a);
+    backend_free(b);
+    freem(&u0);
+    freem(&v0);
+    freem(&w0);
+    free(psi_b);
+    free(w_b);
+    free(us);
+    free(vs);
+    ops_free(&p);
+    ops_free(&q);
+}
+
 void test_polar(check_fn fn)
 {
     check = fn;
@@ -541,4 +762,7 @@ void test_polar(check_fn fn)
     test_polar_diagnostics();
     test_polar_backend();
     test_polar_mms();
+    test_polar_config();
+    test_polar_integrals();
+    test_polar_boundary_change();
 }

@@ -126,9 +126,10 @@ int cylinder_run(const cylinder_options *o)
     backend_fields(solver, &u, &v, &w);
 
     FILE *hist = open_output("./output/cylinder_history.csv");
-    fprintf(hist, "step,t,cd,cdp,cdf,cl,wake_length,separation_angle,dwdt_max,cd_boundary\n");
+    fprintf(hist, "step,t,cd,cdp,cdf,cl,wake_length,separation_angle,dwdt_max,cd_boundary,E,Z,P\n");
 
-    int it_max = (int)(o->tf / dt), steps = 0, steady = 0;
+    // t_prev: the step of the previous diagnostic (0: the initial state)
+    int it_max = (int)(o->tf / dt), steps = 0, steady = 0, t_prev = 0;
     double residual = HUGE_VAL;
     struct timespec t0, t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);
@@ -156,44 +157,48 @@ int cylinder_run(const cylinder_options *o)
             polar_grid_free(&g);
             return 1;
         }
-        residual = interior_change(w, &w_prev) / (o->diag_interval * dt);
+        // The mean rate of change since the previous diagnostic, over the
+        // steps actually taken: the last interval is shorter when it_max is
+        // not a multiple of diag_interval
+        residual = interior_change(w, &w_prev) / ((t - t_prev) * dt);
+        t_prev = t;
         mtrxcpy(w_prev, *w);
         polar_forces f = polar_wall_forces(&g, &DY, w->M, o->Re, NULL);
         double lw = polar_wake_length(&g, v->M), ts = polar_separation_angle(&g, w->M);
-        fprintf(hist, "%d,%.10g,%.12g,%.12g,%.12g,%.6e,%.10g,%.10g,%.6e,%.10g\n", t, t * dt, f.cd, f.cdp, f.cdf, f.cl,
-                lw, ts, residual, g.cd);
+        flow_integrals fi = backend_integrals(solver);
+        fprintf(hist, "%d,%.10g,%.12g,%.12g,%.12g,%.6e,%.10g,%.10g,%.6e,%.10g,%.12g,%.12g,%.12g\n", t, t * dt, f.cd,
+                f.cdp, f.cdf, f.cl, lw, ts, residual, g.cd, fi.E, fi.Z, fi.P);
         fflush(hist);
         printf("Step %d | t = %.3f | C_D = %.6f (pressure %.6f, friction %.6f) | L_w/D = %.4f | theta_s = %.3f | "
                "max |dw/dt| = %.3e\n",
                t, t * dt, f.cd, f.cdp, f.cdf, lw, ts, residual);
-
-        // The far-field condition carries the drag of the body: follow the
-        // run's C_D, under-relaxed, once the impulsive start has passed
-        if (o->outer_bc == POLAR_FARFIELD && t * dt >= 5.0 && f.cd > 0.0 && f.cd < 10.0)
-            polar_farfield_set(&g, g.cd + 0.5 * (f.cd - g.cd), o->Re);
 
         if (o->steady_tol > 0.0 && residual < o->steady_tol && t * dt >= 10.0)
         {
             steady = 1;
             break;
         }
+
+        // The far-field condition carries the drag of the body: follow the
+        // run's C_D, under-relaxed, once the impulsive start has passed. Not
+        // after the last step: the final state keeps the boundary values it
+        // was computed with.
+        if (o->outer_bc == POLAR_FARFIELD && t < it_max && t * dt >= 5.0 && f.cd > 0.0 && f.cd < 10.0)
+            polar_farfield_set(&g, g.cd + 0.5 * (f.cd - g.cd), o->Re);
     }
     clock_gettime(CLOCK_MONOTONIC, &t1);
     fclose(hist);
     double elapsed = (double)(t1.tv_sec - t0.tv_sec) + 1E-9 * (double)(t1.tv_nsec - t0.tv_nsec);
 
-    // Final state: velocity with the wall values, psi solved again for the
-    // diagnostics.
     // Continuity of the velocity of the Poisson solution, before the wall
-    // velocity is imposed (as the Cartesian run measures it)
+    // velocity is imposed (as the Cartesian run measures it); then the final
+    // state with the wall velocity, and the solver's own stream function, the
+    // one that gave u and v
     double cmax, cmin;
     backend_continuity(solver, &cmax, &cmin);
     backend_fields(solver, &u, &v, &w);
     polar_apply_bc(&g, *u, *v);
-    mtrx psi = initm(nr, nt);
-    polar_poisson *ps = polar_poisson_setup(&g, &DX2, o->poisson_order);
-    polar_poisson_solve(ps, w->M, g.psi_out, psi.M);
-    polar_poisson_free(ps);
+    const mtrx *psi = backend_psi(solver);
 
     double *p_wall = (double *)malloc((size_t)nt * sizeof(double));
     if (!p_wall)
@@ -203,7 +208,7 @@ int cylinder_run(const cylinder_options *o)
     }
     polar_forces f = polar_wall_forces(&g, &DY, w->M, o->Re, p_wall);
     double lw = polar_wake_length(&g, v->M), ts = polar_separation_angle(&g, w->M), a = 0.0, b = 0.0, ux, uy, w33;
-    int centre = polar_vortex_centre(&g, psi.M, &a, &b);
+    int centre = psi && polar_vortex_centre(&g, psi->M, &a, &b);
     int inside = polar_interpolate(&g, u->M, v->M, w->M, 3.0, 3.0, &ux, &uy, &w33);
 
     FILE *fs = open_output("./output/cylinder_surface.csv");
@@ -220,7 +225,7 @@ int cylinder_run(const cylinder_options *o)
         fprintf(fc, "%.12g,%.12g\n", g.r[i], MAt(*v, i, 0)); // the wake, theta = 0
     fclose(fc);
     printvtk_polar(&g, w, u, v, "vorticity");
-    printvtk_polar(&g, &psi, NULL, NULL, "streamfunction");
+    if (psi) printvtk_polar(&g, psi, NULL, NULL, "streamfunction");
 
     printf("\n%s at t = %g after %d steps (max |dw/dt| = %.3e)\n", steady ? "Steady" : "Stopped", steps * dt, steps,
            residual);
@@ -243,7 +248,6 @@ int cylinder_run(const cylinder_options *o)
            steps ? 1E3 * elapsed / steps : 0.0, steps, backend_name(solver));
 
     free(p_wall);
-    freem(&psi);
     freem(&w_prev);
     backend_free(solver);
     freesm(DX);

@@ -52,6 +52,8 @@ expect nonzero --geometry polar --velocity-order 4
 expect nonzero --geometry polar --order compact6
 expect nonzero --geometry polar --ntheta 4
 expect nonzero --geometry polar --nr 3
+expect nonzero --geometry polar --ntheta 8 --r-inf 8 --poisson-order 4
+expect nonzero --geometry polar --nr 0
 expect nonzero --geometry polar --r-inf 0.5
 expect nonzero --geometry polar --outer-bc wall
 expect nonzero --geometry polar --dt 1

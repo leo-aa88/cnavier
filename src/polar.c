@@ -31,9 +31,10 @@ polar_grid polar_grid_make(int ntheta, int nr, double R, double r_inf)
     int i, j;
 
     if (nr <= 0) nr = polar_square_nr(ntheta, R, r_inf);
-    if (ntheta < 8 || nr < 5 || !(R > 0.0) || !(r_inf > R))
+    if (ntheta < 8 || nr < POLAR_MIN_NR || !(R > 0.0) || !(r_inf > R))
     {
-        printf("** Error: a polar grid needs ntheta >= 8, nr >= 5 and 0 < R < r_inf **\n");
+        printf("** Error: a polar grid needs ntheta >= 8, nr >= %d (here %d) and 0 < R < r_inf **\n", POLAR_MIN_NR,
+               nr);
         exit(1);
     }
     g.ntheta = ntheta;
@@ -98,6 +99,14 @@ void polar_freestream_set(polar_grid *g)
         g->psi_out[j] = g->r_inf * g->sin_t[j];
         g->w_out[j] = 0.0;
     }
+    g->version++;
+}
+
+void polar_dirichlet_set(polar_grid *g, const double *psi_out, const double *w_out)
+{
+    memcpy(g->psi_out, psi_out, (size_t)g->ntheta * sizeof(double));
+    memcpy(g->w_out, w_out, (size_t)g->ntheta * sizeof(double));
+    g->outer_bc = POLAR_DIRICHLET;
     g->version++;
 }
 
@@ -189,9 +198,9 @@ polar_poisson *polar_poisson_setup(const polar_grid *g, const smtrx *DX2, int or
     int nt = g->ntheta, nr = g->nr, kt = nt / 2 + 1, m, i, e;
     double h2 = g->dxi * g->dxi;
 
-    if (order != 2 && order != 4)
+    if ((order != 2 && order != 4) || g->nr < POLAR_MIN_NR)
     {
-        printf("** Error: the polar Poisson operator is of order 2 or 4 **\n");
+        printf("** Error: the polar Poisson operator is of order 2 or 4, on nr >= %d **\n", POLAR_MIN_NR);
         exit(1);
     }
     s->g = g;
@@ -522,11 +531,11 @@ static double lagrange4(const double *x, const double *y, double t)
     return sum;
 }
 
-// The root in [x[1], x[2]] of the cubic through the four points (y[1] and
-// y[2] of opposite signs), by bisection
-static double cubic_root(const double *x, const double *y)
+// The root in [x[k], x[k+1]] of the cubic through the four points (y[k] and
+// y[k+1] of opposite signs), by bisection
+static double cubic_root(const double *x, const double *y, int k)
 {
-    double lo = x[1], hi = x[2], flo = y[1];
+    double lo = x[k], hi = x[k + 1], flo = y[k];
     int it;
     for (it = 0; it < 100; it++)
     {
@@ -559,7 +568,7 @@ double polar_separation_angle(const polar_grid *g, const double *w)
         x[k] = jj * g->dtheta;
         y[k] = w[(jj % nt + nt) % nt];
     }
-    return 180.0 - cubic_root(x, y) * 180.0 / PI;
+    return 180.0 - cubic_root(x, y, 1) * 180.0 / PI;
 }
 
 double polar_wake_length(const polar_grid *g, const double *v)
@@ -572,14 +581,15 @@ double polar_wake_length(const polar_grid *g, const double *v)
     for (i = 2; i < nr; i++)
         if (!(v[(size_t)i * nt] < 0.0)) break;
     if (i >= nr) return (g->r_inf - g->R) / (2.0 * g->R);
-    if (i < 2) i = 2;
-    if (i > nr - 2) i = nr - 2;
+    // The sign changes between rows i - 1 and i: the cubic through rows
+    // i - 2 .. i + 1, or through the last four rows when i is the last
+    int first = i + 1 < nr ? i - 2 : nr - 4;
     for (k = 0; k < 4; k++)
     {
-        x[k] = (i - 2 + k) * g->dxi;
-        y[k] = v[(size_t)(i - 2 + k) * nt];
+        x[k] = (first + k) * g->dxi;
+        y[k] = v[(size_t)(first + k) * nt];
     }
-    return (g->R * exp(cubic_root(x, y)) - g->R) / (2.0 * g->R);
+    return (g->R * exp(cubic_root(x, y, i - 1 - first)) - g->R) / (2.0 * g->R);
 }
 
 int polar_vortex_centre(const polar_grid *g, const double *psi, double *a, double *b)

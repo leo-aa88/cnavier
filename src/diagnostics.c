@@ -69,8 +69,10 @@ flow_integrals compute_integrals_with(const solver_config *cfg, fourier_ops *fou
     if (cfg->polar)
     {
         // Area means on the polar grid: dA = r^2 dxi dtheta, trapezoidal in
-        // xi; |grad w|^2 = (w_th^2 + w_xi^2) / r^2; u = v = 0 on the
-        // cylinder (wall_ut 0). The forcing is not used there.
+        // xi, the area summed by the same rule (so the mean of a constant is
+        // exact); |grad w|^2 = (w_th^2 + w_xi^2) / r^2; on the cylinder row
+        // the wall velocity, u_theta = wall_ut and u_r = 0. A polar grid has
+        // no forcing (polar_config_error()), so I = I_disc = 0.
         const polar_grid *g = cfg->polar;
         double area = 0.0;
         for (i = 0; i < ny; i++)
