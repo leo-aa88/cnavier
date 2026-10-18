@@ -276,13 +276,13 @@ static void solve_in(polar_poisson *s, const double *psi_out, double *psi)
         {
             // f on the boundary rows, extrapolated (cubic) from the interior
             double *c = s->in + j;
-            c[0] = 4.0 * c[nt] - 6.0 * c[2 * nt] + 4.0 * c[3 * nt] - c[4 * nt];
-            c[(nr - 1) * nt] = 4.0 * c[(nr - 2) * nt] - 6.0 * c[(nr - 3) * nt] + 4.0 * c[(nr - 4) * nt] -
-                               c[(nr - 5) * nt];
+            size_t r = (size_t)nt; // one row
+            c[0] = 4.0 * c[r] - 6.0 * c[2 * r] + 4.0 * c[3 * r] - c[4 * r];
+            c[(nr - 1) * r] = 4.0 * c[(nr - 2) * r] - 6.0 * c[(nr - 3) * r] + 4.0 * c[(nr - 4) * r] - c[(nr - 5) * r];
         }
     else
         for (j = 0; j < nt; j++)
-            s->in[j] = s->in[(nr - 1) * nt + j] = 0.0;
+            s->in[j] = s->in[(size_t)(nr - 1) * nt + j] = 0.0;
     memcpy(s->in + (size_t)nr * nt, psi_out, (size_t)nt * sizeof(double));
     fftw_execute(s->forward);
 
@@ -292,8 +292,8 @@ static void solve_in(polar_poisson *s, const double *psi_out, double *psi)
     for (m = 0; m < kt; m++)
     {
         int c, k;
-        const double *cp = s->cp + m * nr, *dinv = s->dinv + m * nr;
-        double off = s->off[m], *d = s->work + m * nr;
+        const double *cp = s->cp + (size_t)m * nr, *dinv = s->dinv + (size_t)m * nr;
+        double off = s->off[m], *d = s->work + (size_t)m * nr;
         fftw_complex *col = s->spec + m; // row k at col[k * kt]
 
         for (c = 0; c < 2; c++)
@@ -400,7 +400,8 @@ void polar_boundary_vorticity(const polar_grid *g, int closure, const smtrx *DX,
             // from psi on rows 0..3 and psi_xi = -R u_theta on the wall
             const double *p = psi->M + j;
             double U = -R * g->wall_ut;
-            MAt(w, 0, j) = ((85.0 * p[0] - 108.0 * p[nt] + 27.0 * p[2 * nt] - 4.0 * p[3 * nt]) / (18.0 * h * h) +
+            size_t r = (size_t)nt; // one row
+            MAt(w, 0, j) = ((85.0 * p[0] - 108.0 * p[r] + 27.0 * p[2 * r] - 4.0 * p[3 * r]) / (18.0 * h * h) +
                             11.0 * U / (3.0 * h)) *
                            g->inv_r2[0];
         }
@@ -569,14 +570,14 @@ double polar_wake_length(const polar_grid *g, const double *v)
     // u_r on theta = 0 is column 0
     if (!(v[nt] < 0.0)) return 0.0;
     for (i = 2; i < nr; i++)
-        if (!(v[i * nt] < 0.0)) break;
+        if (!(v[(size_t)i * nt] < 0.0)) break;
     if (i >= nr) return (g->r_inf - g->R) / (2.0 * g->R);
     if (i < 2) i = 2;
     if (i > nr - 2) i = nr - 2;
     for (k = 0; k < 4; k++)
     {
         x[k] = (i - 2 + k) * g->dxi;
-        y[k] = v[(i - 2 + k) * nt];
+        y[k] = v[(size_t)(i - 2 + k) * nt];
     }
     return (g->R * exp(cubic_root(x, y)) - g->R) / (2.0 * g->R);
 }

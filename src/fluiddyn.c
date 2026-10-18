@@ -195,7 +195,7 @@ static void solve_psi(mtrx w, int remember, rk4_ctx *ctx)
 {
     // Poisson solve: nabla^2 psi = -w
     negcpy(ctx->rhs, w);
-    if (ctx->polar)
+    if (ctx->cfg.polar)
     {
         polar_poisson_solve(ctx->polar, w.M, ctx->cfg.polar->psi_out, ctx->psi.M);
         ctx->polar_version = ctx->cfg.polar->version;

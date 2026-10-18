@@ -90,8 +90,8 @@ static void test_polar_poisson(void)
     // plus DX2 applied to the solution gives back f on the interior
     polar_ops p = ops_make(48, 17, 0.5, 6.0, 4);
     int nt = p.g.ntheta, nr = p.g.nr, n = nt * nr, i, j;
-    double *f = (double *)malloc((size_t)n * sizeof(double)), *psi = (double *)malloc((size_t)n * sizeof(double));
-    double *lap = (double *)malloc((size_t)n * sizeof(double)), res = 0.0, scale = 0.0, h2 = p.g.dxi * p.g.dxi;
+    double *f = (double *)calloc((size_t)n, sizeof(double)), *psi = (double *)calloc((size_t)n, sizeof(double));
+    double *lap = (double *)calloc((size_t)n, sizeof(double)), res = 0.0, scale = 0.0, h2 = p.g.dxi * p.g.dxi;
     for (i = 0; i < nr; i++)
         for (j = 0; j < nt; j++)
             f[i * nt + j] = cos(3.0 * j * p.g.dtheta + 0.3) * exp(-p.g.r[i]) + sin(j * p.g.dtheta) * i;
