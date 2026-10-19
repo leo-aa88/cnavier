@@ -69,7 +69,7 @@ The turbulence runs behind the manual's figures, with their parameters and `tool
 
 ## Options
 
-Options not given keep the defaults at the top of `src/main.c`. The most common:
+Options not given keep the defaults at the top of `src/main.c`, which is also where the time scheme (Euler or RK4) and the Poisson solver (Gauss–Seidel, SOR or FFT) are chosen; neither has a command-line option. The most common options:
 
 | Option | Description |
 |---|---|
@@ -103,7 +103,7 @@ make test-cli       # invalid command lines are refused without writing anything
 make convergence    # spatial convergence study against a manufactured solution
 ```
 
-`make test-asan`, `make valgrind`, `make format-check`, `make cppcheck`, `make tidy` and `make WERROR=1` run the remaining checks. GitHub Actions runs all of them on every pull request, except the GPU comparisons, which need a GPU. The manual lists what each target checks and how to regenerate the stored results.
+`make test-asan`, `make valgrind`, `make format-check`, `make cppcheck`, `make tidy` and `make WERROR=1` run the remaining checks. On every push to `main` and every pull request that changes code, GitHub Actions runs these and the tests above, except `make convergence` (built, not run) and the GPU comparisons, which need a GPU. Changes to Markdown files and `docs/` alone run nothing. The manual lists what each target checks and how to regenerate the stored results.
 
 ## Documentation
 

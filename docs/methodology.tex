@@ -1480,11 +1480,11 @@ The transport derivatives may be sixth-order in the deep interior, but the bound
 
 \subsection{Poisson operator differs from transport Laplacian}
 
-The diffusion term in \cref{eq:vort-transport} uses the selected $D_{xx}+D_{yy}$ operator, while the streamfunction equation always uses the standard five-point second-order Laplacian.  This is a legitimate mixed discretization, but it should be described explicitly because the \code{order} setting does not uniformly change every spatial operator in the solver.
+The diffusion term in \cref{eq:vort-transport} uses the selected $D_{xx}+D_{yy}$ operator.  With walls, the streamfunction equation uses by default the standard five-point second-order Laplacian, and with \code{--poisson-order 4} the compact fourth-order operator (\cref{sec:compact-poisson}); on the polar grid the same choice applies to the $\xi$ operator, and in $\theta$ the Poisson operator is $D_{\theta\theta}$ itself (\cref{sec:polar}).  Only on the doubly periodic grid is the Poisson operator always $D_{xx}+D_{yy}$, of the order of the derivatives (\cref{sec:periodic}).  With walls this is a legitimate mixed discretization, but it should be described explicitly because the \code{order} setting does not uniformly change every spatial operator in the solver: with \code{--order 6} the Poisson operator is of order 2 or 4.
 
 \subsection{Boundary vorticity accuracy}
 
-Wall vorticity is reconstructed from differentiated wall velocities rather than from a dedicated high-order streamfunction wall formula.  Its accuracy is therefore tied to the one-sided derivative closure and the array-edge interpretation.
+By default on the Cartesian grid, the wall vorticity is reconstructed from differentiated wall velocities, so its accuracy is tied to the one-sided derivative closure and the array-edge interpretation; with the default Poisson operator it limits the method to second order (\cref{sec:ablation}).  \code{--wall-closure briley} uses instead the third-order formula from the streamfunction (\cref{eq:briley}), which with the compact Poisson operator makes the method fourth order for $\omega$ and $\psi$ (\cref{sec:wall-order}); it is the default on the polar grid.
 
 \subsection{Explicit stability}
 
