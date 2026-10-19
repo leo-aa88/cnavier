@@ -32,6 +32,17 @@ const char *backend_device(const backend *b);
 // One full timestep
 void backend_step(backend *b);
 
+// The stream function of the current w and, on a polar grid, the current
+// outer boundary values; valid until the next backend_step(),
+// backend_set_fields() or change of the boundary values. After a step, with
+// the boundary unchanged since, it is the CPU solver's own, the one u and v
+// were computed from. Otherwise (before the first step, after
+// backend_set_fields(), after a change of the boundary) it is solved on
+// demand, once, by the solver's Poisson solve, without changing the solver's
+// state, so the steps that follow are the same with or without the call.
+// NULL on the GPU, which does not keep it on the host.
+const mtrx *backend_psi(backend *b);
+
 // Max and min of du/dx + dv/dy for the current velocity field
 void backend_continuity(backend *b, double *cmax, double *cmin);
 

@@ -176,7 +176,7 @@ static mms_errors run(int nx, int ny, double Lx, double Ly, double Re, int order
     freesm(Ix);
     freesm(Iy);
 
-    solver_config cfg;
+    solver_config cfg = {0};
     cfg.nx = nx;
     cfg.ny = ny;
     cfg.dx = c.dx;

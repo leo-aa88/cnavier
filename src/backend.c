@@ -7,6 +7,7 @@
 #include "utils.h"
 #include "diagnostics.h"
 #include "fourier.h"
+#include "polar.h"
 #ifdef USE_CUDA
 #include "cudasolver.h"
 #endif
@@ -25,6 +26,13 @@ struct backend
     // CPU solver only: workspace, and scratch for the continuity check
     rk4_ctx ws;
     mtrx dudx, dvdy;
+
+    // CPU: ws.psi is that of w (set by a step); else psi, solved on demand
+    // by backend_psi() if psi_solved (cleared by backend_set_fields()) for
+    // the outer boundary values of version psi_version (polar grids)
+    int psi_fresh, psi_solved;
+    long psi_version;
+    mtrx psi;
 };
 
 static int on_gpu(const backend *b)
@@ -73,6 +81,12 @@ backend *backend_create(const solver_config *cfg, int prefer_gpu)
     b->cfg = *cfg;
 
 #ifdef USE_CUDA
+    // The GPU solver is Cartesian only
+    if (prefer_gpu && cfg->polar)
+    {
+        printf("The polar grid runs on the CPU only - using the CPU\n");
+        prefer_gpu = 0;
+    }
     if (prefer_gpu)
     {
         b->gpu = gpu_init(&b->cfg);
@@ -115,6 +129,7 @@ void backend_free(backend *b)
     }
 #endif
     rk4_free(&b->ws);
+    if (b->psi.M) freem(&b->psi);
     freem(&b->u);
     freem(&b->v);
     freem(&b->w);
@@ -147,6 +162,22 @@ void backend_step(backend *b)
     }
 #endif
     step(b->w, b->u, b->v, &b->ws);
+    b->psi_fresh = 1;
+}
+
+const mtrx *backend_psi(backend *b)
+{
+    // On a polar grid psi also depends on the outer boundary values, which
+    // may change between steps: a psi solved for other values is not current
+    long version = b->cfg.polar ? b->cfg.polar->version : 0;
+
+    if (on_gpu(b)) return NULL;
+    if (b->psi_fresh && (!b->cfg.polar || b->ws.polar_version == version)) return &b->ws.psi;
+    if (!b->psi.M) b->psi = initm(b->cfg.ny, b->cfg.nx);
+    if (!b->psi_solved || b->psi_version != version) stream_function_of(b->w, &b->ws, b->psi);
+    b->psi_solved = 1;
+    b->psi_version = version;
+    return &b->psi;
 }
 
 void backend_continuity(backend *b, double *cmax, double *cmin)
@@ -160,7 +191,15 @@ void backend_continuity(backend *b, double *cmax, double *cmin)
         return;
     }
 #endif
-    if (b->ws.fourier)
+    if (b->cfg.polar)
+    {
+        // The whole divergence into dudx; the stage buffers k1, k2 are free
+        // between steps
+        polar_divergence(b->cfg.polar, b->cfg.DX, b->cfg.DY, b->u.M, b->v.M, b->dudx.M, b->ws.k1.M, b->ws.k2.M);
+        for (k = 0; k < n; k++)
+            b->dvdy.M[k] = 0.0;
+    }
+    else if (b->ws.fourier)
     {
         // The whole divergence into dudx
         fourier_divergence(b->ws.fourier, b->u.M, b->v.M, b->dudx.M);
@@ -228,7 +267,9 @@ void backend_set_fields(backend *b, const mtrx *u, const mtrx *v, const mtrx *w)
         return;
     }
 #endif
-    // Arrays from backend_fields() are already the solver's
+    // Arrays from backend_fields() are already the solver's. A new w needs
+    // a new stream function (backend_psi())
+    if (w) b->psi_fresh = b->psi_solved = 0;
     if (u && u->M != b->u.M) mtrxcpy(b->u, *u);
     if (v && v->M != b->v.M) mtrxcpy(b->v, *v);
     if (w && w->M != b->w.M) mtrxcpy(b->w, *w);

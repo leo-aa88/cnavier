@@ -20,6 +20,7 @@
 #include "diagnostics.h"
 #include "backend.h"
 #include "utils.h"
+#include "test_polar.h"
 #ifdef USE_CUDA
 #include "cudasolver.h"
 #endif
@@ -94,6 +95,7 @@ static void problem_init_ext(problem *p, int nx, int ny, double Lx, double Ly, i
     freesm(sIx);
     freesm(sIy);
 
+    p->cfg = (solver_config){0};
     p->cfg.nx = nx;
     p->cfg.ny = ny;
     p->cfg.dx = dx;
@@ -2479,6 +2481,82 @@ static void test_openmp_default_threads(void)
 // Every solver copies the configuration when it is created. Changing the
 // caller's struct afterwards (dt and the lid speed here) must have no effect,
 // on any of them: the CPU workspace, the CPU backend and the GPU solver.
+// backend_psi() between steps changes nothing: the same steps with and
+// without the calls (before the first step and after backend_set_fields())
+// give the same w, bitwise. Euler with the wall closure from psi reads the
+// solver's psi at the start of each step, so a call that overwrote it would
+// change the next step. With the FFT solver the psi solved on demand is the
+// solver's Poisson solve of w.
+static void test_backend_psi_case(problem *p, const char *label)
+{
+    int k, nx = p->nx, ny = p->ny, N = nx * ny;
+    mtrx u = initm(ny, nx), v = initm(ny, nx), w = initm(ny, nx);
+    backend *a = backend_create(&p->cfg, 0), *b = backend_create(&p->cfg, 0);
+    char name[128];
+
+    backend_set_fields(a, &p->u, &p->v, &p->w);
+    backend_set_fields(b, &p->u, &p->v, &p->w);
+    (void)backend_psi(a); // the call is the test: it must not change the steps
+    for (k = 0; k < 10; k++)
+    {
+        backend_step(a);
+        backend_step(b);
+    }
+    // New fields: the step's w, changed
+    backend_get_fields(a, &u, &v, &w);
+    for (k = 0; k < N; k++)
+        w.M[k] = 1.1 * w.M[k] + 0.01 * sin(0.37 * k);
+    backend_set_fields(a, &u, &v, &w);
+    backend_set_fields(b, &u, &v, &w);
+    const mtrx *psi = backend_psi(a);
+    if (p->cfg.poisson_type == 3 && !p->cfg.periodic)
+    {
+        // The same solve, called directly
+        fft_solver *s = fft_setup(nx, ny);
+        mtrx f = initm(ny, nx), ref = initm(ny, nx);
+        negcpy(f, w);
+        poisson_FFT_order(s, f, ref, p->cfg.dx, p->cfg.dy, p->cfg.poisson_order);
+        snprintf(name, sizeof(name), "%s: backend_psi() after set_fields is the Poisson solve of w", label);
+        check(name, rel_diff(psi->M, ref.M, N), 0.0);
+        fft_cleanup(s);
+        freem(&f);
+        freem(&ref);
+    }
+    for (k = 0; k < 10; k++)
+    {
+        backend_step(a);
+        backend_step(b);
+    }
+    mtrx *wa, *wb;
+    backend_fields(a, NULL, NULL, &wa);
+    backend_fields(b, NULL, NULL, &wb);
+    snprintf(name, sizeof(name), "%s: steps with and without backend_psi() calls (w, bitwise)", label);
+    check(name, rel_diff(wa->M, wb->M, N), 0.0);
+    backend_free(a);
+    backend_free(b);
+    freem(&u);
+    freem(&v);
+    freem(&w);
+}
+
+static void test_backend_psi(void)
+{
+    problem p;
+    printf("backend_psi() leaves the solver as it was\n");
+    problem_init(&p, 24, 20, 2, 1, 0.002, 1E-8, NULL);
+    test_backend_psi_case(&p, "Gauss-Seidel");
+    problem_free(&p);
+    problem_init(&p, 24, 20, 2, 3, 0.002, 1E-3, NULL);
+    test_backend_psi_case(&p, "FFT, walls");
+    problem_free(&p);
+    problem_init_ext(&p, 24, 20, 1.0, 1.0, 1, 6, 100., 2, 3, 0.002, 1E-3, NULL, 0.0, NULL, NULL, 2, 0, 2);
+    test_backend_psi_case(&p, "periodic");
+    problem_free(&p);
+    problem_init_ext(&p, 24, 20, 1.0, 1.0, 0, 6, 100., 1, 3, 0.001, 1E-3, NULL, 0.0, NULL, NULL, 2, 1, 2);
+    test_backend_psi_case(&p, "Euler, wall closure from psi");
+    problem_free(&p);
+}
+
 static void test_config_copied(void)
 {
     int t, k, nx = 32, ny = 32, N = nx * ny;
@@ -3354,7 +3432,9 @@ int main(int argc, char **argv)
     test_openmp_default_threads();
 #endif
     test_backend();
+    test_backend_psi();
     test_config_copied();
+    test_polar(check);
 #ifdef USE_CUDA
     run_gpu_tests();
 #endif

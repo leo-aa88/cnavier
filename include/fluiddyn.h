@@ -74,6 +74,20 @@ typedef struct solver_config
     // Built-in drag, Kolmogorov forcing and random forcing (forcing.h); all
     // zero for none
     forcing_config forcing;
+
+    // Polar grid around a cylinder (polar.h), or NULL for the Cartesian
+    // solver (the default). With it, x is theta (periodic, DX and DX2 built
+    // from SDiff1_periodic and SDiff2_periodic) and y is xi (DY and DY2 from
+    // SDiff1 and SDiff2, the cylinder on row 0). rk4_alloc() requires
+    // periodic 0, poisson_type 3 (the polar FFT solver, of order
+    // poisson_order), the sparse operators (fourier, dealias 0), the
+    // advective form, no DXv, DYv, no forcing (every field of forcing zero)
+    // and no wall_bc walls (bc zero; the cylinder's velocity is
+    // polar_grid.wall_ut), and exits otherwise; vorticity_source is applied as on the
+    // Cartesian grid. Owned by the caller, like the operators; its outer
+    // boundary values may be changed between steps, through the setters of
+    // polar.h only.
+    const struct polar_grid *polar;
 } solver_config;
 
 // CPU workspace: everything needed to advance a timestep without allocating
@@ -99,8 +113,22 @@ typedef struct
     mtrx uw, vw;                      // scratch of the skew-symmetric form (cfg.advection 1 only)
     struct fourier_ops *fourier;      // the operators in Fourier space (cfg.fourier only)
     random_forcing *kicks;            // random forcing, else NULL
+    struct polar_poisson *polar;      // polar Poisson solver (cfg.polar), else NULL
+    long polar_version;               // cfg.polar->version that psi was solved with
     long steps;                       // steps taken; the time is cfg.t0 + steps * cfg.dt
 } rk4_ctx;
+
+// The stream function of w into out (ny x nx), by the solver's own Poisson
+// solve, leaving the solver's state as it was: its psi, which the next step
+// still reads (the wall closure from psi at the start of a step, the
+// hypodrag), and whether a later step may reuse it. Between steps only (it
+// uses the stage buffers).
+void stream_function_of(mtrx w, rk4_ctx *ctx, mtrx out);
+
+// Why a configuration with cfg->polar cannot run (the requirements in
+// solver_config.polar), or NULL if it can, or if cfg->polar is NULL.
+// rk4_alloc() exits with this message.
+const char *polar_config_error(const solver_config *cfg);
 
 // Allocate the CPU workspace for the run described by cfg (copied)
 rk4_ctx rk4_alloc(const solver_config *cfg);

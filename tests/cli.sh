@@ -38,6 +38,30 @@ expect() {
 
 echo "Command line: invalid input is refused before anything is written"
 expect nonzero --dt nan
+# The polar grid is opt-in: its options need --geometry polar, and it refuses
+# what it has no use for
+expect nonzero --case cylinder
+expect nonzero --ntheta 64
+expect nonzero --r-inf 20
+expect nonzero --geometry spherical
+expect nonzero --geometry polar --case cavity
+expect nonzero --geometry polar --n 64
+expect nonzero --geometry polar --nx 64
+expect nonzero --geometry polar --drag 0.1
+expect nonzero --geometry polar --velocity-order 4
+expect nonzero --geometry polar --order compact6
+expect nonzero --geometry polar --ntheta 4
+expect nonzero --geometry polar --nr 3
+expect nonzero --geometry polar --ntheta 8 --r-inf 8 --poisson-order 4
+expect nonzero --geometry polar --nr 0
+expect nonzero --geometry polar --r-inf 0.5
+expect nonzero --geometry polar --outer-bc wall
+expect nonzero --geometry polar --dt 1
+expect nonzero --geometry polar --dt -1
+expect nonzero --geometry polar --tf 0
+expect nonzero --geometry polar --tf 0.001
+expect nonzero --geometry polar --steady-tol -1
+expect nonzero --geometry polar --diag-interval 0
 expect nonzero --dt inf
 expect nonzero --dt -1
 expect nonzero --dt 0
@@ -115,6 +139,11 @@ expect 0 --case taylor-green --n 32 --order spectral --dealias --tf 0.01 --outpu
 expect 0 --case decaying --n 32 --order spectral --pad --dt 0.002 --tf 0.01 --output-interval 0 --spectrum-interval 2
 expect 0 --case forced --n 32 --operators fourier --hyperviscosity 1e-16 --tf 0.01 --output-interval 0
 expect 0 --case forced --n 32 --hyperviscosity 1e-12 --hyper-order 3 --hypodrag 5 --tf 0.01 --output-interval 0
+
+expect 0 --geometry cartesian --n 17 --tf 0.01 --output-interval 0
+expect 0 --geometry polar --ntheta 32 --r-inf 5 --tf 0.05 --diag-interval 5
+expect 0 --geometry polar --case cylinder --ntheta 32 --nr 20 --r-inf 5 --tf 0.05 --outer-bc freestream --order 4 \
+    --poisson-order 4 --wall-closure velocity --re 20
 
 echo
 echo "$count checks, $failed failed"
