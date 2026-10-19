@@ -1,9 +1,9 @@
 # Plan: polar vorticity-streamfunction solver, validated on the cylinder at Re = 40
 
-> **Status (2026-10-18): implemented** on branch `feature/cylinder-polar`
-> (`src/polar.c`, `src/cylinder.c`, `tests/test_polar.c`,
-> `tools/cylinder_validate.py`; README section "Flow past a cylinder" and
-> `docs/methodology.tex`, section "Polar Grid"). How it differs from the plan below:
+> **Status (2026-10-18): implemented** and merged (PR #57): `src/polar.c`,
+> `src/cylinder.c`, `tests/test_polar.c`, `tools/cylinder_validate.py`; documented
+> in the methodology manual (`docs/methodology.tex`, section "Polar Grid: Flow
+> Past a Circular Cylinder"). How it differs from the plan below:
 >
 > - **The polar grid is opt-in**, with `--geometry polar`; Cartesian stays the default. The only new
 >   `solver_config` field is `const polar_grid *polar`, NULL for Cartesian, and every structure that
