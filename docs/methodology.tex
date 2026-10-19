@@ -92,7 +92,13 @@ The main numerical components are:
   \item \code{src/forcing.c}: Kolmogorov and random forcing;
   \item \code{src/diagnostics.c}: energy, enstrophy and palinstrophy, and on periodic grids spectra and spectral fluxes;
   \item \code{src/utils.c}: VTK output, centerline data for comparison with Ghia et al., and the available-memory check;
-  \item \code{tests/test_solver.c}: CPU verification and CPU--GPU parity tests.
+  \item \code{src/fourier.c}: on periodic grids, the operators' symbols and the operators applied in Fourier space;
+  \item \code{src/polar.c}, \code{src/cylinder.c}: the polar grid (Poisson solver, boundary conditions, cylinder diagnostics, VTK) and the flow past a cylinder (\cref{sec:polar});
+  \item \code{tests/test_solver.c}: CPU verification and CPU--GPU parity tests;
+  \item \code{tests/test_polar.c}: the polar grid's tests;
+  \item \code{tests/mms.c}, \code{convergence.c}, \code{ablation.c}: the manufactured solution, the convergence study and the ablation;
+  \item \code{tests/cli.sh}, \code{regression.sh}: the command-line and regression tests (\cref{sec:tests});
+  \item \code{tools/}: post-processing scripts (spectra and cascades, snapshots, modified wavenumbers, scheme comparisons, cylinder validation).
 \end{itemize}
 
 % =============================================================================
@@ -320,7 +326,7 @@ The one-dimensional matrices are assembled directly in compressed sparse row (CS
 
 \subsection{Velocity boundary conditions}
 
-The \code{wall\_bc} structure stores a constant $(u,v)$ value for each of four array edges.  At the beginning of every timestep, \code{apply\_wall\_bc()} writes those values directly into the edge rows and columns of the velocity arrays.
+The \code{wall_bc} structure stores a constant $(u,v)$ value for each of four array edges.  At the beginning of every timestep, \code{apply_wall_bc()} writes those values directly into the edge rows and columns of the velocity arrays.
 
 For the default cavity,
 \begin{equation}
@@ -328,7 +334,7 @@ For the default cavity,
 \qquad
 \bm{u}_{\mathrm{other\ walls}}=(0,0).
 \end{equation}
-No-slip and no-penetration are therefore represented through prescribed wall velocity.
+No-slip and no-penetration are therefore represented through prescribed wall velocity.  The wall velocities are set in \code{main.c} by \code{u1}--\code{u4} and \code{v1}--\code{v4}, for the left, right, bottom and top walls in that order (\code{u4} is the lid).
 
 \subsection{Vorticity boundary treatment}
 \label{sec:wall-vorticity-order}
@@ -370,7 +376,7 @@ Define the semi-discrete right-hand side
 +\frac{1}{\Rey}\left(D_{xx}\omega+D_{yy}\omega\right),
 \label{eq:semi-discrete}
 \end{equation}
-where $\odot$ denotes pointwise multiplication.  This is exactly the operation implemented in the CPU \code{dwdt()} routine and in the CUDA \code{rhs\_kernel}.
+where $\odot$ denotes pointwise multiplication.  This is exactly the operation implemented in the CPU \code{dwdt()} routine and in the CUDA \code{rhs_kernel}.
 
 On a periodic grid the nonlinear term can instead take the skew-symmetric form (\code{--advection skew}, \code{solver_config.advection}),
 \begin{equation}
@@ -387,7 +393,7 @@ The convective terms are centered in the interior for all three selectable order
 
 \subsection{Forward Euler}
 
-With \code{time\_scheme = 1}, the update is
+With \code{time_scheme = 1}, the update is
 \begin{equation}
 \omega^{n+1}
 =\omega^n+\dt\,\mathcal{F}(\omega^n;u^n,v^n).
@@ -399,7 +405,7 @@ Forward Euler is first-order accurate in time.  Its stability region does not in
 
 \subsection{Classical fourth-order Runge--Kutta}
 
-With \code{time\_scheme = 2}, the code uses classical RK4:
+With \code{time_scheme = 2}, the code uses classical RK4:
 \begin{align}
 k_1 &= \mathcal{F}(\omega^n),\\
 k_2 &= \mathcal{F}\left(\omega^n+\frac{\dt}{2}k_1\right),\\
@@ -485,7 +491,7 @@ Because the default tolerance can stop the iteration before full convergence, th
 \subsection{Direct FFT/DST-I solver}
 \label{sec:poisson-fft}
 
-The default \code{poisson\_type = 3} uses a two-dimensional discrete sine transform of type I (DST-I) of the $m_x\times m_y$ interior nodes, $m_x=n_x-2$, $m_y=n_y-2$.  A DST-I of length $m$ implies zeros at indices $-1$ and $m$, which are exactly the wall nodes, so the solver imposes $\psi=0$ on the wall nodes like the iterative solvers and solves the same discrete problem.  For each spectral mode $(p,q)$, the standard second-difference Laplacian has eigenvalue
+The default \code{poisson_type = 3} uses a two-dimensional discrete sine transform of type I (DST-I) of the $m_x\times m_y$ interior nodes, $m_x=n_x-2$, $m_y=n_y-2$.  A DST-I of length $m$ implies zeros at indices $-1$ and $m$, which are exactly the wall nodes, so the solver imposes $\psi=0$ on the wall nodes like the iterative solvers and solves the same discrete problem.  For each spectral mode $(p,q)$, the standard second-difference Laplacian has eigenvalue
 \begin{equation}
 \lambda_{p,q}
 =
@@ -507,7 +513,7 @@ The algorithm is:
   \]
 \end{enumerate}
 
-On the CPU the two-dimensional DST-I is applied as two passes of one-dimensional FFTW3 \code{RODFT00} transforms, first along the rows and then along the columns, in batches of eight rows or columns.  The plans are created once at startup with \code{FFTW\_ESTIMATE} and reused.  Two choices make the result deterministic.  \code{FFTW\_ESTIMATE} picks plans without timing them; \code{FFTW\_MEASURE}, used previously, could pick a different plan on every run, and different plans round differently, so repeated runs at $513\times513$ differed in the last bits.  And every row is transformed by the same plan whatever the number of threads, so serial and OpenMP builds give bit-identical results.  The asymptotic cost is $\Oh(N\log N)$ with $N=n_xn_y$, compared with a potentially large number of $\Oh(N)$ sweeps for Gauss--Seidel or SOR.
+On the CPU the two-dimensional DST-I is applied as two passes of one-dimensional FFTW3 \code{RODFT00} transforms, first along the rows and then along the columns, in batches of eight rows or columns.  The plans are created once at startup with \code{FFTW_ESTIMATE} and reused.  Two choices make the result deterministic.  \code{FFTW_ESTIMATE} picks plans without timing them; \code{FFTW_MEASURE}, used previously, could pick a different plan on every run, and different plans round differently, so repeated runs at $513\times513$ differed in the last bits.  And every row is transformed by the same plan whatever the number of threads, so serial and OpenMP builds give bit-identical results.  The asymptotic cost is $\Oh(N\log N)$ with $N=n_xn_y$, compared with a potentially large number of $\Oh(N)$ sweeps for Gauss--Seidel or SOR.
 
 Once Gauss--Seidel or SOR has converged, all three solvers return the same $\psi$; the test suite checks agreement to $10^{-9}$ on a random right-hand side.
 
@@ -552,7 +558,7 @@ The command line provides periodic cases on the unit square, among them (with th
 \subsection{Compact schemes on the periodic grid}
 \label{sec:compact}
 
-With \code{--order compact6} (\code{FD\_COMPACT6}), the periodic cases use Lele's sixth-order tridiagonal compact schemes \cite{lele1992} for the first and the second derivatives,
+With \code{--order compact6} (\code{FD_COMPACT6}), the periodic cases use Lele's sixth-order tridiagonal compact schemes \cite{lele1992} for the first and the second derivatives,
 \begin{align}
 \tfrac13 f'_{i-1}+f'_i+\tfrac13 f'_{i+1}&=\tfrac{14}{9}\,\frac{f_{i+1}-f_{i-1}}{2h}+\tfrac19\,\frac{f_{i+2}-f_{i-2}}{4h},\\
 \tfrac{2}{11} f''_{i-1}+f''_i+\tfrac{2}{11} f''_{i+1}&=\tfrac{12}{11}\,\frac{f_{i+1}-2f_i+f_{i-1}}{h^2}+\tfrac{3}{11}\,\frac{f_{i+2}-2f_i+f_{i-2}}{4h^2},
@@ -568,12 +574,33 @@ g_j=\frac{r^j+r^{n-j}}{(1-r^n)\sqrt{1-4\alpha^2}},\qquad 0\le j<n,\qquad r=\frac
 \end{equation}
 the periodic sum of the infinite line's $r^{|j|}/\sqrt{1-4\alpha^2}$.  Convolving it with the five-point stencil of $B$ gives the entries of $A^{-1}B$ exactly, even the smallest.  They decay like $|r|^j$: $0.38$ per point for the first derivative and $0.19$ for the second.  Entries below $10^{-16}$ of the largest are dropped, which leaves 78 and 45 entries per row for $n\ge128$ and changes the symbol at round-off level.  (A direct inverse DFT of the symbol accumulates round-off of order $10^{-16}\sqrt n$ in every entry, and then no entry can be dropped.)  The matrices match the symbols on every Fourier mode of the grid to $4\times10^{-14}$, annihilate constants, and the first derivative is antisymmetric, so the skew-symmetric form of \cref{eq:skew} conserves enstrophy with them too.
 
+What the compact schemes buy is resolution: the fraction of the wavenumbers up to Nyquist that each scheme differentiates to $1\,\%$ and $10\,\%$ (\code{tools/modified_wavenumber.py}, \cref{fig:modified-wavenumber}):
+\begin{center}
+\begin{tabular}{lcccc}
+\toprule
+ & \multicolumn{2}{c}{first derivative} & \multicolumn{2}{c}{second derivative} \\
+ & $1\,\%$ & $10\,\%$ & $1\,\%$ & $10\,\%$ \\
+\midrule
+order 2 & 0.08 & 0.25 & 0.11 & 0.36 \\
+order 4 & 0.24 & 0.44 & 0.32 & 0.60 \\
+order 6 & 0.35 & 0.54 & 0.45 & 0.71 \\
+compact 6 & 0.50 & 0.70 & 0.56 & 0.81 \\
+\bottomrule
+\end{tabular}
+\end{center}
+\begin{figure}[ht]
+\centering
+\includegraphics[width=0.8\textwidth]{modified_wavenumber.png}
+\caption{Modified wavenumbers of the periodic schemes.}
+\label{fig:modified-wavenumber}
+\end{figure}
+
 Building the operator as a banded matrix makes it exact and available everywhere at once, but not cheap.  The rows are 78 and 45 wide instead of 7, and in $y$ they span as many grid rows.  A step on the GPU costs about 21 times the explicit one: $269$ against $12.3\,\mathrm{ms}$ at $512^2$, and $66$ against $3.2$ at $256^2$.  Applied in Fourier space (\cref{sec:fourier-ops}), the same operators cost what every other scheme costs there.
 
 \subsection{Operators in Fourier space and pseudospectral differentiation}
 \label{sec:fourier-ops}
 
-On a periodic grid every derivative operator is circulant, so it is diagonal in Fourier space, with its symbol as the eigenvalues.  The symbols are read from the first row of the 1-D operators, as $\sum_jc_je^{i\theta j}$ (\code{periodic\_symbols\_of()}).  The same table now gives everything that needs them: the Poisson eigenvalues, $A/Q$ for the spectra, the kick amplitudes and the Kolmogorov factor.  With \code{--operators fourier} (\code{solver_config.fourier}, \code{src/fourier.c} and its counterpart in \code{cudasolver.cu}), the solver applies the operators that way instead of as sparse products:
+On a periodic grid every derivative operator is circulant, so it is diagonal in Fourier space, with its symbol as the eigenvalues.  The symbols are read from the first row of the 1-D operators, as $\sum_jc_je^{i\theta j}$ (\code{periodic_symbols_of()}).  The same table now gives everything that needs them: the Poisson eigenvalues, $A/Q$ for the spectra, the kick amplitudes and the Kolmogorov factor.  With \code{--operators fourier} (\code{solver_config.fourier}, \code{src/fourier.c} and its counterpart in \code{cudasolver.cu}), the solver applies the operators that way instead of as sparse products:
 \begin{itemize}[leftmargin=2em]
   \item the velocity: one forward transform of $\omega$, then $\hat\psi=-\hat\omega/(\tilde D_{xx}+\tilde D_{yy})$, and inverse transforms of $\hat\psi$, $\tilde D_y\hat\psi$ and $-\tilde D_x\hat\psi$;
   \item the transport: one forward transform, and inverse ones of $\tilde D_x\hat\omega$, $\tilde D_y\hat\omega$ and $(\tilde D_{xx}+\tilde D_{yy})\hat\omega$;
@@ -581,7 +608,7 @@ On a periodic grid every derivative operator is circulant, so it is diagonal in 
 \end{itemize}
 The 2-D sparse operators are then not built.  The operators are the same matrices, so the results equal the sparse ones to round-off.  Twenty steps with every term on agree to $10^{-14}$ for explicit order 6 and for the compact scheme, and so do the integrals and the spectra; the GPU matches the CPU to $6\times10^{-15}$.  A decaying run with the compact scheme reproduces the banded run's spectrum to $4\times10^{-12}$.
 
-The table also allows operators that have no sparse form.  \code{--order spectral} (\code{FD\_SPECTRAL}) uses the symbols $ik$ and $-k^2$ of pseudospectral differentiation (with the first-derivative symbol zero at the Nyquist wavenumber, so that real fields stay real), and needs the Fourier operators.  Its 1-D matrices are dense and serve only for the symbols and the stability limit.  With exact symbols $A=Q$, so the energy of a mode is $\tfrac12|\hat\psi|^2Q$ and the two discrete energies coincide.  \code{--dealias} adds Orszag's 2/3 rule: the operators keep only $|k|<n/3$ along each axis, and $\omega$ is filtered at the end of each step.  Products of the kept fields then alias only onto cut modes, so the nonlinear term is a Galerkin truncation and conserves energy and enstrophy exactly in either form; the net transfers are $10^{-14}$ of the largest shell transfer.  \code{--pad} dealiases by padding instead (the $3/2$ rule \cite{canuto2006}): the spectra of $u$, $v$, $\partial_x\omega$ and $\partial_y\omega$ are zero-padded to a grid $3/2$ as fine (the Nyquist modes left out), the product is formed there, and its spectrum is truncated back (\code{fourier\_nonlinear\_padded()}).  Products of two modes with $|k|<n/2$ then alias only onto wavenumbers of at least $n/2$, so every mode of the grid but the Nyquist ones carries the Fourier--Galerkin nonlinear term.  \code{make test} checks it against the direct convolution of the modal coefficients on $10\times8$ and $9\times7$ grids ($7\times10^{-15}$), and the net transfers in either form ($10^{-14}$).  The cost is four inverse and one forward transform on $(3n/2)^2$ points per evaluation.  On the manufactured solution the pseudospectral error at $32^2$ is $3.5\times10^{-9}$, against $1.1\times10^{-4}$ with the compact scheme, and it falls by 16 when $\Delta t$ is halved: it is the time integration's.
+The table also allows operators that have no sparse form.  \code{--order spectral} (\code{FD_SPECTRAL}) uses the symbols $ik$ and $-k^2$ of pseudospectral differentiation (with the first-derivative symbol zero at the Nyquist wavenumber, so that real fields stay real), and needs the Fourier operators.  Its 1-D matrices are dense and serve only for the symbols and the stability limit.  With exact symbols $A=Q$, so the energy of a mode is $\tfrac12|\hat\psi|^2Q$ and the two discrete energies coincide.  \code{--dealias} adds Orszag's 2/3 rule: the operators keep only $|k|<n/3$ along each axis, and $\omega$ is filtered at the end of each step.  Products of the kept fields then alias only onto cut modes, so the nonlinear term is a Galerkin truncation and conserves energy and enstrophy exactly in either form; the net transfers are $10^{-14}$ of the largest shell transfer.  \code{--pad} dealiases by padding instead (the $3/2$ rule \cite{canuto2006}): the spectra of $u$, $v$, $\partial_x\omega$ and $\partial_y\omega$ are zero-padded to a grid $3/2$ as fine (the Nyquist modes left out), the product is formed there, and its spectrum is truncated back (\code{fourier_nonlinear_padded()}).  Products of two modes with $|k|<n/2$ then alias only onto wavenumbers of at least $n/2$, so every mode of the grid but the Nyquist ones carries the Fourier--Galerkin nonlinear term.  \code{make test} checks it against the direct convolution of the modal coefficients on $10\times8$ and $9\times7$ grids ($7\times10^{-15}$), and the net transfers in either form ($10^{-14}$).  The cost is four inverse and one forward transform on $(3n/2)^2$ points per evaluation.  On the manufactured solution the pseudospectral error at $32^2$ is $3.5\times10^{-9}$, against $1.1\times10^{-4}$ with the compact scheme, and it falls by 16 when $\Delta t$ is halved: it is the time integration's.
 
 In Fourier space every scheme costs the same, so the scheme is chosen by what it resolves and by its advective limit.  Per GPU step:
 \begin{center}\small
@@ -683,11 +710,11 @@ C_x=U_{\mathrm{lid}}\frac{\dt}{\dx},
 \qquad
 C_y=U_{\mathrm{lid}}\frac{\dt}{\dy},
 \end{equation}
-and aborts if either exceeds \code{max\_co = 1}, where $U_{\mathrm{lid}}$ is the largest wall speed.  This is a useful sanity check but should not be interpreted as a complete stability proof.  The actual interior velocity can differ from the lid velocity, and diffusion imposes a separate explicit restriction, which is checked as described next.
+and aborts if either exceeds \code{max_co = 1}, where $U_{\mathrm{lid}}$ is the largest wall speed.  This is a useful sanity check but should not be interpreted as a complete stability proof.  The actual interior velocity can differ from the lid velocity, and diffusion imposes a separate explicit restriction, which is checked as described next.
 
 \subsection{Implemented viscous limit}
 
-\code{max\_stable\_dt()} in \code{fluiddyn.c} bounds the timestep for the viscous term $\Rey^{-1}(D_{xx}+D_{yy})$.  The interior second-derivative stencils are centered with coefficients of alternating sign, so the sum of their magnitudes is the value of the stencil symbol at the highest grid frequency, i.e.\ the largest eigenvalue magnitude:
+\code{max_stable_dt()} in \code{fluiddyn.c} bounds the timestep for the viscous term $\Rey^{-1}(D_{xx}+D_{yy})$.  The interior second-derivative stencils are centered with coefficients of alternating sign, so the sum of their magnitudes is the value of the stencil symbol at the highest grid frequency, i.e.\ the largest eigenvalue magnitude:
 \begin{equation}
 \lambda_{\max}=\frac{1}{\Rey}\Big(\sum_k |a^{x}_k| + \sum_k |a^{y}_k|\Big),
 \end{equation}
@@ -741,7 +768,7 @@ The dominant derivative operation is a CSR sparse matrix--vector multiplication
 \begin{equation}
 \bm{y}=A\bm{x}.
 \end{equation}
-For each row, \code{spmv()} loops only over the nonzero entries stored between consecutive elements of \code{row\_ptr}.  Since the finite-difference bandwidth is fixed, the cost is $\Oh(N)$ for $N=n_xn_y$.
+For each row, \code{spmv()} loops only over the nonzero entries stored between consecutive elements of \code{row_ptr}.  Since the finite-difference bandwidth is fixed, the cost is $\Oh(N)$ for $N=n_xn_y$.
 
 The main dense field arrays are contiguous.  Reusable flat buffers and RK4 work arrays are allocated once before the time loop; no per-stage dynamic memory allocation is needed.  This improves both CPU cache behavior and GPU transfer strategy.
 
@@ -751,15 +778,18 @@ The main dense field arrays are contiguous.  Reusable flat buffers and RK4 work 
 
 \subsection{Backend structure}
 
-A run is described by one \code{solver\_config} (\code{fluiddyn.h}): grid size and spacing, Reynolds number, timestep, time scheme, Poisson solver settings, wall velocities and the four derivative operators.  Both backends are initialised from it, and each keeps its own copy, taken at that moment: the CPU solver in its workspace (\code{rk4\_ctx}, which also holds the work arrays and FFT plans) and the GPU solver (\code{gpu\_init}), which uploads the operators and fields to the device.  Changing the caller's \code{solver\_config} afterwards affects neither, and a test checks that both ignore such a change alike.  \code{backend.c} chooses between them once, at startup, and exposes the same operations for both (one timestep, the divergence diagnostic, the host fields), so the time loop in \code{main.c} does not depend on where it runs.  On the CPU the host fields are the solver's own arrays; on the GPU they are copies filled from the device when asked for.  A GPU run allocates no CPU solver workspace, and the memory check counts only what the chosen backend allocates.
+A run is described by one \code{solver_config} (\code{fluiddyn.h}): grid size and spacing, Reynolds number, timestep, time scheme, Poisson solver settings, wall velocities and the four derivative operators.  Both backends are initialised from it, and each keeps its own copy, taken at that moment: the CPU solver in its workspace (\code{rk4_ctx}, which also holds the work arrays and FFT plans) and the GPU solver (\code{gpu_init}), which uploads the operators and fields to the device.  Changing the caller's \code{solver_config} afterwards affects neither, and a test checks that both ignore such a change alike.  \code{backend.c} chooses between them once, at startup, and exposes the same operations for both (one timestep, the divergence diagnostic, the host fields), so the time loop in \code{main.c} does not depend on where it runs.  On the CPU the host fields are the solver's own arrays; on the GPU they are copies filled from the device when asked for.  A GPU run allocates no CPU solver workspace, and the memory check counts only what the chosen backend allocates.
 
 \subsection{OpenMP}
+\label{sec:openmp}
 
 Building with
 \begin{lstlisting}[language=bash]
 make OPENMP=1
 \end{lstlisting}
-enables shared-memory parallel loops in the principal CSR operations, explicit right-hand-side loops, and suitable Poisson operations, including the batches of one-dimensional sine transforms.  Loops over fewer than 2048 grid points (\code{OMP\_MIN\_WORK}) stay serial, since starting the threads would cost more than they save.  Unless \code{OMP\_NUM\_THREADS} or a thread placement (\code{OMP\_PROC\_BIND}, \code{OMP\_PLACES}) is set, the program uses one thread per physical core in its affinity mask instead of the OpenMP default of one per logical CPU: with two hardware threads per core the second adds nothing to these bandwidth-limited loops, and on an idle machine 16 threads on 8 cores were 25--40\% slower than 8.  Surplus threads are far more costly when other programs occupy the cores, since every parallel loop ends at a barrier where all threads wait for the slowest.  Because the CSR products and transforms are limited by memory bandwidth, the speed-up levels off at about two from four threads on.  Iterative elliptic solves use red--black coloring because a naive parallelization of lexicographic Gauss--Seidel would violate its data dependence.
+enables shared-memory parallel loops in the principal CSR operations, explicit right-hand-side loops, and suitable Poisson operations, including the batches of one-dimensional sine transforms.  Loops over fewer than 2048 grid points (\code{OMP_MIN_WORK}) stay serial, since starting the threads would cost more than they save.  Unless \code{OMP_NUM_THREADS} or a thread placement (\code{OMP_PROC_BIND}, \code{OMP_PLACES}) is set, the program uses one thread per physical core in its affinity mask instead of the OpenMP default of one per logical CPU: with two hardware threads per core the second adds nothing to these bandwidth-limited loops, and on an idle machine 16 threads on 8 cores were 25--40\% slower than 8.  Surplus threads are far more costly when other programs occupy the cores, since every parallel loop ends at a barrier where all threads wait for the slowest.  Because the CSR products and transforms are limited by memory bandwidth, the speed-up levels off at about two from four threads on.  Iterative elliptic solves use red--black coloring because a naive parallelization of lexicographic Gauss--Seidel would violate its data dependence.  Results are bitwise identical to the serial build with any number of threads, except with Gauss--Seidel/SOR, where they are identical among OpenMP runs (the parallel sweep order differs from the serial one).
+
+On a busy machine fewer threads are faster.  A step has about 70 parallel loops, and a thread that is descheduled holds all the others up at the next barrier: with other jobs running, 16 threads took 577\,ms per step at $1025^2$, and the 8-thread default slowed down severalfold too.  On a shared machine set \code{OMP_NUM_THREADS} below the number of free cores, or \code{OMP_WAIT_POLICY=passive}, so that waiting threads sleep instead of spinning.  With a thread placement set, the OpenMP default is kept, one thread per logical CPU; combine it with \code{OMP_NUM_THREADS} to choose the count, e.g.\ \code{OMP_PLACES=cores OMP_NUM_THREADS=8}.  OpenMP comes with GCC (\code{libgomp}); Apple's Clang needs either GCC from Homebrew (\code{CC=gcc-14 make OPENMP=1}) or \code{libomp}.
 
 Changing the sweep order is numerically relevant when the solver is stopped before convergence.  Therefore, at a loose iterate-change tolerance, serial Gauss--Seidel/SOR and OpenMP red--black Gauss--Seidel/SOR can return slightly different intermediate approximations even though they converge to the same discrete solution when the tolerance is sufficiently tight.
 
@@ -770,7 +800,7 @@ Building with
 \begin{lstlisting}[language=bash]
 make CUDA=1
 \end{lstlisting}
-adds a GPU backend.  The four CSR derivative matrices and all primary fields are uploaded once and remain on the device throughout the time loop.  CUDA kernels implement:
+adds a GPU backend.  It needs an NVIDIA GPU with a working driver and the CUDA toolkit (\code{nvcc} and cuFFT; on Ubuntu/Debian the \code{nvidia-cuda-toolkit} package is enough).  \code{nvcc} is taken from \code{PATH}, falling back to \code{/usr/local/cuda/bin/nvcc}; \code{NVCC} or \code{CUDA_HOME} point elsewhere (\code{make CUDA=1 CUDA_HOME=/opt/cuda}).  A CUDA build uses the GPU by default and \code{--cpu} runs the CPU path from the same binary; started on a machine without a usable GPU, it says so and runs on the CPU.  The four CSR derivative matrices and all primary fields are uploaded once and remain on the device throughout the time loop.  Data returns to the host only for the VTK files, the continuity extrema and the final centerline profiles.  CUDA kernels implement:
 \begin{itemize}[leftmargin=2em]
   \item wall velocity and wall-vorticity updates;
   \item CSR sparse derivatives;
@@ -792,7 +822,7 @@ cuFFT does not expose a native DST-I.  The CUDA backend uses the identity that t
 
 The red--black Gauss--Seidel and SOR solvers evaluate their stopping rule on the device: each sweep's sum of $|\Delta\psi|$ is reduced and compared with the tolerance by a kernel, sweeps after the one that meets it do nothing, and the host reads the outcome once every 32 sweeps.  The iteration count and the result are the same as with a check after every sweep.
 
-This makes the GPU FFT algorithm mathematically equivalent to the CPU FFTW DST-I solver, up to floating-point round-off and the details of the FFT implementations.
+This makes the GPU FFT algorithm mathematically equivalent to the CPU FFTW DST-I solver, up to floating-point round-off and the details of the FFT implementations.  On the default case ($\Rey=100$, $64\times64$, RK4 + FFT, 6000 steps) the GPU and CPU runs write identical centerline profiles and byte-identical VTK files.  With Gauss--Seidel/SOR the answer depends on the CPU build compared with: the default tolerance stops the iteration well before convergence, so the sweep order shows.  Against the \code{OPENMP=1} build, which also sweeps red--black, the GPU takes the same number of iterations and agrees to round-off; against the serial build, which sweeps lexicographically, it does not (with SOR on the default case, 67 against 90 iterations on the first solve and centerline velocities about $2\times10^{-5}$ apart).  The two meet only when the tolerance is tight enough for the iteration to converge.
 
 % =============================================================================
 \section{Diagnostics and Output}
@@ -810,7 +840,7 @@ This diagnostic should be interpreted as a consistency check on the streamfuncti
 
 \subsection{VTK output}
 
-By default, vorticity is written to legacy ASCII VTK files in \code{output/}.  The output interval is configurable and may be disabled with
+By default, vorticity is written to legacy ASCII VTK files in \code{output/} (\code{STRUCTURED_POINTS} with the grid spacing; on the polar grid \code{STRUCTURED_GRID} with the Cartesian coordinates of the points, \cref{sec:polar}).  Each field is its own numbered series (\code{vorticity-1-0.vtk}, \code{vorticity-1-1.vtk}, \dots).  The first time a run writes a series, it deletes the files of that series an earlier run left in \code{output/}, so a series always comes from one run; other files are left alone.  Other fields can be written by adding \code{printvtk()} calls in \code{main.c}.  The output interval is configurable and may be disabled with
 \begin{lstlisting}[language=bash]
 ./cnavier --output-interval 0
 \end{lstlisting}
@@ -820,10 +850,10 @@ for performance measurements.
 
 At the end of a run, the code writes four CSV files:
 \begin{itemize}[leftmargin=2em]
-  \item \code{centerline\_u\_sim.csv};
-  \item \code{centerline\_u\_ghia.csv};
-  \item \code{centerline\_v\_sim.csv};
-  \item \code{centerline\_v\_ghia.csv}.
+  \item \code{centerline_u_sim.csv};
+  \item \code{centerline_u_ghia.csv};
+  \item \code{centerline_v_sim.csv};
+  \item \code{centerline_v_ghia.csv}.
 \end{itemize}
 The reference data are the classical lid-driven-cavity values of Ghia, Ghia, and Shin at $\Rey=100$ \cite{ghia1982}.  The project exports both numerical and reference profiles, but does not currently compute an automated interpolation-based error norm between them.
 
@@ -862,6 +892,7 @@ of energy and enstrophy, against the continuum $2\nu Z(k_b)$ and $2\nu P(k_b)$, 
 It is useful to separate \emph{verification} from \emph{validation}.  Verification asks whether the implementation solves its stated discrete equations correctly.  Validation asks whether those equations reproduce accepted physical/reference results to the required accuracy.
 
 \subsection{Analytic verification of the FFT Poisson solver}
+\label{sec:verification-poisson}
 
 The test suite constructs a discrete sine eigenmode
 \begin{equation}
@@ -1079,6 +1110,31 @@ inverse & 40 & $1.6\times10^{-23}$ & 1200 & $4\times10^{-4}$ & 30\,000 & $t=4$--
 \end{tabular}
 \end{center}
 
+\paragraph{Reproducing the runs.}  The two forced runs and the decaying run of this section, on $512^2$ on the GPU, and the scripts that average and plot them:
+\begin{lstlisting}[language=bash]
+# direct cascade: forced at |k|/2pi = 4, 60 000 steps (25 min on an RTX 3050 laptop GPU)
+./cnavier --case forced --n 512 --re 1e7 --drag 0 --hypodrag 40 --hyperviscosity 6.5e-24 \
+    --hyper-order 4 --advection skew --forcing-rate 0.1 --forcing-k 4 --dt 5e-4 --tf 30 \
+    --output-interval 20000 --spectrum-interval 500 --integrals-interval 100
+python3 tools/cascade.py plot output --kf 4 --from 10
+python3 tools/cascade.py check output --kf 4 --from 10 --below 1,2 --above 10,100 \
+    --conserves-enstrophy --min-pi-z 40 --spread-z 0.1
+python3 tools/cascade.py budget output --from 10 --eps 0.1 --kf 4
+
+# inverse cascade: forced at |k|/2pi = 40
+./cnavier --case forced --n 512 --re 1e7 --drag 0 --hypodrag 1200 --hyperviscosity 1.6e-23 \
+    --hyper-order 4 --advection skew --forcing-rate 0.1 --forcing-k 40 --dt 4e-4 --tf 12 \
+    --output-interval 10000 --spectrum-interval 250 --integrals-interval 50
+
+# decaying turbulence
+./cnavier --case decaying --n 512 --re 1e7 --hyperviscosity 1e-23 --hyper-order 4 \
+    --advection skew --dt 4e-4 --tf 20 --output-interval 12500 --spectrum-interval 1250 \
+    --integrals-interval 50
+python3 tools/cascade.py evolution output --times 0,1,5,20
+python3 tools/snapshots.py output 0 1 2 3 --titles "t = 0,t = 5,t = 10,t = 15"
+\end{lstlisting}
+\code{make regression} runs a $64^2$ version of the direct-cascade check (about 6\,s on the CPU): the signs of $\Pi_E$ below and $\Pi_Z$ above the forcing, and the conservation of enstrophy.
+
 \paragraph{Direct cascade.}  With the skew-symmetric form (\cref{eq:skew}), $\Pi_Z=43.8$ on average over $K=10$--$100$ and stays within $42.7$--$46.3$ there, a plateau over a decade (\cref{fig:direct}).  Above the forcing $|\Pi_E|\le4\times10^{-4}$, $0.4\,\%$ of $\varepsilon$; below it $\Pi_E<0$.  The spectrum falls as $k^{-3.3}$ (fit over $K=8$--$100$), slightly steeper than $k^{-3}$, as is usual at this range.  The net nonlinear enstrophy transfer, $-\Pi_Z$ through the last shell, is $-3\times10^{-15}$.  Of the enstrophy input, $44$ is removed by the hyperviscosity and $17$ by the hypodrag; of the energy, $0.090$ by the hypodrag and $6\times10^{-5}$ by the hyperviscosity.  The energy accounting over the window (\code{tools/cascade.py budget}, from a rerun that writes the spectra every 100 steps and reproduces the frames above bitwise) separates drift from noise.  $E$ goes from $0.213$ to $0.204$, a drift of $-4\times10^{-4}$ per unit time, so there is no secular trend to speak of.  The dissipation removes $0.0904\pm0.003$ (block-averaged standard error), and the net nonlinear transfer is $-7\times10^{-6}$.  The input these imply, $\mathrm{d}E/\mathrm{d}t+\sum D_E+\sum F_E-\sum T_E=0.090$, is $10\,\%$ below $\varepsilon$.  But $\varepsilon$ is only the \emph{expected} input.  The realized input of the kicks over a window $T_w$ differs from it by the accumulated cross terms $\langle\mathbf{u}\cdot\delta\mathbf{u}\rangle$, whose standard deviation is about $\sqrt{2\varepsilon E_f/(MT_w)}$, with $E_f$ the energy in the $M$ forced modes.  The variance of one kick's cross term is $2E_f\varepsilon\Delta t/M$, and the kicks are independent.  With only $M=28$ forced modes this is $0.006$ here, the largest term in a combined standard error of $0.0065$, so the deficit is $1.5$ standard errors.  Four $128^2$ runs of the same set-up with other seeds ($\nu_h=4.2\times10^{-19}$ for the coarser grid, averaged over the longer window $t=10$--$60$) close the budget to $-0.4$, $+1.7$, $+0.8$ and $+0.6\,\%$, each within $0.3$ of its combined standard error.  The kick accounting is therefore unbiased.  The $10\,\%$ of the $512^2$ window is the scatter of a 20-unit window with 28 forced modes.  The scatter between the four seeds, $0.0009$, is below the estimate $0.004$, which counts all the energy of shells 3--5 as forced and is an upper bound.  With 400 frames the plateau is $42.4$--$44.7$ (mean $43.7$).  With the advective form the same run has a less flat flux ($45.5$--$51.3$), and near the cutoff the nonlinear term \emph{creates} enstrophy at $14.3$ per unit time, $23\,\%$ of the input, so that $\Pi_Z$ ends at $-14$ instead of $0$.
 
 \begin{figure}[htbp]
@@ -1107,7 +1163,7 @@ inverse & 40 & $1.6\times10^{-23}$ & 1200 & $4\times10^{-4}$ & 30\,000 & $t=4$--
 \label{fig:decaying}
 \end{figure}
 
-\paragraph{Resolution.}  How much of the spectrum does each order resolve?  Decaying turbulence at $\Rey=2\times10^4$ (skew-symmetric form, $k_0=10$) was run on $256^2$ and $512^2$ with orders 2, 4 and 6 and the compact scheme of \cref{sec:compact}, and on $2048^2$ with order 6, all with the same time step ($6.25\times10^{-5}$) and from the same initial field: the phases of the initial spectrum depend on the wavevector only, so every grid that resolves the spectrum gets the same field (\code{random\_initial\_field()}; \code{make test} checks it to $3\times10^{-16}$).  Turbulence is chaotic, so the runs decorrelate.  At $t=0.5$ the shell energies differ by tens of per cent even at $K=10$.  At $t=0.09$, about six eddy turnovers, after the cascade has filled the spectrum, the large scales ($K\le20$) of the $512^2$ runs still agree with the $2048^2$ one to $2\times10^{-4}$ (order 6) and $6\times10^{-5}$ (compact).  A common time step matters here: an earlier comparison with a reference whose frames fell half a step later agreed only to $2\times10^{-3}$.  The spectra are compared there (\cref{fig:resolution}); the reference is resolved, with $E$ at $K=256$ at $10^{-8}$ of its peak, and order 6 on $2048^2$ differentiates that shell to $0.2\,\%$:
+\paragraph{Resolution.}  How much of the spectrum does each order resolve?  Decaying turbulence at $\Rey=2\times10^4$ (skew-symmetric form, $k_0=10$) was run on $256^2$ and $512^2$ with orders 2, 4 and 6 and the compact scheme of \cref{sec:compact}, and on $2048^2$ with order 6, all with the same time step ($6.25\times10^{-5}$) and from the same initial field: the phases of the initial spectrum depend on the wavevector only, so every grid that resolves the spectrum gets the same field (\code{random_initial_field()}; \code{make test} checks it to $3\times10^{-16}$).  Turbulence is chaotic, so the runs decorrelate.  At $t=0.5$ the shell energies differ by tens of per cent even at $K=10$.  At $t=0.09$, about six eddy turnovers, after the cascade has filled the spectrum, the large scales ($K\le20$) of the $512^2$ runs still agree with the $2048^2$ one to $2\times10^{-4}$ (order 6) and $6\times10^{-5}$ (compact).  A common time step matters here: an earlier comparison with a reference whose frames fell half a step later agreed only to $2\times10^{-3}$.  The spectra are compared there (\cref{fig:resolution}); the reference is resolved, with $E$ at $K=256$ at $10^{-8}$ of its peak, and order 6 on $2048^2$ differentiates that shell to $0.2\,\%$:
 \begin{center}\small
 \setlength{\tabcolsep}{4pt}
 \begin{tabular}{lccccccc}
@@ -1132,7 +1188,7 @@ What a resolved shell costs follows from the step time and the advective limit. 
 \label{fig:resolution-fourier}
 \end{figure}
 
-\paragraph{Does the ordering hold across regimes?}  The comparison above is one flow: decaying turbulence at $\Rey=2\times10^4$ from $k_0=10$.  To see whether its ordering is robust, the same comparison was repeated varying one parameter at a time: $\Rey=5\times10^3$ and $8\times10^4$, and $k_0=5$ and $20$, each on $256^2$ and $512^2$ against its own $2048^2$ reference.  The comparison time keeps $t/\tau_0$ fixed, $\tau_0\propto1/k_0$ (all runs start with $E=\tfrac12$): $t=0.09\cdot10/k_0$, about six eddy turnovers.  The largest scales ($K\le20$) still agree with the reference to $10^{-3}$--$10^{-2}$ there, so the comparison is made before the runs decorrelate.  A $2048^2$ explicit-order-6 run is taken as the reference only where it does not depend on its own discretization.  For the two most demanding cases ($\Rey=8\times10^4$, $k_0=20$) a second, independent $2048^2$ run with the compact scheme agrees with it to $1.5\times10^{-3}$ up to $K=255$ (and to $10^{-4}$ up to $K=127$), well inside the $2\,\%$ and $10\,\%$ tolerances measured; the two differ only beyond $K\approx500$, the upper half of their own range.  The question is whether a single parameter, the reference's energy at the grid's Nyquist shell relative to its peak, $E(K_{\mathrm{Nyq}})/E_{\max}$, orders the schemes.  It measures how much of the flow lies at the cutoff.  The scripts are \code{tools/compare\_schemes.py} (per case and the plot of \cref{fig:crossover}).
+\paragraph{Does the ordering hold across regimes?}  The comparison above is one flow: decaying turbulence at $\Rey=2\times10^4$ from $k_0=10$.  To see whether its ordering is robust, the same comparison was repeated varying one parameter at a time: $\Rey=5\times10^3$ and $8\times10^4$, and $k_0=5$ and $20$, each on $256^2$ and $512^2$ against its own $2048^2$ reference.  The comparison time keeps $t/\tau_0$ fixed, $\tau_0\propto1/k_0$ (all runs start with $E=\tfrac12$): $t=0.09\cdot10/k_0$, about six eddy turnovers.  The largest scales ($K\le20$) still agree with the reference to $10^{-3}$--$10^{-2}$ there, so the comparison is made before the runs decorrelate.  A $2048^2$ explicit-order-6 run is taken as the reference only where it does not depend on its own discretization.  For the two most demanding cases ($\Rey=8\times10^4$, $k_0=20$) a second, independent $2048^2$ run with the compact scheme agrees with it to $1.5\times10^{-3}$ up to $K=255$ (and to $10^{-4}$ up to $K=127$), well inside the $2\,\%$ and $10\,\%$ tolerances measured; the two differ only beyond $K\approx500$, the upper half of their own range.  The question is whether a single parameter, the reference's energy at the grid's Nyquist shell relative to its peak, $E(K_{\mathrm{Nyq}})/E_{\max}$, orders the schemes.  It measures how much of the flow lies at the cutoff.  The scripts are \code{tools/compare_schemes.py} (per case and the plot of \cref{fig:crossover}).
 
 \begin{center}\small
 \setlength{\tabcolsep}{4pt}
@@ -1153,7 +1209,7 @@ $k_0=20$ & $256^2$ & $1.6\times10^{-4}$ & \textbf{89} & 74 & 74 & 72 & 49 \\
 \bottomrule
 \end{tabular}
 \end{center}
-(shells within $10\,\%$ of the reference).  In these decaying runs, before decorrelation, the parameter largely organizes the ordering (\cref{fig:crossover}).  Relative to explicit order 6, pseudospectral differentiation resolves $1.7$ times as many shells where the cutoff carries $10^{-11}$ of the peak, and falls steadily to $0.83$ at $10^{-4}$.  The compact scheme stays at $1.3$--$1.6$ times up to about $5\times10^{-6}$ and then drops to parity and below.  The 2/3 rule falls monotonically from $1.13$ to $0.55$.  $3/2$ padding follows undealiased spectral within $8$ shells in every case (the open diamonds of \cref{fig:crossover}); it changes the leader in one case ($k_0=5$ on $256^2$, $109$ against compact's $105$).  Pseudospectral leads clearly below about $10^{-8}$, and compact clearly near $5\times10^{-6}$.  Between about $10^{-7}$ and $2\times10^{-6}$ the two trade places: at $9.0\times10^{-8}$ and $2.3\times10^{-7}$ compact is ahead, at $2.0\times10^{-7}$ and $1.6\times10^{-6}$ pseudospectral.  So within that band something besides the energy at the cutoff decides.  Above about $10^{-5}$ neither high-resolution scheme beats explicit order 6, whose underestimated derivatives near the cutoff behave like a numerical damping there.  The classical resolution measure does better.  With $l_\eta=(\nu^3/\eta)^{1/6}$ the enstrophy-dissipation length of the reference at the comparison time ($\eta$ the sum of its \code{D\_Z} column, which equals $2\nu$ times its palinstrophy to $0.1\,\%$) and $k_{\max}=\pi/h$, the ten cases have $k_{\max}l_\eta=0.76$--$5.0$, and ordered by it the leading scheme changes monotonically: explicit order 6 at $0.76$ and $0.92$, compact at $1.35$ and $1.52$, the two within $4\,\%$ at $1.83$ and $2.01$, pseudospectral from $2.50$ up.  The boundaries lie near the thresholds usually quoted for a resolved ($k_{\max}l_\eta>1$) and a well-resolved ($\ge2$) two-dimensional simulation, though ten points place them only roughly.  The cell Reynolds number $\Rey\,h$ does not organize the cases at all: the three $256^2$ cases at $\Rey\,h=78$, which differ only in $k_0$, have $k_{\max}l_\eta=0.92$, $1.35$ and $2.01$ and fall in three regimes.  \code{tools/compare\_schemes.py crossover} computes both and plots the three axes (with \code{:RE} appended to each case).
+(shells within $10\,\%$ of the reference).  In these decaying runs, before decorrelation, the parameter largely organizes the ordering (\cref{fig:crossover}).  Relative to explicit order 6, pseudospectral differentiation resolves $1.7$ times as many shells where the cutoff carries $10^{-11}$ of the peak, and falls steadily to $0.83$ at $10^{-4}$.  The compact scheme stays at $1.3$--$1.6$ times up to about $5\times10^{-6}$ and then drops to parity and below.  The 2/3 rule falls monotonically from $1.13$ to $0.55$.  $3/2$ padding follows undealiased spectral within $8$ shells in every case (the open diamonds of \cref{fig:crossover}); it changes the leader in one case ($k_0=5$ on $256^2$, $109$ against compact's $105$).  Pseudospectral leads clearly below about $10^{-8}$, and compact clearly near $5\times10^{-6}$.  Between about $10^{-7}$ and $2\times10^{-6}$ the two trade places: at $9.0\times10^{-8}$ and $2.3\times10^{-7}$ compact is ahead, at $2.0\times10^{-7}$ and $1.6\times10^{-6}$ pseudospectral.  So within that band something besides the energy at the cutoff decides.  Above about $10^{-5}$ neither high-resolution scheme beats explicit order 6, whose underestimated derivatives near the cutoff behave like a numerical damping there.  The classical resolution measure does better.  With $l_\eta=(\nu^3/\eta)^{1/6}$ the enstrophy-dissipation length of the reference at the comparison time ($\eta$ the sum of its \code{D_Z} column, which equals $2\nu$ times its palinstrophy to $0.1\,\%$) and $k_{\max}=\pi/h$, the ten cases have $k_{\max}l_\eta=0.76$--$5.0$, and ordered by it the leading scheme changes monotonically: explicit order 6 at $0.76$ and $0.92$, compact at $1.35$ and $1.52$, the two within $4\,\%$ at $1.83$ and $2.01$, pseudospectral from $2.50$ up.  The boundaries lie near the thresholds of Lunasin et al.~\cite{lunasin2007} for a resolved ($k_{\max}l_\eta>1$) and a well-resolved ($\ge2$) two-dimensional simulation, though ten points place them only roughly.  The cell Reynolds number $\Rey\,h$ does not organize the cases at all: the three $256^2$ cases at $\Rey\,h=78$, which differ only in $k_0$, have $k_{\max}l_\eta=0.92$, $1.35$ and $2.01$ and fall in three regimes.  \code{tools/compare_schemes.py crossover} computes both and plots the three axes (with \code{:RE} appended to each case).
 
 The cost at equal resolved range, relative to explicit order 6 as in \cref{sec:fourier-ops}, follows the same axis.  Compact costs $0.42$--$0.78$ times wherever $E(K_{\mathrm{Nyq}})/E_{\max}\lesssim5\times10^{-6}$.  Pseudospectral costs $0.54$--$0.76$ times below about $10^{-8}$, and $0.64$--$1.4$ times in the crossover band and above it.  In the heavily under-resolved cases ($\gtrsim10^{-5}$) both cost more (compact $1.9$--$3.1$, pseudospectral $3.4$--$4.9$).  The 2/3 rule never costs less ($1.3$--$11$), and neither does $3/2$ padding: at the same range as undealiased spectral and $1.85$ times its step, it costs $1.00$--$1.31$ times explicit order 6 where pseudospectral leads, and $2$--$9$ times in the under-resolved cases.
 
@@ -1221,9 +1277,42 @@ The solution has converged at these resolutions: at the Ghia points the $129\tim
 \section{Performance Characteristics}
 % =============================================================================
 
-The default FFT-based Poisson solver generally dominates the timestep cost, especially under RK4 where five elliptic solves are performed per step.  Measured timings per timestep for the CPU, OpenMP and CUDA builds are kept in one place, the Performance section of \code{README.md}, so that they are not maintained in two copies; they are implementation benchmarks on one machine rather than performance guarantees.
+The default FFT-based Poisson solver generally dominates the timestep cost, especially under RK4, which solves four times per step: the first stage reuses the solve that ended the previous step when the interior of $\omega$ has not changed since (FFT solvers only; results bitwise the same).  That reuse is 8--12\,\% faster on the cavity, on both backends, and 2--3\,\% on unforced periodic runs on the GPU; the random kick changes $\omega$ every step, so forced runs still do five solves.
 
-For transform performance, grid sizes for which $n-1$ factors into small primes are advantageous, because the sine transform of the $n-2$ interior nodes acts through FFT lengths of $2(n-1)$.  Sizes such as 65, 129, 257, 513 and 1025 are therefore fast, and their neighbours can be several times slower: on the machine of the README benchmarks one serial FFT Poisson solve takes 6.7\,ms at $255^2$ ($2(n-1)=508=4\cdot127$) against 1.6\,ms at $257^2$ ($512$), and 85\,ms at $1023^2$ against 31\,ms at $1025^2$.
+Time per step, RK4 + FFT, $\Rey=100$, $\dt=10/n^2$, VTK output off, on an Intel i7-12650H and an NVIDIA GeForce RTX 3050 Laptop GPU (4\,GB) under WSL2 (Ubuntu 22.04, gcc 11.4, CUDA 11.5), all builds at the Makefile's \code{-O2}:
+\begin{center}
+\begin{tabular}{lrrrr}
+\toprule
+Grid & CPU, \code{make} & OpenMP, 8 threads & CUDA & CUDA vs CPU \\
+\midrule
+$65\times65$ & 0.85\,ms & 0.44\,ms & 0.94\,ms & $0.9\times$ \\
+$129\times129$ & 3.66\,ms & 1.46\,ms & 1.05\,ms & $3.5\times$ \\
+$257\times257$ & 17.3\,ms & 6.26\,ms & 3.62\,ms & $4.8\times$ \\
+$513\times513$ & 85.9\,ms & 40.9\,ms & 14.8\,ms & $5.8\times$ \\
+$1025\times1025$ & 326\,ms & 171\,ms & 59.6\,ms & $5.5\times$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+These are single runs on a laptop; repeat runs usually vary by 10--15\,\%, occasionally more.  They are implementation benchmarks on one machine rather than performance guarantees.  Each row is a run such as \code{./cnavier --n 513 --dt 3.80e-5 --tf 7.62e-3 --output-interval 0}.  The GPU pays off from roughly $129\times129$ upwards; on small grids the fixed cost of launching kernels dominates, and the CPU, especially with OpenMP, is faster.  The table is for the FFT solver only.  Gauss--Seidel and SOR are on the GPU so that every solver option works there, not because they are fast: on the default $64\times64$ case SOR takes about 30\,ms per step on the GPU, against about 1\,ms for the FFT solver.
+
+OpenMP threads, same machine (WSL2 presents it as 8 cores with 2 hardware threads each), RK4 + FFT, best of 2--3 runs:
+\begin{center}
+\begin{tabular}{lrr}
+\toprule
+Threads & $129\times129$ & $1025\times1025$ \\
+\midrule
+serial build & 3.66\,ms & 326\,ms \\
+1 & 3.55\,ms & 330\,ms \\
+2 & 2.06\,ms & 213\,ms \\
+4 & 1.57\,ms & 179\,ms \\
+8 (default here) & 1.55\,ms & 157\,ms \\
+16 & 2.16\,ms & 191\,ms \\
+\bottomrule
+\end{tabular}
+\end{center}
+The 8- and 16-thread rows come from one interleaved comparison (\cref{sec:openmp} explains the plateau).  Forced turbulence on $512^2$ takes 16.2\,ms per step on the GPU (\cref{sec:cuda}).
+
+For transform performance, grid sizes for which $n-1$ factors into small primes are advantageous, because the sine transform of the $n-2$ interior nodes acts through FFT lengths of $2(n-1)$.  Sizes such as 65, 129, 257, 513 and 1025 are therefore fast, and their neighbours can be several times slower: on the machine above one serial FFT Poisson solve takes 6.7\,ms at $255^2$ ($2(n-1)=508=4\cdot127$) against 1.6\,ms at $257^2$ ($512$), and 85\,ms at $1023^2$ against 31\,ms at $1025^2$.  On the GPU a step takes 77\,ms at $1024\times1024$ against 60\,ms at $1025\times1025$.
 
 The GPU becomes increasingly advantageous as the grid grows because the fixed kernel-launch overhead is amortized over more work.  Double-precision FFT throughput is a major cost on consumer GPUs, so larger speedups may be observed on hardware with stronger FP64 capability.
 
@@ -1239,7 +1328,7 @@ On Ubuntu/Debian, a typical CPU setup is
 \begin{lstlisting}[language=bash]
 sudo apt install build-essential libfftw3-dev
 \end{lstlisting}
-For CUDA development, the distribution toolkit or NVIDIA's toolkit packages may be used.
+On Arch Linux \code{pacman -S fftw}, and on macOS \code{brew install fftw}.  OpenMP and CUDA are described in \cref{sec:openmp,sec:cuda}.
 
 \subsection{Build modes}
 
@@ -1253,36 +1342,73 @@ make OPENMP=1 CUDA=1    # CUDA plus OpenMP CPU fallback/tests
 The Makefile records the active compiler flags so that changing OpenMP/CUDA modes triggers the required rebuild automatically.
 
 \subsection{Tests}
+\label{sec:tests}
 
 \begin{lstlisting}[language=bash]
 make test
 make CUDA=1 test
 make OPENMP=1 CUDA=1 test
 make OPENMP=1 convergence   # spatial convergence study, about 1.5 minutes
+make OPENMP=1 ablation      # what limits the spatial order
 \end{lstlisting}
 
-The test program returns 0 when all executed checks pass, 1 when any check fails, and 77 when a CUDA test build cannot execute its GPU checks because no usable device is present.
+\code{make test} builds and runs \code{test_cnavier}, which checks:
+\begin{itemize}[leftmargin=2em]
+  \item \textbf{Building blocks}: sparse operations against dense ones; every row of the finite-difference operators (boundary rows included) exact on the polynomials its stencil is built for, for orders 2, 4 and 6; the derivative operators acting along the right axis on non-square grids; wall velocities, corners included; the VTK and centerline writers.
+  \item \textbf{Poisson solvers}: the FFT solver against an exact eigenmode, at sizes that exercise every batching case of the transform; FFT, SOR and Gauss--Seidel giving the same answer once converged; the residuals of the iterative solvers; SOR iteration counts on anisotropic grids (\cref{sec:verification-poisson}).
+  \item \textbf{Time stepping}: short cavity runs with both schemes (finite, divergence-free); the stability limit (0.95 times runs, 1.05 times diverges) and the suggested $\dt$; the observed order in $\dt$, walls included (Euler first, RK4 fourth), also with a time-dependent vorticity source and from $t_0>0$.
+  \item \textbf{Spatial accuracy}: the manufactured solutions of \cref{sec:mms} with walls and of \cref{sec:periodic-verification} without, at the orders measured there; the compact Poisson operator, the third-order wall closure and the fourth-order velocity rows (\cref{sec:wall-order}).
+  \item \textbf{Diagnostics, forcing and turbulence terms}: \cref{sec:diagnostics-verification} and the sections that follow it.
+  \item \textbf{Backends}: driving the solver through \code{backend.c} gives exactly what calling it directly gives; every solver ignores changes to the caller's configuration after it is created; \code{backend_psi()} changes no step.
+  \item \textbf{Polar grid} (\code{tests/test_polar.c}): \cref{sec:polar}.
+  \item \textbf{OpenMP} (with \code{OPENMP=1}): results on 1 and on 4 threads bitwise identical above the size where loops go parallel.
+\end{itemize}
+\code{make CUDA=1 test} also checks the GPU backend against the CPU: SpMV for all four operators, each Poisson solver, the continuity diagnostic, and full timesteps for the Euler/RK4 and FFT/SOR/Gauss--Seidel combinations on square and non-square grids, with and without a vorticity source, on periodic grids, with the compact Poisson operator and the wall closure from $\psi$, with the forcing and damping terms, and the spectra.  \code{make OPENMP=1 CUDA=1 test} adds the comparison of the iterative solvers at the default tolerance, meaningful only when the CPU sweeps in the GPU's red--black order.  The test program returns 0 when all executed checks pass, 1 when any check fails, and 77 when a CUDA test build cannot execute its GPU checks because no usable device is present; such a run does not count as a pass.
 
-Further checks, each a \code{make} target run by continuous integration: \code{test-cli} (invalid command lines are refused, with the program's error status and message, without writing anything), \code{regression} (a short run against stored results and the steady default case against Ghia et al.), \code{test-asan} (AddressSanitizer and UndefinedBehaviorSanitizer), \code{valgrind} (no leaks, nothing still reachable), \code{format-check}, \code{cppcheck}, \code{tidy} (also over the CUDA and OpenMP branches of the C sources; the CUDA source itself is checked only by its compiler), and \code{WERROR=1} builds, which make nvcc's warnings errors too.  Continuous integration has no GPU, so the CPU--GPU comparisons run only where \code{make CUDA=1 test} is run on a GPU host.
+Further checks, each a \code{make} target run by continuous integration:
+\begin{itemize}[leftmargin=2em]
+  \item \code{test-cli}: invalid command lines (NaN, garbage after numbers, grids out of range, unstable $\dt$, options that need \code{--geometry polar} or that it refuses, \dots) are refused with exit status 1 and an error message, and write nothing; a crash counts as a failure.
+  \item \code{regression}: 100 steps of the default case against stored results; the steady default case within $0.004$ ($u$) and $0.010$ ($v$) of the Ghia et al.\ data (\cref{sec:ghia}); the periodic Taylor--Green vortex against its exact solution on $32^2$ and $64^2$, at sixth order, and its energy; laminar Kolmogorov flow; the dual cascade of forced turbulence on $64^2$ (flux signs and enstrophy conservation, with \code{tools/cascade.py}); the cylinder at $\Rey=40$ on a coarse polar grid (\cref{sec:polar}); and the steady-state check on a short final interval.  Non-finite values fail.
+  \item \code{test-asan} and \code{valgrind}: the test suite and a short run under AddressSanitizer and UndefinedBehaviorSanitizer, and under valgrind, where any leak, including memory still reachable at exit, fails.
+  \item \code{format-check}: the formatting of \code{.clang-format}, which \code{make format} applies.
+  \item \code{cppcheck} and \code{tidy}: static analysis (the checks of \code{.clang-tidy}), also over the CUDA and OpenMP branches of the C sources; the CUDA source itself is checked only by its compiler.
+  \item \code{WERROR=1} builds, which make the compiler's warnings errors, nvcc's too.
+\end{itemize}
+GitHub Actions (\code{.github/workflows/ci.yml}) runs, in order: formatting; cppcheck, clang-tidy and \code{-Wextra -Werror} builds with gcc and clang; serial, OpenMP and CUDA builds; then the test suite, the command-line and regression tests for the serial and OpenMP builds, and the sanitizer and valgrind checks.  The CUDA build's test program must report its GPU tests as skipped (exit status 77).  The hosted runners have no GPU, so the CPU--GPU comparisons run only where \code{make CUDA=1 test} is run on a GPU host; the pull request template asks for that whenever the numerics change.
+
+The stored results in \code{tests/reference/} are deterministic, so \code{make regression} fails only when the numerics change.  If they change on purpose, regenerate them:
+\begin{lstlisting}[language=bash]
+mkdir -p /tmp/ref/output && (cd /tmp/ref && $OLDPWD/cnavier --tf 0.5 --output-interval 0)
+cp /tmp/ref/output/centerline_u_sim.csv tests/reference/centerline_u_short.csv
+cp /tmp/ref/output/centerline_v_sim.csv tests/reference/centerline_v_short.csv
+\end{lstlisting}
+and for the cylinder, from the last line of its history:
+\begin{lstlisting}[language=bash,breaklines=true]
+mkdir -p /tmp/cyl/output && (cd /tmp/cyl && $OLDPWD/cnavier --geometry polar --ntheta 96 --r-inf 20 --diag-interval 500)
+python3 -c "import csv; r = list(csv.DictReader(open('/tmp/cyl/output/cylinder_history.csv')))[-1]; print('quantity,value'); [print(q + ',' + r[q]) for q in ('cd', 'wake_length', 'separation_angle', 'E', 'Z', 'P')]" > tests/reference/cylinder_regression.csv
+\end{lstlisting}
 
 \subsection{Runtime options}
+\label{sec:runtime-options}
 
-The current binary accepts:
+Options not given keep the defaults of \code{src/main.c} (\cref{tab:defaults}); \code{./cnavier --help} prints the same list.  Values that cannot be used (not a number, a grid outside 8--16384, $t_f/\dt$ below one step or beyond the integer range, an unstable $\dt$) are refused with an error before anything is computed or written; for a $\dt$ above the limits of \cref{sec:stability} the message gives the limits and a $\dt$ that passes.
 
 \begin{longtable}{@{}>{\ttfamily}p{0.30\textwidth}p{0.62\textwidth}@{}}
 \toprule
 \normalfont Option & Description \\
 \midrule
 \endhead
---nx N & Number of grid points in $x$. \\
---ny N & Number of grid points in $y$. \\
+--nx N, --ny N & Number of grid points in $x$ and $y$. \\
 --n N & Same number of grid points in $x$ and $y$. \\
 --dt DT & Timestep. \\
 --tf TF & Final simulation time. \\
 --output-interval N & Write VTK every $N$ steps; zero disables VTK output. \\
 --re RE & Reynolds number. \\
---poisson-order N & 2 (five-point, default) or 4 (compact, \cref{sec:compact-poisson}); FFT solver with walls. \\
---wall-closure NAME & \texttt{velocity} (default) or \texttt{briley} (\cref{eq:briley}). \\
+--order N & Finite differences of order 2, 4 or 6 (default 6), or on the periodic cases \texttt{compact6} (\cref{sec:compact}) or \texttt{spectral} (\cref{sec:fourier-ops}). \\
+--operators NAME & Periodic cases: apply the derivatives as \texttt{sparse} products or in \texttt{fourier} space (default \texttt{fourier} for \texttt{compact6} and \texttt{spectral}). \\
+--dealias, --pad & With Fourier operators: the 2/3 rule, or dealiasing of the nonlinear term by 3/2 padding. \\
+--poisson-order N & 2 (five-point, default) or 4 (compact, \cref{sec:compact-poisson}); FFT solver with walls, and the $\xi$ operator of the polar solver. \\
+--wall-closure NAME & \texttt{velocity} (default on the Cartesian grid) or \texttt{briley} (\cref{eq:briley}; default on the polar grid). \\
 --velocity-order N & 2 (default) or 4: fourth-order rows next to the walls for $u$, $v$ (\cref{sec:wall-order}). \\
 --integrals-interval N & Write $E$, $Z$, $P$, $I$ to \texttt{output/integrals.csv} every $N$ steps (default 1; 0 never; \cref{sec:diagnostics}). \\
 --drag A & Periodic cases: linear drag $-\alpha\omega$ (\cref{sec:forcing}). \\
@@ -1293,7 +1419,13 @@ The current binary accepts:
 --advection NAME & Periodic cases: \texttt{advective} or \texttt{skew} nonlinear term (\cref{eq:skew}); default \texttt{skew} for \texttt{forced} and \texttt{decaying}. \\
 --spectrum-interval N & Periodic cases: write the spectra every $N$ steps (default: with the VTK frames). \\
 --peak-k K0 & \texttt{decaying}: peak of the initial spectrum. \\
---case NAME & \texttt{cavity} (default), or on a doubly periodic unit square \texttt{taylor-green}, \texttt{shear-layer}, \texttt{kolmogorov}, \texttt{forced} or \texttt{decaying} (\cref{sec:periodic,sec:forcing}). \\
+--case NAME & \texttt{cavity} (default), or on a doubly periodic unit square \texttt{taylor-green}, \texttt{shear-layer}, \texttt{kolmogorov}, \texttt{forced} or \texttt{decaying} (\cref{sec:periodic,sec:forcing}); with \texttt{--geometry polar}, \texttt{cylinder}. \\
+--geometry NAME & \texttt{cartesian} (default) or \texttt{polar}: the flow past a cylinder (\cref{sec:polar}), with $\Rey=40$, $t_f=300$, an automatic $\dt$ and the final state only as VTK by default.  The options below need it. \\
+--ntheta N, --nr N & Polar: grid points in $\theta$ (default 256) and $r$ (default: square cells). \\
+--r-inf R & Polar: outer radius in diameters (default 40). \\
+--outer-bc NAME & Polar: \texttt{farfield} (default) or \texttt{freestream}. \\
+--steady-tol TOL & Polar: stop once $\max|\partial\omega/\partial t|<$ TOL (default $10^{-6}$; 0 never). \\
+--diag-interval N & Polar: steps between diagnostics (default 100). \\
 --cpu & In a CUDA build, force the CPU backend. \\
 --help & Print command-line help. \\
 \bottomrule
@@ -1305,7 +1437,7 @@ mkdir -p output
 ./cnavier --n 127 --dt 6.2e-4 --tf 20 --output-interval 50
 \end{lstlisting}
 
-Parameters such as Reynolds number, finite-difference order, Poisson method, and time integrator are presently configured in \code{src/main.c} rather than through command-line flags.
+The time scheme and the Poisson method are configured in \code{src/main.c}, not on the command line.
 
 % =============================================================================
 \section{Default Numerical Configuration}
@@ -1327,8 +1459,8 @@ $n_x,n_y$ & 64, 64 & computational array size \\
 $\dt$ & 0.005 & timestep \\
 $t_f$ & 30 & final time \\
 finite-difference \code{order} & 6 & sixth-order interior stencil \\
-\code{time\_scheme} & 2 & classical RK4 \\
-\code{poisson\_type} & 3 & FFT/DST-I direct discrete solver \\
+\code{time_scheme} & 2 & classical RK4 \\
+\code{poisson_type} & 3 & FFT/DST-I direct discrete solver \\
 Poisson iterate tolerance & $10^{-3}$ & GS/SOR iterate-change threshold \\
 Poisson max iterations & 10000 & GS/SOR iteration cap \\
 VTK output interval & 20 & steps between output files \\
@@ -1360,7 +1492,7 @@ At startup a lid-speed Courant check and the viscous bound of the selected time 
 
 \subsection{Steady-state convergence}
 
-The default driver advances to a specified final time; it does not terminate based on a physical steady-state residual such as $\|\omega^{n+1}-\omega^n\|$ or a momentum residual.  For steady cavity studies, $t_f$ should be selected after checking that monitored fields and centerline profiles no longer change materially.
+The Cartesian driver advances to a specified final time; it does not terminate based on a physical steady-state residual such as $\|\omega^{n+1}-\omega^n\|$ or a momentum residual.  (The cylinder run does: it stops once $\max|\partial\omega/\partial t|$ falls below \code{--steady-tol}, \cref{sec:polar}.)  For steady cavity studies, $t_f$ should be selected after checking that monitored fields and centerline profiles no longer change materially.
 
 \subsection{Pressure is not solved}
 
@@ -1368,7 +1500,7 @@ Pressure is absent from the vorticity--streamfunction formulation.  This is an a
 
 \subsection{Geometry and dimensionality}
 
-The current method is two-dimensional and Cartesian.  Curvilinear grids, immersed boundaries, unstructured meshes, three-dimensional vorticity stretching, and general inflow/outflow boundaries are outside the present scope.
+The current method is two-dimensional, on a Cartesian grid or, for the flow past a circular cylinder, a log-polar one (\cref{sec:polar}).  General curvilinear grids, immersed boundaries, unstructured meshes, three-dimensional vorticity stretching, and general inflow/outflow boundaries are outside the present scope.
 
 % =============================================================================
 \section{Suggested Scientific Workflow}
@@ -1404,16 +1536,6 @@ The current architecture makes several research-oriented extensions relatively n
   \item multigrid for the Poisson equation when boundary conditions or geometries no longer permit a separable sine transform;
   \item pressure reconstruction as a post-processing step;
 \end{itemize}
-
-% =============================================================================
-\section{Final Remarks}
-% =============================================================================
-
-\texttt{cnavier} implements a mathematically clean and computationally compact route to incompressible flow in two dimensions: evolve vorticity, invert a scalar Poisson equation, and differentiate a streamfunction to recover velocity.  The code is particularly transparent because the spatial derivatives are explicit finite-difference matrices, the two-dimensional operators are tensor products, and both CPU and GPU backends expose the same algorithmic sequence.
-
-The strongest parts of the present methodology are the exact discrete streamfunction enforcement of incompressibility, the direct DST-based Poisson option, reusable sparse operators, RK4 stage consistency, and unusually thorough CPU--GPU equivalence tests for a compact CFD code.  The main scientific qualifications are equally clear: high-order accuracy applies primarily to interior transport derivatives; boundary closures are lower order; the streamfunction Poisson operator is second order; and quantitative benchmark/grid-convergence validation is not yet automated.
-
-For educational CFD, numerical experimentation, backend comparisons, and as a foundation for further research-oriented development, these characteristics make the project both useful and unusually auditable.  For publication-quality quantitative claims, the next step is not to complicate the code immediately, but to formalize its grid convention and add systematic temporal/spatial convergence and benchmark-error measurements.
 
 % =============================================================================
 \section{Polar Grid: Flow Past a Circular Cylinder}
@@ -1453,7 +1575,22 @@ The viscous term is stiffest on the cylinder, so the limits are those of the uni
   \item \textbf{Separation angle} $\theta_s$ (from the front stagnation point): the zero of $\omega_w$ on the upper surface, by cubic interpolation.  \textbf{Wake length} $L_w/D$: the zero of $u_r$ on the wake axis, less $R$.  \textbf{Recirculation centre} $(a,b)$: the minimum of $\psi$ in the upper bubble, refined by parabolas; $a$ downstream of the rear stagnation point, $b$ the distance between the two centres.
   \item The velocity at any point by cubic Lagrange interpolation in $(\xi,\theta)$, for the reference value at $(x,y)=(3,3)$; the asymmetry $\max|\omega(\theta)+\omega(-\theta)|$; and the continuity check.
 \end{itemize}
-The GPU backend is Cartesian only.  A polar configuration runs on the CPU, with a message, even when the GPU is asked for.
+The GPU backend is Cartesian only.  A polar configuration runs on the CPU, with a message, even when the GPU is asked for.  \code{rk4_alloc()} refuses (\code{polar_config_error()}) every option the polar right-hand side does not implement: the forcing and damping terms, the Fourier operators, the skew-symmetric form, the fourth-order velocity rows and the four walls of \code{wall_bc}; the cylinder's velocity is \code{polar_grid.wall_ut}.  The outer boundary values may change between steps through the setters of \code{polar.h} only, which bump a version that tells the solver (and \code{backend_psi()}) not to reuse a stream function solved for the old values.
+
+\subsection{Running the case}
+\begin{lstlisting}[language=bash]
+./cnavier --geometry polar --ntheta 128     # 128 x 90, r_inf = 40: about a minute on one core
+\end{lstlisting}
+The options are listed in \cref{sec:runtime-options}.  At the end the run prints its comparison with the reference values (\code{tests/reference/cylinder_re40.csv}), and it writes:
+\begin{sloppypar}
+\begin{itemize}[leftmargin=2em]
+  \item \code{output/cylinder_history.csv}: $C_D$ with its pressure and friction parts, $L_w/D$, $\theta_s$, $\max|\partial\omega/\partial t|$ over the steps since the previous line, the $C_D$ of the far-field condition, and the area means $E$, $Z$, $P$ (\cref{sec:diagnostics}, with $\mathrm{d}A=r^2\,\mathrm{d}\xi\,\mathrm{d}\theta$);
+  \item \code{output/cylinder_surface.csv}: the wall vorticity and wall pressure against $\theta$;
+  \item \code{output/cylinder_centreline.csv}: $u_x$ on the symmetry axis, upstream and in the wake;
+  \item VTK structured grids of the vorticity (with the Cartesian velocity) and of the stream function, in Cartesian coordinates and closed at $\theta=2\pi$.
+\end{itemize}
+\end{sloppypar}
+\code{tools/cylinder_validate.py} runs series of grids and outer radii (\code{run}), tabulates them against the reference with observed orders and Richardson extrapolation (\code{table}), and plots the centreline velocity and the wall vorticity (\code{plot}).
 
 \subsection{Verification and validation}
 \code{tests/test_polar.c} checks the following.
@@ -1461,27 +1598,31 @@ The GPU backend is Cartesian only.  A polar configuration runs on the CPU, with 
   \item The Poisson solver against potential flow, $\psi=A(r-R^2/r)\sin\theta$: observed orders 2.00 and 3.99.  The second-order operator also reproduces its own discrete system to $2\times10^{-14}$.
   \item The velocity signs and its divergence ($3\times10^{-15}$).
   \item A manufactured solution of the full solver, $\psi=g(t)(r-R)^2(r_\infty-r)^3T(\theta)$, with three $\theta$ modes and its source in closed form.  It converges at second order with order-2 operators and at about 2.7 with orders 4 and 6, the compact Poisson operator and Briley's closure.
-  \item The diagnostics on fields with known answers.
+  \item The diagnostics on fields with known answers; the area means exact on constants and second order against closed forms.
   \item The symmetry of the impulsive start, and the CPU fallback.
+  \item Every unsupported configuration option refused, one at a time.
+  \item An outer boundary changed between steps reaches the next step: the step equals a fresh solver's, bitwise (it fails if the version check is removed).  \code{backend_psi()} is the Poisson solve of $\omega$ before the first step, after \code{backend_set_fields()} and after a change of the boundary, and calling it changes no step.
 \end{itemize}
+\code{make regression} runs the $96\times57$, $r_\infty=20$ case (about 20\,s) against its stored results (\code{tests/reference/cylinder_regression.csv}, $10^{-4}$), with a looser sanity check against the reference, and checks that a run whose last diagnostic interval is shorter than the others reports that it has not converged.
 The validation is against the reference solution of Gautier et al.~\cite{gautier2013} at $\Rey=40$, a pseudo-spectral computation on $200\times1024$ points with $r_\infty=40D$: $C_D=1.4931$, $L_w/D=2.2360$, $\theta_s=126.39^\circ$, $(a,b)/D=(0.71,0.59)$.  \Cref{tab:cylinder} gives the steady states (order 6, RK4, far-field boundary unless stated), from \code{tools/cylinder_validate.py}.
 \begin{table}[ht]
-\centering
-\caption{Steady flow past a cylinder at $\Rey=40$ against Gautier et al.~\cite{gautier2013}.}
+\centering\footnotesize
+\caption{Steady flow past a cylinder at $\Rey=40$ against Gautier et al.~\cite{gautier2013}: order 6, RK4, Poisson order 2 unless stated; in parentheses the difference from the reference.  $u_x$, $u_y$: the velocity at $(x,y)=(3,3)$.}
 \label{tab:cylinder}
-\begin{tabular}{@{}lrlllll@{}}
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}lrllllll@{}}
 \toprule
-Grid ($n_\theta\times n_r$) & $r_\infty$ & Outer & $C_D$ & $L_w/D$ & $\theta_s$ ($^\circ$) & $(a,b)/D$ \\
+Grid ($n_\theta\times n_r$) & $r_\infty$ & Outer & $C_D$ & $L_w/D$ & $\theta_s$ ($^\circ$) & $(a,b)/D$ & $u_x$, $u_y$ \\
 \midrule
-$64\times46$ & 40 & far field & 1.4716 & 2.2587 & 126.291 & 0.81, 0.59 \\
-$128\times90$ & 40 & far field & 1.4903 & 2.2459 & 126.359 & 0.70, 0.60 \\
-$256\times180$ & 40 & far field & 1.4969 & 2.2431 & 126.356 & 0.70, 0.59 \\
-$256\times180$, Poisson order 4 & 40 & far field & 1.4972 & 2.2421 & 126.354 & 0.70, 0.59 \\
-$256\times168$ & 30 & far field & 1.5002 & 2.2429 & 126.347 & 0.70, 0.59 \\
-$256\times189$ & 50 & far field & 1.4953 & 2.2428 & 126.361 & 0.70, 0.59 \\
-$256\times180$ & 40 & free stream & 1.5134 & 2.2473 & 126.300 & 0.70, 0.59 \\
+$64\times46$ & 40 & far field & 1.4716 ($-1.44\%$) & 2.2587 ($+1.02\%$) & 126.291 & 0.81, 0.59 & 1.0691, 0.0148 \\
+$128\times90$ & 40 & far field & 1.4903 ($-0.19\%$) & 2.2459 ($+0.44\%$) & 126.359 & 0.70, 0.60 & 1.0714, 0.0150 \\
+$256\times180$ & 40 & far field & 1.4969 ($+0.26\%$) & 2.2431 ($+0.32\%$) & 126.356 & 0.70, 0.59 & 1.0711, 0.0149 \\
+$256\times180$, Poisson 4 & 40 & far field & 1.4972 ($+0.27\%$) & 2.2421 ($+0.27\%$) & 126.354 & 0.70, 0.59 & 1.0711, 0.0149 \\
+$256\times168$ & 30 & far field & 1.5002 ($+0.48\%$) & 2.2429 ($+0.31\%$) & 126.347 & 0.70, 0.59 & 1.0725, 0.0147 \\
+$256\times189$ & 50 & far field & 1.4953 ($+0.15\%$) & 2.2428 ($+0.30\%$) & 126.361 & 0.70, 0.59 & 1.0705, 0.0150 \\
+$256\times180$ & 40 & free stream & 1.5134 ($+1.36\%$) & 2.2473 ($+0.51\%$) & 126.300 & 0.70, 0.59 & 1.0780, 0.0140 \\
 \midrule
-Gautier et al. & 40 & & 1.4931 & 2.2360 & 126.395 & 0.71, 0.59 \\
+Gautier et al. & 40 & & 1.4931 & 2.2360 & 126.395 & 0.71, 0.59 & 1.0670, 0.0151 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -1491,7 +1632,24 @@ From $128\times90$ up, the far-field runs are within $0.5\%$ of the reference in
   \item $L_w/D$ is grid-converged with the compact Poisson operator: $2.2420$ on $128\times90$ and $2.2421$ on $256\times180$.
   \item $C_D$ changes by $0.3\%$ between $r_\infty=30$ and $50$, in the opposite direction to the reference's own trend.  The reference extrapolates the velocity from the interior at the outer boundary, where the far-field model here fixes $\psi$.
 \end{itemize}
-The free-stream boundary gives $C_D$ $1.4\%$ high and accelerates the centreline flow spuriously to $u_x=1$ near the outflow, the ``Dirichlet'' behaviour of the reference's Figure~1.  Every run is symmetric to $2\times10^{-14}$ and divergence-free to $3\times10^{-13}$.
+The free-stream boundary gives $C_D$ $1.4\%$ high and accelerates the centreline flow spuriously to $u_x=1$ over the last ten diameters, the ``Dirichlet'' behaviour of the reference's Figure~1 (\cref{fig:cylinder}).  The far-field boundary removes most of it: the centreline velocity ends at the Schlichting deficit, $u_x\approx0.79$, with a mild upturn in the last few diameters.  Every run is symmetric to $2\times10^{-14}$ and divergence-free to $3\times10^{-13}$.  The $128\times90$ grid takes about a minute on one core; $256\times180$ takes $110\,000$ steps at $5.6\,\mathrm{ms}$ (6 threads), about 11 minutes.
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=\textwidth]{cylinder_re40.png}
+\caption{Steady flow past a cylinder at $\Rey=40$, $256\times180$: the velocity on the wake axis (left) and the wall vorticity on the upper surface (right), with the far-field boundary at $r_\infty=40$ and $50$ and the free-stream boundary at $r_\infty=40$.}
+\label{fig:cylinder}
+\end{figure}
+
+% =============================================================================
+\section{Final Remarks}
+% =============================================================================
+
+\texttt{cnavier} implements a mathematically clean and computationally compact route to incompressible flow in two dimensions: evolve vorticity, invert a scalar Poisson equation, and differentiate a streamfunction to recover velocity.  The code is particularly transparent because the spatial derivatives are explicit finite-difference matrices, the two-dimensional operators are tensor products, and both CPU and GPU backends expose the same algorithmic sequence.
+
+The strongest parts of the present methodology are the exact discrete streamfunction enforcement of incompressibility, the direct DST-based Poisson option, reusable sparse operators, RK4 stage consistency, and unusually thorough CPU--GPU equivalence tests for a compact CFD code.  The main scientific qualifications are equally clear: high-order accuracy applies primarily to interior transport derivatives; boundary closures are lower order; the streamfunction Poisson operator is second order; and quantitative benchmark/grid-convergence validation is not yet automated.
+
+For educational CFD, numerical experimentation, backend comparisons, and as a foundation for further research-oriented development, these characteristics make the project both useful and unusually auditable.  For publication-quality quantitative claims, the next step is not to complicate the code immediately, but to formalize its grid convention and add systematic temporal/spatial convergence and benchmark-error measurements.
 
 % =============================================================================
 \appendix
@@ -1506,21 +1664,21 @@ Mathematical operation & Main implementation location \\
 First-derivative stencils & \code{SDiff1()} in \code{src/finitediff.c} \\
 Second-derivative stencils & \code{SDiff2()} in \code{src/finitediff.c} \\
 Kronecker operators & \code{skronecker()} in \code{src/linearalg.c}; assembly in \code{src/main.c} \\
-CSR derivative evaluation & \code{spmv()} in \code{src/linearalg.c}; \code{spmv\_kernel} on CUDA \\
-Wall velocity condition & \code{apply\_wall\_bc()} / \code{wall\_bc\_kernel} \\
-Wall vorticity & \code{step()} / \code{vorticity\_bc\_kernel} \\
-Vorticity RHS & \code{dwdt()}, \code{euler()} / \code{rhs\_kernel} \\
-RK4 & \code{rk4()} / CUDA stage kernels in \code{gpu\_step()} \\
-Gauss--Seidel & \code{poisson()} / \code{poisson\_redblack()} \\
-SOR & \code{poisson\_SOR()} / \code{poisson\_redblack()} \\
-FFT/DST-I Poisson & \code{poisson\_FFT()} / \code{poisson\_fft()} \\
-Velocity recovery & \code{velocity\_from\_vorticity()} / \code{velocity\_kernel} \\
-Divergence diagnostic & main-loop CSR operations / \code{continuity\_kernel} \\
-Ghia centerlines & \code{print\_centerline()} in \code{src/utils.c} \\
-Verification suite & \code{tests/test\_solver.c} \\
+CSR derivative evaluation & \code{spmv()} in \code{src/linearalg.c}; \code{spmv_kernel} on CUDA \\
+Wall velocity condition & \code{apply_wall_bc()} / \code{wall_bc_kernel} \\
+Wall vorticity & \code{step()} / \code{vorticity_bc_kernel} \\
+Vorticity RHS & \code{dwdt()}, \code{euler()} / \code{rhs_kernel} \\
+RK4 & \code{rk4()} / CUDA stage kernels in \code{gpu_step()} \\
+Gauss--Seidel & \code{poisson()} / \code{poisson_redblack()} \\
+SOR & \code{poisson_SOR()} / \code{poisson_redblack()} \\
+FFT/DST-I Poisson & \code{poisson_FFT()} / \code{poisson_fft()} \\
+Velocity recovery & \code{velocity_from_vorticity()} / \code{velocity_kernel} \\
+Divergence diagnostic & main-loop CSR operations / \code{continuity_kernel} \\
+Ghia centerlines & \code{print_centerline()} in \code{src/utils.c} \\
+Verification suite & \code{tests/test_solver.c} \\
 Polar grid, Poisson solver, cylinder diagnostics & \code{src/polar.c} (\code{polar.h}) \\
-Flow past a cylinder & \code{cylinder\_run()} in \code{src/cylinder.c} \\
-Polar tests & \code{tests/test\_polar.c} \\
+Flow past a cylinder & \code{cylinder_run()} in \code{src/cylinder.c} \\
+Polar tests & \code{tests/test_polar.c} \\
 \bottomrule
 \end{longtable}
 
@@ -1588,6 +1746,9 @@ U. Frisch, S. Kurien, R. Pandit, W. Pauls, S. S. Ray, A. Wirth and J.-Z. Zhu,
 \bibitem{canuto2006}
 C. Canuto, M. Y. Hussaini, A. Quarteroni and T. A. Zang,
 \emph{Spectral Methods: Fundamentals in Single Domains}, Springer, 2006.
+
+\bibitem{lunasin2007}
+E.~Lunasin, S.~Kurien, M.~Taylor and E.~S. Titi, A study of the Navier--Stokes-$\alpha$ model for two-dimensional turbulence, \emph{J. Turbul.} \textbf{8} (2007) N30.
 
 \bibitem{gautier2013}
 R.~Gautier, D.~Biau and E.~Lamballais, A reference solution of the flow over a circular cylinder at $\mathrm{Re}=40$, \emph{Computers \& Fluids} \textbf{75} (2013) 103--111; arXiv:1310.6641.
