@@ -117,7 +117,7 @@ int cylinder_run(const cylinder_options *o)
            o->poisson_order, o->wall_closure ? "Briley" : "velocity",
            o->outer_bc == POLAR_FARFIELD ? "far field (Schlichting wake + mass correction)" : "free stream");
     printf("dt: %g (limits: Courant %.3g, viscous %.3g) | tf: %g | %s\n", dt, lim.courant, lim.viscous, o->tf,
-           o->time_scheme == 1 ? "Euler" : "RK4");
+           time_scheme_name(o->time_scheme));
 
     backend *solver = backend_create(&cfg, o->use_gpu);
     printf("Backend: %s\n", backend_name(solver));

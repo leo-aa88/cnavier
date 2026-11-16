@@ -76,6 +76,8 @@ struct gpu_solver
 
     double *u, *v, *w, *psi;
     double *k1, *k2, *k3, *k4;                     // RK4 stage increments
+    double *f1, *f2;                               // AB3: the right-hand sides of the last two steps
+    int history;                                   // AB3: how many of them are stored (as rk4_ctx.history)
     double *w_tmp;                                 // temporary w for intermediate stages
     double *scratch;                               // continuity field / Poisson work array
     double *partial;                               // per-block results of a reduction
@@ -254,6 +256,14 @@ __global__ void axpy_kernel(const double *x, double a, const double *y, double *
 }
 
 // w += c*(k1 + 2*k2 + 2*k3 + k4)
+// AB3: w += dt (23 f0 - 16 f1 + 5 f2) / 12
+__global__ void ab3_kernel(double *w, double dt, const double *f0, const double *f1, const double *f2, int n)
+{
+    int k = blockIdx.x * blockDim.x + threadIdx.x;
+    if (k < n)
+        w[k] += dt * (23.0 * f0[k] - 16.0 * f1[k] + 5.0 * f2[k]) / 12.0;
+}
+
 __global__ void rk4_combine_kernel(double *w, double c, const double *k1, const double *k2,
                                    const double *k3, const double *k4, int n)
 {
@@ -1269,6 +1279,11 @@ gpu_solver *gpu_init(const solver_config *cfg)
         printf("** Error: valid Poisson solver types are 1, 2 or 3 **\n");
         exit(1);
     }
+    if (cfg->time_scheme < 1 || cfg->time_scheme > 3)
+    {
+        printf("** Error: time_scheme must be 1 (Euler), 2 (RK4) or 3 (AB3) **\n");
+        exit(1);
+    }
 
     gpu_solver *g = (gpu_solver *)calloc(1, sizeof(gpu_solver));
     if (!g)
@@ -1297,6 +1312,9 @@ gpu_solver *gpu_init(const solver_config *cfg)
     g->k2 = dev_alloc(n);
     g->k3 = dev_alloc(n);
     g->k4 = dev_alloc(n);
+    g->f1 = g->cfg.time_scheme == 3 ? dev_alloc(n) : NULL;
+    g->f2 = g->cfg.time_scheme == 3 ? dev_alloc(n) : NULL;
+    g->history = 0;
     g->w_tmp = dev_alloc(n);
     {
         double *rows = kolmogorov_rows(&cfg->forcing, ny, cfg->dy, cfg->dy * (cfg->periodic ? ny : ny - 1));
@@ -1489,6 +1507,8 @@ void gpu_free(gpu_solver *g)
     cudaFree(g->k2);
     cudaFree(g->k3);
     cudaFree(g->k4);
+    cudaFree(g->f1);
+    cudaFree(g->f2);
     cudaFree(g->w_tmp);
     cudaFree(g->scratch);
     cudaFree(g->partial);
@@ -1624,6 +1644,21 @@ static void gpu_step_impl(gpu_solver *g)
         dealias(g);
         velocity_from_vorticity(g, g->w);
     }
+    else if (g->cfg.time_scheme == 3 && g->history == 2)
+    {
+        // AB3, as in step(): one right-hand side per step, the history moved
+        // back one step, then the solve that gives u, v of w_{n+1}
+        double *tmp;
+        dwdt(g, g->w, g->k1, t);
+        LAUNCH(ab3_kernel, n, g->w, dt, g->k1, g->f1, g->f2, n);
+        tmp = g->f2;
+        g->f2 = g->f1;
+        g->f1 = g->k1;
+        g->k1 = tmp;
+        g->psi_of_w = 0;
+        dealias(g);
+        velocity_from_vorticity(g, g->w);
+    }
     else
     {
         // Classical RK4: w_{n+1} = w_n + (dt/6)*(k1 + 2*k2 + 2*k3 + k4)
@@ -1640,6 +1675,16 @@ static void gpu_step_impl(gpu_solver *g)
 
         // Final Poisson solve so u, v are consistent with w_{n+1}
         velocity_from_vorticity(g, g->w);
+
+        // AB3 starts with two RK4 steps, keeping F(w_n), their first stage
+        if (g->cfg.time_scheme == 3)
+        {
+            double *tmp = g->f2;
+            g->f2 = g->f1;
+            g->f1 = tmp;
+            CUDA_CHECK(cudaMemcpy(g->f1, g->k1, n * sizeof(double), cudaMemcpyDeviceToDevice));
+            g->history++;
+        }
     }
 
     // The wall vorticity of the new velocity in place of the wall entries the
@@ -1834,6 +1879,7 @@ void gpu_set_fields(gpu_solver *g, const mtrx *u, const mtrx *v, const mtrx *w)
     {
         CUDA_CHECK(cudaMemcpy(g->w, w->M, bytes, cudaMemcpyHostToDevice));
         g->psi_of_w = 0;
+        g->history = 0; // AB3 starts again from the new fields
     }
 }
 

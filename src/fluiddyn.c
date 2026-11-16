@@ -81,6 +81,14 @@ rk4_ctx rk4_alloc(const solver_config *cfg)
     ctx.w_solved = initm(ny, nx);
     ctx.psi_valid = 0;
     ctx.solves = 0;
+    if (cfg->time_scheme < 1 || cfg->time_scheme > 3)
+    {
+        printf("** Error: time_scheme must be 1 (Euler), 2 (RK4) or 3 (AB3) **\n");
+        exit(1);
+    }
+    ctx.f1 = cfg->time_scheme == 3 ? initm(ny, nx) : (mtrx){0};
+    ctx.f2 = cfg->time_scheme == 3 ? initm(ny, nx) : (mtrx){0};
+    ctx.history = 0;
     if ((cfg->poisson_order != 2 && cfg->poisson_order != 4) || (cfg->wall_closure != 0 && cfg->wall_closure != 1))
     {
         printf("** Error: poisson_order must be 2 or 4 and wall_closure 0 or 1 **\n");
@@ -162,6 +170,8 @@ void rk4_free(rk4_ctx *ctx)
     freem(&ctx->k2);
     freem(&ctx->k3);
     freem(&ctx->k4);
+    if (ctx->f1.M) freem(&ctx->f1);
+    if (ctx->f2.M) freem(&ctx->f2);
     freem(&ctx->w_tmp);
     freem(&ctx->rhs);
     freem(&ctx->w_solved);
@@ -703,7 +713,11 @@ double max_stable_dt_forced(const smtrx *dxx, const smtrx *dyy, double Re, const
 {
     // Forward Euler is stable for real eigenvalues in [-2, 0], classical RK4
     // down to -2.785293...
-    return (time_scheme == 1 ? 2.0 : 2.785293563405282) / damping_rate_max(dxx, dyy, Re, fc);
+    // The schemes' stability intervals on the negative real axis: Euler 2,
+    // RK4 2.7853, AB3 6/11
+    double rho = time_scheme == 1 ? 2.0 : time_scheme == 3 ? 6.0 / 11.0
+                                                           : 2.785293563405282;
+    return rho / damping_rate_max(dxx, dyy, Re, fc);
 }
 
 double max_stable_dt(const smtrx *dxx, const smtrx *dyy, double Re, int time_scheme)
@@ -727,11 +741,21 @@ dt_limits time_step_limits_forced(const smtrx *dxx, const smtrx *dyy, double h, 
 {
     dt_limits l;
     l.courant = u_max > 0. ? max_co * h / u_max : HUGE_VAL;
+    // The Courant limit is calibrated on RK4. AB3's stability interval on the
+    // imaginary axis (advection) is 0.7236 against RK4's 2 sqrt(2): the same
+    // margin needs a step shorter by their ratio.
+    if (time_scheme == 3) l.courant *= 0.723627226987111 / 2.828427124746588;
     l.viscous = max_stable_dt_forced(dxx, dyy, Re, fc, time_scheme);
     l.advection = time_scheme == 1 ? euler_advection_dt(Re, u_max) : HUGE_VAL;
     l.accept = fmin(l.courant, l.viscous);
     l.suggest = fmin(l.accept, l.advection);
     return l;
+}
+
+const char *time_scheme_name(int time_scheme)
+{
+    return time_scheme == 1 ? "Euler" : time_scheme == 3 ? "AB3"
+                                                         : "RK4";
 }
 
 double round_down_3(double x)
@@ -829,11 +853,42 @@ void step(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx)
         if (ctx->fourier && ctx->cfg.dealias == 1) fourier_filter(ctx->fourier, w.M);
         velocity_from_vorticity(w, u, v, 0, ctx);
     }
+    else if (ctx->cfg.time_scheme == 3 && ctx->history == 2)
+    {
+        // AB3: w_{n+1} = w_n + dt (23 F_n - 16 F_{n-1} + 5 F_{n-2}) / 12,
+        // one right-hand-side evaluation (and Poisson solve) per step; the
+        // final solve gives u, v of w_{n+1}, and the next step's evaluation
+        // reuses it
+        int i, nx = ctx->cfg.nx, ny = ctx->cfg.ny;
+        mtrx tmp;
+        dwdt(w, u, v, ctx->k1, ctx->cfg.t0 + (double)ctx->steps * dt, ctx);
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static) if (ny * nx >= OMP_MIN_WORK)
+#endif
+        for (i = 0; i < ny * nx; i++)
+            w.M[i] += dt * (23.0 * ctx->k1.M[i] - 16.0 * ctx->f1.M[i] + 5.0 * ctx->f2.M[i]) / 12.0;
+        // The history moves back one step: F_{n-2} <- F_{n-1} <- F_n
+        tmp = ctx->f2;
+        ctx->f2 = ctx->f1;
+        ctx->f1 = ctx->k1;
+        ctx->k1 = tmp;
+        if (ctx->fourier && ctx->cfg.dealias == 1) fourier_filter(ctx->fourier, w.M);
+        velocity_from_vorticity(w, u, v, !ctx->kicks, ctx);
+    }
     else
     {
         // RK4: four RHS evaluations, each with a Poisson solve and its own
-        // wall vorticity
+        // wall vorticity. AB3 starts with two of these steps, keeping the
+        // right-hand side of each, its first stage F(w_n)
         rk4(w, u, v, ctx);
+        if (ctx->cfg.time_scheme == 3)
+        {
+            mtrx tmp = ctx->f2;
+            ctx->f2 = ctx->f1;
+            ctx->f1 = tmp;
+            mtrxcpy(ctx->f1, ctx->k1);
+            ctx->history++;
+        }
     }
 
     // The update advanced the wall entries of w with the transport equation,

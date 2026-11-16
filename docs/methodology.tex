@@ -416,9 +416,20 @@ k_4 &= \mathcal{F}\left(\omega^n+\dt k_3\right),\\
 \label{eq:rk4}
 \end{align}
 
-The velocity depends on the stage vorticity through \cref{eq:poisson}--\cref{eq:velocity-streamfunction}.  Accordingly, every call to the RK4 right-hand side performs a Poisson solve and recovers a stage-consistent $(u,v)$ field.  Four Poisson solves are therefore required for the four RK stages, followed by one final solve to make $(u^{n+1},v^{n+1})$ consistent with $\omega^{n+1}$.  In total, RK4 performs five Poisson solves per timestep.
+The velocity depends on the stage vorticity through \cref{eq:poisson}--\cref{eq:velocity-streamfunction}.  Accordingly, every call to the RK4 right-hand side performs a Poisson solve and recovers a stage-consistent $(u,v)$ field.  Four Poisson solves are therefore required for the four RK stages, followed by one final solve to make $(u^{n+1},v^{n+1})$ consistent with $\omega^{n+1}$.  The first stage of the next step needs the solve of the same $\omega$, so with the FFT solvers it reuses it when the interior of $\omega$ has not changed: RK4 performs four Poisson solves per timestep after the first, and five with random forcing, whose kick changes $\omega$ at the start of every step.
 
 For a sufficiently smooth semi-discrete system, classical RK4 is fourth-order accurate in time.  In the complete method that holds only if the boundary data move with the stages: the wall vorticity \cref{eq:wall-vorticity} depends on the velocity, which changes from stage to stage, so it is recomputed from each stage's velocity before that stage's derivatives are taken (\cref{sec:wall-vorticity-order}).  Earlier versions set it once per timestep, from the velocity at the start of the step.  The boundary data then lagged by up to one step, RK4 converged at first order only, and at the same step its error was about that of Euler.  Measured on the lid-driven cavity ($17\times17$, $\Rey=100$, $\omega$ on all nodes, walls included, at $t=0.2$ against a run of the same scheme at $\dt/64$), the observed order is now $4.0$ for RK4 and $1.0$ for Euler, and at $\dt=T/64$ the error of RK4 is $1.2\times10^{-8}$ against $2.5\times10^{-2}$ for Euler.  The test suite checks both orders.  The steady state is essentially unaffected: at $t=30$ the centerline profiles of the default case move by at most $1.2\times10^{-4}$, and their distance from the Ghia data changes from $0.0024$/$0.0074$ to $0.0023$/$0.0073$ ($u$/$v$).
+
+\subsection{Third-order Adams--Bashforth}
+\label{sec:ab3}
+
+With \code{time_scheme = 3} (\code{--time-scheme ab3}) the update is
+\begin{equation}
+\omega^{n+1}=\omega^n+\frac{\dt}{12}\left(23\,\mathcal{F}(\omega^n)-16\,\mathcal{F}(\omega^{n-1})+5\,\mathcal{F}(\omega^{n-2})\right),
+\end{equation}
+one right-hand-side evaluation per step, with the right-hand sides of the two previous steps kept in buffers of their own.  It starts with two RK4 steps, keeping their first stages $\mathcal{F}(\omega^n)$, and starts again in the same way whenever \code{backend_set_fields()} replaces $\omega$ (the stored right-hand sides belong to the old fields).  A step does one Poisson solve: the evaluation reuses the solve that ended the previous step, as RK4's first stage does, except with random forcing, whose kick changes $\omega$ first, so that it does two.  AB3 is third order (the observed order is $3.00$, $2.96$ with a time-dependent source) and runs on the CPU and the GPU alike, which agree to $10^{-15}$.
+
+Its stability region reaches $6/11$ along the negative real axis (damping), against $2.7853$ for RK4, and $0.7236$ along the imaginary axis (centred advection), against $2\sqrt2$.  Per right-hand-side evaluation that is $0.545$ against $0.696$ for damping and $0.724$ against $0.707$ for advection: at the advective limit the two schemes do about the same work per unit of time, and RK4 has the higher order.  \Cref{sec:integrators} measures this.
 
 % =============================================================================
 \section{Poisson Equation for the Streamfunction}
@@ -527,7 +538,7 @@ On the periodic grid five built-in terms drive and damp the flow,
 \frac{\partial\omega}{\partial t}=-\mathbf{u}\cdot\nabla\omega+\nu\nabla^2\omega-\alpha\omega+f_K-\nu_h(-\nabla^2)^p\omega-\alpha_h\psi,
 \qquad f_K=-Ak\cos(ky),\quad k=2\pi n/L_y,
 \end{equation}
-plus a random kick before every step (\code{solver_config.forcing}, \code{src/forcing.c}).  The linear drag $-\alpha\omega$ removes the energy the inverse cascade carries to the largest scales.  The hyperviscosity $-\nu_h(-\nabla^2)^p\omega$ applies the discrete Laplacian $D_{xx}+D_{yy}$ $p$ times (on the GPU in Fourier space, \cref{sec:cuda}); its damping rate $\nu_hQ^p$ is negligible except near the grid cutoff, so it removes the enstrophy of the direct cascade there and leaves the range above almost inviscid, which plain viscosity at an affordable resolution cannot do.  The hypodrag $-\alpha_h\psi=-\alpha_h(-\nabla^2)^{-1}\omega$ uses the stream function of the stage; its damping rate $\alpha_h/Q$ confines it to the largest scales, where it stops the inverse cascade instead of damping it along the way as linear drag does.  The time-step limit of \cref{sec:stability} includes all the damping terms.  A periodic mode with eigenvalue $Q$ of $-(D_{xx}+D_{yy})$ decays at $\sigma(Q)=Q/\Rey+\nu_hQ^p+\alpha+\alpha_h/Q$, which is convex for $Q>0$, so its maximum over the modes is at the largest $Q$, the $\lambda_{\max}$ of \cref{sec:stability}, or with hypodrag possibly at the smallest non-zero one, the symbol of $D_{xx}$ or $D_{yy}$ at the lowest wavenumber.  The run is refused unless $\Delta t\le\rho/\max\sigma$.  For each term the limit is sharp: the single mode that sets it (on which the nonlinear term vanishes) decays at $0.95$ times the limit and grows at $1.05$ times, with Euler and RK4.  $f_K$ is the curl of the Kolmogorov body force $A\sin(ky)\,\hat{\mathbf x}$; its laminar state is $\omega=f_K/(\nu k^2+\alpha)$, on which the nonlinear term vanishes.  The random kick adds
+plus a random kick before every step (\code{solver_config.forcing}, \code{src/forcing.c}).  The linear drag $-\alpha\omega$ removes the energy the inverse cascade carries to the largest scales.  The hyperviscosity $-\nu_h(-\nabla^2)^p\omega$ applies the discrete Laplacian $D_{xx}+D_{yy}$ $p$ times (on the GPU in Fourier space, \cref{sec:cuda}); its damping rate $\nu_hQ^p$ is negligible except near the grid cutoff, so it removes the enstrophy of the direct cascade there and leaves the range above almost inviscid, which plain viscosity at an affordable resolution cannot do.  The hypodrag $-\alpha_h\psi=-\alpha_h(-\nabla^2)^{-1}\omega$ uses the stream function of the stage; its damping rate $\alpha_h/Q$ confines it to the largest scales, where it stops the inverse cascade instead of damping it along the way as linear drag does.  The time-step limit of \cref{sec:stability} includes all the damping terms.  A periodic mode with eigenvalue $Q$ of $-(D_{xx}+D_{yy})$ decays at $\sigma(Q)=Q/\Rey+\nu_hQ^p+\alpha+\alpha_h/Q$, which is convex for $Q>0$, so its maximum over the modes is at the largest $Q$, the $\lambda_{\max}$ of \cref{sec:stability}, or with hypodrag possibly at the smallest non-zero one, the symbol of $D_{xx}$ or $D_{yy}$ at the lowest wavenumber.  The run is refused unless $\Delta t\le\rho/\max\sigma$.  For each term the limit is sharp: the single mode that sets it (on which the nonlinear term vanishes) decays at $0.95$ times the limit and grows at $1.05$ times, with Euler, RK4 and AB3.  $f_K$ is the curl of the Kolmogorov body force $A\sin(ky)\,\hat{\mathbf x}$; its laminar state is $\omega=f_K/(\nu k^2+\alpha)$, on which the nonlinear term vanishes.  The random kick adds
 \begin{equation}
 \delta\omega=\sum_m a_m\cos(\mathbf{k}_m\cdot\mathbf{x}+\phi_m)
 \end{equation}
@@ -710,7 +721,7 @@ C_x=U_{\mathrm{lid}}\frac{\dt}{\dx},
 \qquad
 C_y=U_{\mathrm{lid}}\frac{\dt}{\dy},
 \end{equation}
-and aborts if either exceeds \code{max_co = 1}, where $U_{\mathrm{lid}}$ is the largest wall speed.  This is a useful sanity check but should not be interpreted as a complete stability proof.  The actual interior velocity can differ from the lid velocity, and diffusion imposes a separate explicit restriction, which is checked as described next.
+and aborts if either exceeds \code{max_co = 1}, where $U_{\mathrm{lid}}$ is the largest wall speed.  The bound is calibrated on RK4; for AB3 it is scaled by the ratio of the two schemes' stability intervals on the imaginary axis, $0.7236/(2\sqrt2)=0.2558$, which keeps the same margin.  This is a useful sanity check but should not be interpreted as a complete stability proof.  The actual interior velocity can differ from the lid velocity, and diffusion imposes a separate explicit restriction, which is checked as described next.
 
 \subsection{Implemented viscous limit}
 
@@ -722,7 +733,7 @@ taken from the middle row of the one-dimensional operators (which is also the mi
 \begin{equation}
 \dt\le\frac{\rho}{\lambda_{\max}},
 \qquad
-\rho=\begin{cases}2 & \text{forward Euler},\\ 2.785293\ldots & \text{classical RK4},\end{cases}
+\rho=\begin{cases}2 & \text{forward Euler},\\ 2.785293\ldots & \text{classical RK4},\\ 6/11 & \text{AB3},\end{cases}
 \end{equation}
 $\rho$ being the extent of each method's stability region along the negative real axis, and unless the Courant condition holds; the message names both limits and suggests the smaller one, rounded down so that the suggestion itself passes.  For forward Euler the classical centered advection--diffusion condition $\dt\le 2\nu/U^2 = 2/(\Rey\,U^2)$ is checked as well, but only as a warning, since it is conservative here (below); when an Euler run is refused, the suggested $\dt$ is the smallest of all three limits, so that following it does not trigger the warning.  Measured on the lid-driven cavity, the viscous bound is sharp: for orders 2, 4 and 6, both schemes and $n=64$ and $128$, runs at $0.95$ times the bound stay bounded for 3000 steps and runs at $1.05$ times diverge.  The advection condition is conservative: at $\Rey=1000$, $n=64$, Euler stayed bounded up to about three times it.  At the defaults ($n=64$, $\Rey=100$, sixth order) the bounds are $\dt\le 0.00580$ for RK4 and $\dt\le 0.00416$ for Euler.
 
@@ -1326,6 +1337,42 @@ cavity, $513^2$ & 16.1 & 6.9 (43\,\%) & 2.7 & 3.8 & 0.1 & 0.1 \\
 \end{center}
 The columns are the whole step, the Poisson solves, the rest of the velocity recovery, the transport right-hand side, the skew-symmetric correction, and the forcing and damping terms.  The forced run is the direct cascade of \cref{sec:cascade} (order 6, sparse operators, skew-symmetric form, hyperviscosity of order 4 in spectral space, hypodrag, random forcing; five solves per step, since the kick changes $\omega$ every step); the decaying run is that of the same section; the cavity is the default case on $513^2$.  On the periodic grids the Poisson solves are about $15\,\%$ of a step and the cost is spread over the parts of a right-hand-side evaluation, so a time integrator gains in proportion to the evaluations it saves, not to the solves.  With walls the sine-transform solve is $43\,\%$.  On the CPU the sparse products dominate: 68 per RK4 step in the forced run on $256^2$ (16 for the transport, 32 for the hyperviscosity of order 4, 8 for the skew-symmetric form, 10 for the velocity, 2 for the continuity check), about three quarters of the time in a \code{gprof} profile; the solves, mostly in FFTW, are under a tenth.
 
+\paragraph{Time integrators: AB3 against RK4.}
+\label{sec:integrators}
+With the cost spread over the parts of each right-hand-side evaluation, a scheme gains by the stable time per evaluation, not by the solves it saves.  \code{make integrators} (\code{tests/integrators.c}) measures AB3 (\cref{sec:ab3}) against RK4 in decaying turbulence ($256^2$, $\Rey=2\times10^4$, order 6, skew-symmetric form, on the GPU).  The largest stable step, found by bisection over $t\le0.2$, is $1.92\times10^{-3}$ for RK4 and $4.95\times10^{-4}$ for AB3: their ratio, $0.2575$, is within $1\,\%$ of the ratio of the imaginary-axis intervals, $0.2558$, so advection sets both limits.  An AB3 step costs $0.28$ of an RK4 step.  Run at fractions of its own limit to $t=0.1$, before the runs decorrelate, against RK4 at $1/64$ of its limit (\cref{fig:ab3-decaying}):
+\begin{center}\small
+\begin{tabular}{lrrrr}
+\toprule
+ & $\dt/\text{limit}$ & GPU seconds & error of $\omega$ & error of $Z(k)$ \\
+\midrule
+RK4 & 0.9 & 0.175 & $4.2\times10^{-3}$ & $4.6\times10^{-3}$ \\
+AB3 & 0.9 & 0.191 & $3.1\times10^{-3}$ & $5.7\times10^{-3}$ \\
+RK4 & 0.45 & 0.347 & $3.7\times10^{-4}$ & $3.4\times10^{-4}$ \\
+AB3 & 0.45 & 0.376 & $4.5\times10^{-4}$ & $8.5\times10^{-4}$ \\
+RK4 & 0.225 & 0.692 & $2.4\times10^{-5}$ & $1.8\times10^{-5}$ \\
+AB3 & 0.225 & 0.749 & $5.7\times10^{-5}$ & $1.1\times10^{-4}$ \\
+RK4 & 0.056 & 2.75 & $9.4\times10^{-8}$ & $5.9\times10^{-8}$ \\
+AB3 & 0.056 & 2.98 & $9.0\times10^{-7}$ & $1.8\times10^{-6}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+(the relative $L_2$ error of $\omega$, and the largest relative error of the enstrophy spectrum over $K\le n/3$).  At the stability limit the two tie: AB3 is $9\,\%$ slower to the same time, with a comparable error.  Below it, where accuracy sets the step, RK4 pulls ahead by its higher order (its error falls by 16 when the step is halved, AB3's by 8): at equal cost AB3's error is $2$--$10$ times larger in $\omega$ and $2$--$30$ times in the spectrum.  So AB3 does not win where accuracy sets the step either, and on damping-limited steps its stable interval per evaluation is the smaller one.
+
+In forced turbulence (the direct cascade of \cref{sec:cascade}, $512^2$, $t=10$--$30$), AB3 at $\dt=1.25\times10^{-4}$ does the same number of right-hand-side evaluations as RK4 at $5\times10^{-4}$, and stays stable.  It reproduces the dual cascade: both flux signs, enstrophy conserved to round-off, a $\Pi_Z$ plateau of $46.6$ against RK4's $44.7$ (within the $\pm8\,\%$ scatter of the forced statistics), and the energy budget closing to within one standard error ($+7.2\,\%$ and $-6.6\,\%$; \cref{fig:ab3-forced}).  Its plateau is less flat ($12.6\,\%$ against $7.9\,\%$), and its mean energy and enstrophy are $24$ and $19\,\%$ higher, but with its energy still drifting over the window and one forcing realisation per scheme (one kick per step, so different sequences) these differences are not attributed to the scheme.  The run took $1429$\,s against $1055$\,s: at equal evaluations AB3 is $35\,\%$ slower here, from the costs of a step it pays four times as often (the kick, and the second solve).  RK4 therefore stays the default; AB3 remains an option.
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=\textwidth]{ab3_decaying.png}
+\caption{Error against GPU time in decaying turbulence, $256^2$, $t=0.1$: each scheme at 0.9, 0.45, 0.225, 0.11 and 0.056 of its own stability limit.}
+\label{fig:ab3-decaying}
+\end{figure}
+\begin{figure}[ht]
+\centering
+\includegraphics[width=\textwidth]{ab3_forced.png}
+\caption{Forced turbulence, $512^2$, mean over $t=10$--$30$: RK4 at $\dt=5\times10^{-4}$ and AB3 at $1.25\times10^{-4}$, the same number of right-hand-side evaluations.  The spectrum is RK4's.}
+\label{fig:ab3-forced}
+\end{figure}
+
 For transform performance, grid sizes for which $n-1$ factors into small primes are advantageous, because the sine transform of the $n-2$ interior nodes acts through FFT lengths of $2(n-1)$.  Sizes such as 65, 129, 257, 513 and 1025 are therefore fast, and their neighbours can be several times slower: on the machine above one serial FFT Poisson solve takes 6.7\,ms at $255^2$ ($2(n-1)=508=4\cdot127$) against 1.6\,ms at $257^2$ ($512$), and 85\,ms at $1023^2$ against 31\,ms at $1025^2$.  On the GPU a step takes 77\,ms at $1024\times1024$ against 60\,ms at $1025\times1025$.
 
 The GPU becomes increasingly advantageous as the grid grows because the fixed kernel-launch overhead is amortized over more work.  Double-precision FFT throughput is a major cost on consumer GPUs, so larger speedups may be observed on hardware with stronger FP64 capability.
@@ -1364,13 +1411,14 @@ make CUDA=1 test
 make OPENMP=1 CUDA=1 test
 make OPENMP=1 convergence   # spatial convergence study, about 1.5 minutes
 make OPENMP=1 ablation      # what limits the spatial order
+make CUDA=1 integrators     # time integrators: stability limits, error against cost
 \end{lstlisting}
 
 \code{make test} builds and runs \code{test_cnavier}, which checks:
 \begin{itemize}[leftmargin=2em]
   \item \textbf{Building blocks}: sparse operations against dense ones; every row of the finite-difference operators (boundary rows included) exact on the polynomials its stencil is built for, for orders 2, 4 and 6; the derivative operators acting along the right axis on non-square grids; wall velocities, corners included; the VTK and centerline writers.
   \item \textbf{Poisson solvers}: the FFT solver against an exact eigenmode, at sizes that exercise every batching case of the transform; FFT, SOR and Gauss--Seidel giving the same answer once converged; the residuals of the iterative solvers; SOR iteration counts on anisotropic grids (\cref{sec:verification-poisson}).
-  \item \textbf{Time stepping}: short cavity runs with both schemes (finite, divergence-free); the stability limit (0.95 times runs, 1.05 times diverges) and the suggested $\dt$; the observed order in $\dt$, walls included (Euler first, RK4 fourth), also with a time-dependent vorticity source and from $t_0>0$.
+  \item \textbf{Time stepping}: short cavity runs with Euler and RK4 (finite, divergence-free); the stability limit of each scheme (0.95 times runs, 1.05 times diverges) and the suggested $\dt$; the observed order in $\dt$, walls included (Euler first, RK4 fourth, AB3 third), also with a time-dependent vorticity source and from $t_0>0$; AB3 starting again after \code{backend_set_fields()}.
   \item \textbf{Spatial accuracy}: the manufactured solutions of \cref{sec:mms} with walls and of \cref{sec:periodic-verification} without, at the orders measured there; the compact Poisson operator, the third-order wall closure and the fourth-order velocity rows (\cref{sec:wall-order}).
   \item \textbf{Diagnostics, forcing and turbulence terms}: \cref{sec:diagnostics-verification} and the sections that follow it.
   \item \textbf{Backends}: driving the solver through \code{backend.c} gives exactly what calling it directly gives; every solver ignores changes to the caller's configuration after it is created; \code{backend_psi()} changes no step.
@@ -1440,6 +1488,7 @@ Options not given keep the defaults of \code{src/main.c} (\cref{tab:defaults}); 
 --outer-bc NAME & Polar: \texttt{farfield} (default) or \texttt{freestream}. \\
 --steady-tol TOL & Polar: stop once $\max|\partial\omega/\partial t|<$ TOL (default $10^{-6}$; 0 never). \\
 --diag-interval N & Polar: steps between diagnostics (default 100). \\
+--time-scheme NAME & \texttt{rk4} (default), \texttt{euler} or \texttt{ab3} (\cref{sec:ab3}). \\
 --cpu & In a CUDA build, force the CPU backend. \\
 --help & Print command-line help. \\
 \bottomrule
@@ -1451,7 +1500,7 @@ mkdir -p output
 ./cnavier --n 127 --dt 6.2e-4 --tf 20 --output-interval 50
 \end{lstlisting}
 
-The time scheme and the Poisson method are configured in \code{src/main.c}, not on the command line.
+The Poisson method is configured in \code{src/main.c}, not on the command line.
 
 % =============================================================================
 \section{Default Numerical Configuration}

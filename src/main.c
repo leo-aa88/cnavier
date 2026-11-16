@@ -160,6 +160,8 @@ static void usage(const char *prog)
 #ifdef USE_CUDA
     printf("  --cpu                run on the CPU instead of the GPU\n");
 #endif
+    printf("  --time-scheme NAME   rk4 (default), euler, or ab3 (third-order Adams-Bashforth:\n"
+           "                       one right-hand side per step, started with two RK4 steps)\n");
     printf("  --help               show this message\n");
     printf("Unset options keep the defaults at the top of src/main.c.\n");
 }
@@ -246,6 +248,7 @@ int main(int argc, char *argv[])
         {"outer-bc", required_argument, 0, 'B'},
         {"steady-tol", required_argument, 0, 'Y'},
         {"diag-interval", required_argument, 0, 'Z'},
+        {"time-scheme", required_argument, 0, 'E'},
         {"cpu", no_argument, 0, 'c'},
         {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}};
@@ -257,6 +260,16 @@ int main(int argc, char *argv[])
         if (strchr("nxyiaKNeqWsHPDgSAXLMu", opt)) other_given = 1;
         switch (opt)
         {
+        case 'E':
+            if (strcmp(optarg, "euler") == 0)
+                time_scheme = 1;
+            else if (strcmp(optarg, "rk4") == 0)
+                time_scheme = 2;
+            else if (strcmp(optarg, "ab3") == 0)
+                time_scheme = 3;
+            else
+                ok = 0;
+            break;
         case 'G':
             if (strcmp(optarg, "cartesian") == 0)
                 polar = 0;
@@ -660,6 +673,7 @@ int main(int argc, char *argv[])
     if (periodic) printf("Nonlinear term: %s\n", advection == 1 ? "skew-symmetric" : "advective");
     if (hyperviscosity > 0. || hypodrag > 0.)
         printf("Damping: hyperviscosity %g, order %d | hypodrag %g\n", hyperviscosity, hyper_order, hypodrag);
+    printf("Time integration: %s\n", time_scheme_name(time_scheme));
     printf("Grid: %d x %d | dt: %lf | tf: %lf | derivatives: %s%s%s\n", nx, ny, dt, tf,
            order == FD_SPECTRAL   ? "pseudospectral"
            : order == FD_COMPACT6 ? "compact, order 6"
@@ -729,8 +743,9 @@ int main(int argc, char *argv[])
         printf("** Error: dt = %g is too large; use --dt %.3g or less. Limits: Courant number <= %g "
                "gives dt <= %.3g, the stability limit of the %s scheme for the viscous and damping "
                "terms on this grid gives dt <= %.3g",
-               dt, round_down_3(lim.suggest), max_co, round_down_3(lim.courant),
-               time_scheme == 1 ? "Euler" : "RK4", round_down_3(lim.viscous));
+               dt, round_down_3(lim.suggest), time_scheme == 3 ? max_co * 0.723627226987111 / 2.828427124746588 : max_co,
+               round_down_3(lim.courant),
+               time_scheme_name(time_scheme), round_down_3(lim.viscous));
         if (time_scheme == 1)
             printf(", forward Euler's limit for centered advection gives dt <= %.3g",
                    round_down_3(lim.advection));
