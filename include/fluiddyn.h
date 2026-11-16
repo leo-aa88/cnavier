@@ -34,7 +34,7 @@ typedef struct solver_config
     double Re;                        // Reynolds number
     double dt;                        // time step
     double t0;                        // time at the start of the run
-    int time_scheme;                  // 1=Euler, 2=RK4
+    int time_scheme;                  // 1=Euler, 2=RK4, 3=AB3 (Adams-Bashforth, started with two RK4 steps)
     int poisson_type;                 // 1=Gauss-Seidel, 2=SOR, 3=FFT
     int poisson_max_it;               // iteration limit of Gauss-Seidel/SOR
     int poisson_order;                // FFT solver with walls: 2 (5-point) or 4 (compact 9-point)
@@ -100,6 +100,8 @@ typedef struct
     mtrx d2wdx2, d2wdy2;              // second derivatives of w
     mtrx psi, psi_scratch;            // Poisson solution and scratch
     mtrx k1, k2, k3, k4;              // RK4 stage increments
+    mtrx f1, f2;                      // AB3: the right-hand sides of the last two steps (time_scheme 3 only)
+    int history;                      // AB3: how many of them are stored (0-2; 0 again when w is replaced)
     mtrx w_tmp;                       // temporary w for intermediate stages
     mtrx rhs;                         // Poisson right-hand side, -w
     mtrx w_solved;                    // the w that psi was last solved for ...
@@ -148,7 +150,7 @@ void dwdt(mtrx w, mtrx u, mtrx v, mtrx out, double t, rk4_ctx *ctx);
 void rk4(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx);
 
 // Largest stable time step of the explicit scheme (time_scheme 1=Euler,
-// 2=RK4) for the viscous term (1/Re) * (d_xx + d_yy), from the 1D
+// 2=RK4, 3=AB3) for the viscous term (1/Re) * (d_xx + d_yy), from the 1D
 // second-derivative operators in x and y.
 double max_stable_dt(const smtrx *dxx, const smtrx *dyy, double Re, int time_scheme);
 
@@ -162,7 +164,8 @@ double euler_advection_dt(double Re, double u_max);
 // spacing, u_max the fastest wall speed, max_co the largest Courant number.
 typedef struct
 {
-    double courant;   // max_co * h / u_max (HUGE_VAL if the walls are at rest)
+    double courant;   // max_co * h / u_max (HUGE_VAL if the walls are at rest), for AB3
+                      // times 0.2558, the ratio of its imaginary-axis interval to RK4's
     double viscous;   // max_stable_dt()
     double advection; // euler_advection_dt() for Euler, HUGE_VAL for RK4
     double accept;    // largest dt that is run: min(courant, viscous)
@@ -208,6 +211,9 @@ dt_limits time_step_limits_forced(const smtrx *dxx, const smtrx *dyy, double h, 
                                   double max_co, int time_scheme, const forcing_config *fc);
 dt_limits time_step_limits(const smtrx *dxx, const smtrx *dyy, double h, double Re, double u_max,
                            double max_co, int time_scheme);
+
+// "Euler", "RK4" or "AB3" for time_scheme 1, 2, 3
+const char *time_scheme_name(int time_scheme);
 
 // x rounded down to three significant digits, for suggesting a time step: the
 // value printed with %.3g is then never above x.

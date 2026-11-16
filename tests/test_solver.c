@@ -478,11 +478,11 @@ static double field_diff(mtrx a, mtrx b)
 static void test_temporal_order(void)
 {
     int n = 17, s, k;
-    double T = 0.2, order, err_at[3];
+    double T = 0.2, order, err_at[4];
     char name[96];
 
     printf("Unit: observed order of the time integration, %dx%d grid, t = %g\n", n, n, T);
-    for (s = 1; s <= 2; s++)
+    for (s = 1; s <= 3; s++)
     {
         double err[2];
         mtrx ref = run_to(n, s, T / 4096, T);
@@ -500,10 +500,16 @@ static void test_temporal_order(void)
             snprintf(name, sizeof(name), "Euler: observed order %.2f, |order - 1|", order);
             check(name, isnan(order) ? INFINITY : fabs(order - 1.0), 0.15);
         }
-        else
+        else if (s == 2)
         {
             snprintf(name, sizeof(name), "RK4: observed order %.2f, |order - 4|", order);
             check(name, isnan(order) ? INFINITY : fabs(order - 4.0), 0.3);
+        }
+        else
+        {
+            // Started with two RK4 steps, AB3 is third order
+            snprintf(name, sizeof(name), "AB3: observed order %.2f, |order - 3|", order);
+            check(name, isnan(order) ? INFINITY : fabs(order - 3.0), 0.3);
         }
     }
     snprintf(name, sizeof(name), "RK4 / Euler error at dt = T/64 (%.1e / %.1e)", err_at[2], err_at[1]);
@@ -538,9 +544,11 @@ static void test_source_temporal_order(void)
     char name[96];
 
     printf("Unit: observed order in time with a vorticity source, %dx%d grid, t = %g\n", n, n, T);
-    for (s = 1; s <= 2; s++)
+    for (s = 1; s <= 3; s++)
     {
-        int coarse = s == 1 ? 64 : 16;
+        static const double expect[4] = {0, 1, 4, 3};
+        int coarse = s == 1 ? 64 : s == 2 ? 16
+                                          : 32;
         double err[2], order;
         mtrx ref = run_with_source(n, s, T / (64 * coarse), T, &c);
         for (k = 0; k < 2; k++)
@@ -551,9 +559,9 @@ static void test_source_temporal_order(void)
         }
         freem(&ref);
         order = log2(err[0] / err[1]);
-        snprintf(name, sizeof(name), "%s with a source: observed order %.2f, |order - %d|",
-                 s == 1 ? "Euler" : "RK4", order, s == 1 ? 1 : 4);
-        check(name, isnan(order) ? INFINITY : fabs(order - (s == 1 ? 1.0 : 4.0)), s == 1 ? 0.15 : 0.3);
+        snprintf(name, sizeof(name), "%s with a source: observed order %.2f, |order - %.0f|", time_scheme_name(s),
+                 order, expect[s]);
+        check(name, isnan(order) ? INFINITY : fabs(order - expect[s]), s == 1 ? 0.15 : 0.3);
     }
 }
 
@@ -1398,7 +1406,7 @@ static void test_damping_stability(void)
 
     printf("Stability: the time-step limit of the drag, hypodrag and hyperviscosity\n");
     for (int term = 0; term < 3; term++)
-        for (int scheme = 1; scheme <= 2; scheme++)
+        for (int scheme = 1; scheme <= 3; scheme++)
         {
             forcing_config f = {0};
             if (term == 0) f.drag = 1000.0;
@@ -1411,7 +1419,7 @@ static void test_damping_stability(void)
             double below = damped_mode_growth(f, term == 2, scheme, 0.95);
             double above = damped_mode_growth(f, term == 2, scheme, 1.05);
             snprintf(name, sizeof(name), "%s, %s: growth %.1e at 0.95x the limit, %.1e at 1.05x", names[term],
-                     scheme == 1 ? "Euler" : "RK4", below, above);
+                     time_scheme_name(scheme), below, above);
             check(name, below <= 1.0 && above > 1E3 ? 0.0 : 1.0, 0.0);
         }
 }
@@ -2278,6 +2286,47 @@ static void test_cpu_step(int nx, int ny, int time_scheme, const char *label)
 
 // The time-step limit must be sharp: just below it a run stays bounded, just
 // above it the run diverges.
+// AB3 keeps the right-hand sides of the last two steps; replacing the fields
+// starts it again with RK4 steps. A solver whose fields are replaced by the
+// state it already has must then step exactly like a fresh solver given that
+// state, and differ from one that keeps its history.
+static void test_ab3_restart(void)
+{
+    int k, n = 32, N = n * n;
+    problem p;
+    printf("AB3: history and restart\n");
+    problem_init(&p, n, n, 3, 3, 0.001, 1E-3, NULL);
+    backend *a = backend_create(&p.cfg, 0), *b = backend_create(&p.cfg, 0), *c = backend_create(&p.cfg, 0);
+    mtrx u = initm(n, n), v = initm(n, n), w = initm(n, n), *wa, *wb, *wc;
+    for (k = 0; k < 10; k++)
+    {
+        backend_step(a);
+        backend_step(c);
+    }
+    backend_get_fields(a, &u, &v, &w);
+    backend_set_fields(a, &u, &v, &w); // the same state: only the history is cleared
+    backend_set_fields(b, &u, &v, &w);
+    for (k = 0; k < 10; k++)
+    {
+        backend_step(a);
+        backend_step(b);
+        backend_step(c);
+    }
+    backend_fields(a, NULL, NULL, &wa);
+    backend_fields(b, NULL, NULL, &wb);
+    backend_fields(c, NULL, NULL, &wc);
+    check("after backend_set_fields() AB3 starts again: same as a fresh solver (w, bitwise)", rel_diff(wa->M, wb->M, N),
+          0.0);
+    check("  and the history matters: differs from the run that kept it (-diff)", -rel_diff(wa->M, wc->M, N), -1E-12);
+    backend_free(a);
+    backend_free(b);
+    backend_free(c);
+    freem(&u);
+    freem(&v);
+    freem(&w);
+    problem_free(&p);
+}
+
 static void test_cpu_stability_limit(int time_scheme, const char *label)
 {
     int t, n = 32;
@@ -3340,6 +3389,10 @@ static void run_gpu_tests(void)
     GPU_TEST(test_gpu_hyperviscosity(4));
     GPU_TEST(test_gpu_forcing(2, "RK4"));
     GPU_TEST(test_gpu_forcing(1, "Euler"));
+    GPU_TEST(test_gpu_forcing(3, "AB3"));
+    GPU_TEST(test_gpu_step(32, 32, 50, 0.002, 3, 3, 1E-10, NULL, "AB3 + FFT", 1E-11));
+    GPU_TEST(test_gpu_periodic(48, 33, 50, 3, "AB3"));
+    GPU_TEST(test_gpu_source(33, 33, 50, 3, "AB3 + FFT"));
     GPU_TEST(test_gpu_closures(40, 25, 30, 2, "RK4"));
     GPU_TEST(test_gpu_closures(32, 32, 30, 1, "Euler"));
     GPU_TEST(test_gpu_periodic(32, 32, 50, 1, "Euler"));
@@ -3431,6 +3484,8 @@ int main(int argc, char **argv)
     test_cpu_step(24, 40, 2, "RK4");
     test_cpu_stability_limit(1, "Euler");
     test_cpu_stability_limit(2, "RK4");
+    test_cpu_stability_limit(3, "AB3");
+    test_ab3_restart();
     test_cpu_time_step_limits();
 #ifdef _OPENMP
     test_openmp_thread_count(2, 3, "RK4 + FFT");

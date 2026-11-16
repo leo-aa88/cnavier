@@ -62,6 +62,10 @@ expect nonzero --geometry polar --tf 0
 expect nonzero --geometry polar --tf 0.001
 expect nonzero --geometry polar --steady-tol -1
 expect nonzero --geometry polar --diag-interval 0
+# Time schemes: an unknown one is refused, and AB3's own limits refuse the
+# default dt of the cavity (its viscous limit is 6/11 of the unit interval)
+expect nonzero --time-scheme rk5
+expect nonzero --time-scheme ab3
 expect nonzero --dt inf
 expect nonzero --dt -1
 expect nonzero --dt 0
@@ -141,6 +145,10 @@ expect 0 --case forced --n 32 --operators fourier --hyperviscosity 1e-16 --tf 0.
 expect 0 --case forced --n 32 --hyperviscosity 1e-12 --hyper-order 3 --hypodrag 5 --tf 0.01 --output-interval 0
 
 expect 0 --geometry cartesian --n 17 --tf 0.01 --output-interval 0
+expect 0 --time-scheme ab3 --n 33 --dt 5e-4 --tf 0.005 --output-interval 0
+expect 0 --time-scheme euler --n 33 --dt 5e-4 --tf 0.005 --output-interval 0
+expect 0 --time-scheme ab3 --case taylor-green --n 32 --dt 1e-3 --tf 0.01 --output-interval 0
+expect 0 --time-scheme ab3 --geometry polar --ntheta 32 --r-inf 5 --dt 0.01 --tf 0.05
 expect 0 --geometry polar --ntheta 32 --r-inf 5 --tf 0.05 --diag-interval 5
 expect 0 --geometry polar --case cylinder --ntheta 32 --nr 20 --r-inf 5 --tf 0.05 --outer-bc freestream --order 4 \
     --poisson-order 4 --wall-closure velocity --re 20

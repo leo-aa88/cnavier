@@ -49,6 +49,7 @@ BIN_FILE=cnavier
 TEST_BIN=test_cnavier
 CONV_BIN=convergence_study
 ABL_BIN=ablation_study
+INT_BIN=integrators_study
 
 # Each object also records the headers it includes (obj/*.d), so that editing
 # a header rebuilds the objects that use it
@@ -98,6 +99,14 @@ $(ABL_BIN): $(OBJ_DIR)/ablation.o $(OBJ_DIR)/mms.o $(filter-out $(OBJ_DIR)/main.
 
 ablation: $(OBJ_DIR) $(ABL_BIN)
 	./$(ABL_BIN)
+
+# Time integrators in decaying turbulence: stability limits, error against
+# cost (#48); on the GPU when built with CUDA=1
+$(INT_BIN): $(OBJ_DIR)/integrators.o $(filter-out $(OBJ_DIR)/main.o, $(OBJ_FILES))
+	$(CC) $(CC_FLAGS) $^ -I$(HDR_DIR) -o $@ $(CC_LIBS)
+
+integrators: $(OBJ_DIR) $(INT_BIN)
+	./$(INT_BIN)
 
 # ---------------------------------------------------------------------------
 # Checks. CI runs each of these as one step (.github/workflows/ci.yml).
@@ -159,10 +168,10 @@ regression: $(OBJ_DIR) $(BIN_FILE)
 	$(TEST_DIR)/regression.sh $(CURDIR)/$(BIN_FILE)
 
 clean:
-	rm -rf $(BIN_FILE) $(TEST_BIN) $(CONV_BIN) $(ABL_BIN) $(OBJ_DIR) $(TBN_DIR) output/*.vtk
+	rm -rf $(BIN_FILE) $(TEST_BIN) $(CONV_BIN) $(ABL_BIN) $(INT_BIN) $(OBJ_DIR) $(TBN_DIR) output/*.vtk
 
 FORCE:
 
-.PHONY: all test convergence ablation clean FORCE format format-check cppcheck tidy test-asan valgrind test-cli regression
+.PHONY: all test convergence ablation integrators clean FORCE format format-check cppcheck tidy test-asan valgrind test-cli regression
 
 -include $(wildcard $(OBJ_DIR)/*.d)

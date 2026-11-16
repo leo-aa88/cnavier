@@ -270,6 +270,8 @@ void backend_set_fields(backend *b, const mtrx *u, const mtrx *v, const mtrx *w)
     // Arrays from backend_fields() are already the solver's. A new w needs
     // a new stream function (backend_psi())
     if (w) b->psi_fresh = b->psi_solved = 0;
+    // AB3's history belongs to the fields it was computed from: start again
+    if (w) b->ws.history = 0;
     if (u && u->M != b->u.M) mtrxcpy(b->u, *u);
     if (v && v->M != b->v.M) mtrxcpy(b->v, *v);
     if (w && w->M != b->w.M) mtrxcpy(b->w, *w);
