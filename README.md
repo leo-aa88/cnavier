@@ -19,7 +19,7 @@ Each step advances ω with Euler or RK4. Each stage recovers its velocity from a
 ## Features
 
 - **Finite differences** of order 2, 4 or 6; on periodic grids also Lele's sixth-order compact schemes and pseudospectral differentiation, with optional dealiasing.
-- **Time integration**: explicit Euler, classical RK4 (default) or third-order Adams–Bashforth, with the time step checked against each scheme's stability limits before a run.
+- **Time integration**: explicit Euler, classical RK4 (default), third-order Adams–Bashforth or the low-storage RK46-NL, with the time step checked against each scheme's stability limits before a run.
 - **Poisson solvers**: Gauss–Seidel, SOR, or a direct FFTW sine-transform solver (default), second or fourth order.
 - **Cases**: the lid-driven cavity; on a doubly periodic square, the Taylor–Green vortex, a double shear layer, Kolmogorov flow, and forced and decaying 2-D turbulence. With `--geometry polar`, the flow past a circular cylinder on a log-polar grid, validated at Re = 40 against the reference solution of Gautier, Biau and Lamballais (2013).
 - **2-D turbulence**: Kolmogorov and random forcing, drag, hyperviscosity, hypodrag and an enstrophy-conserving nonlinear term. Spectra and spectral fluxes satisfy exact discrete budgets.
@@ -77,7 +77,7 @@ Options not given keep the defaults at the top of `src/main.c`, which is also wh
 | `--dt DT`, `--tf TF` | Time step and final time; a `dt` above the stability limits is refused with a value that passes |
 | `--re RE` | Reynolds number |
 | `--order N` | Finite differences of order 2, 4 or 6 (default), or `compact6` / `spectral` on periodic cases |
-| `--time-scheme NAME` | `rk4` (default), `euler`, or `ab3` (third-order Adams–Bashforth; the manual compares it with RK4) |
+| `--time-scheme NAME` | `rk4` (default), `euler`, `ab3` (third-order Adams–Bashforth) or `rk46` (low-storage RK46-NL, cheaper when accuracy sets the step); the manual compares them |
 | `--case NAME` | `cavity` (default), `taylor-green`, `shear-layer`, `kolmogorov`, `forced`, `decaying` |
 | `--geometry polar` | The flow past a cylinder (`--ntheta`, `--nr`, `--r-inf`, `--outer-bc`, `--steady-tol`) |
 | `--output-interval N` | VTK every N steps (`0`: none) |
@@ -102,7 +102,7 @@ make CUDA=1 test    # also checks the GPU backend against the CPU, on a machine 
 make regression     # stored results, Ghia et al., Taylor–Green, Kolmogorov, cascade, cylinder
 make test-cli       # invalid command lines are refused without writing anything
 make convergence    # spatial convergence study against a manufactured solution
-make CUDA=1 integrators  # time integrators: stability limits and error against GPU time
+make CUDA=1 integrators  # RK4, AB3, RK46: stability limits and error against GPU time
 ```
 
 `make test-asan`, `make valgrind`, `make format-check`, `make cppcheck`, `make tidy` and `make WERROR=1` run the remaining checks. On every push to `main` and every pull request that changes code, GitHub Actions runs these and the tests above, except `make convergence` (built, not run) and the GPU comparisons, which need a GPU. Changes to Markdown files and `docs/` alone run nothing. The manual lists what each target checks and how to regenerate the stored results.
