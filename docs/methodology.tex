@@ -431,6 +431,17 @@ one right-hand-side evaluation per step, with the right-hand sides of the two pr
 
 Its stability region reaches $6/11$ along the negative real axis (damping), against $2.7853$ for RK4, and $0.7236$ along the imaginary axis (centred advection), against $2\sqrt2$.  Per right-hand-side evaluation that is $0.545$ against $0.696$ for damping and $0.724$ against $0.707$ for advection: at the advective limit the two schemes do about the same work per unit of time, and RK4 has the higher order.  \Cref{sec:integrators} measures this.
 
+\subsection{Low-storage Runge--Kutta RK46-NL}
+\label{sec:rk46}
+
+With \code{time_scheme = 4} (\code{--time-scheme rk46}) the step is the six-stage, fourth-order RK46-NL of Berland, Bogey and Bailly~\cite{berland2006}, in two-register form:
+\begin{equation}
+W_i=A_iW_{i-1}+\dt\,\mathcal{F}(\omega_{i-1},\,t^n+c_i\dt),\qquad \omega_i=\omega_{i-1}+B_iW_i,\qquad i=1,\dots,6,
+\end{equation}
+with $\omega_0=\omega^n$, $\omega^{n+1}=\omega_6$ and $A_1=0$.  $\omega$ is updated in place, so the scheme needs one register and the right-hand side, the buffers of RK4's first two stages.  Each stage solves for its velocity and wall vorticity as RK4's do; with the reuse of the solve that ended the step before, a step does six solves.  The coefficients were checked against the order conditions to fourth order (residuals of $10^{-13}$, the precision they are given to) and against the published stage times; the observed order is $4.01$ ($3.99$ with a time-dependent source), and the CPU and the GPU agree to $10^{-15}$.
+
+Its stability region reaches $4.0711$ along the negative real axis and $3.8160$ along the imaginary axis, so the Courant bound is $3.8160/(2\sqrt2)=1.3492$ times RK4's.  Per evaluation that is $0.679$ against RK4's $0.696$ for damping and $0.636$ against $0.707$ for advection: at the stability limit RK46 needs about $11\,\%$ more evaluations than RK4.  What it was designed for is its error at moderate steps.  On an advected mode $e^{i\omega t}$, at equal work (one evaluation every $h$, so $\dt=4h$ for RK4 and $6h$ for RK46), its error per unit time is $0.29$ of RK4's for $\omega h\le0.1$, $0.40$ at $\omega h=0.3$ and equal near $\omega h=0.55$, beyond which RK4 is the more accurate up to the stability limits.
+
 % =============================================================================
 \section{Poisson Equation for the Streamfunction}
 % =============================================================================
@@ -538,7 +549,7 @@ On the periodic grid five built-in terms drive and damp the flow,
 \frac{\partial\omega}{\partial t}=-\mathbf{u}\cdot\nabla\omega+\nu\nabla^2\omega-\alpha\omega+f_K-\nu_h(-\nabla^2)^p\omega-\alpha_h\psi,
 \qquad f_K=-Ak\cos(ky),\quad k=2\pi n/L_y,
 \end{equation}
-plus a random kick before every step (\code{solver_config.forcing}, \code{src/forcing.c}).  The linear drag $-\alpha\omega$ removes the energy the inverse cascade carries to the largest scales.  The hyperviscosity $-\nu_h(-\nabla^2)^p\omega$ applies the discrete Laplacian $D_{xx}+D_{yy}$ $p$ times (on the GPU in Fourier space, \cref{sec:cuda}); its damping rate $\nu_hQ^p$ is negligible except near the grid cutoff, so it removes the enstrophy of the direct cascade there and leaves the range above almost inviscid, which plain viscosity at an affordable resolution cannot do.  The hypodrag $-\alpha_h\psi=-\alpha_h(-\nabla^2)^{-1}\omega$ uses the stream function of the stage; its damping rate $\alpha_h/Q$ confines it to the largest scales, where it stops the inverse cascade instead of damping it along the way as linear drag does.  The time-step limit of \cref{sec:stability} includes all the damping terms.  A periodic mode with eigenvalue $Q$ of $-(D_{xx}+D_{yy})$ decays at $\sigma(Q)=Q/\Rey+\nu_hQ^p+\alpha+\alpha_h/Q$, which is convex for $Q>0$, so its maximum over the modes is at the largest $Q$, the $\lambda_{\max}$ of \cref{sec:stability}, or with hypodrag possibly at the smallest non-zero one, the symbol of $D_{xx}$ or $D_{yy}$ at the lowest wavenumber.  The run is refused unless $\Delta t\le\rho/\max\sigma$.  For each term the limit is sharp: the single mode that sets it (on which the nonlinear term vanishes) decays at $0.95$ times the limit and grows at $1.05$ times, with Euler, RK4 and AB3.  $f_K$ is the curl of the Kolmogorov body force $A\sin(ky)\,\hat{\mathbf x}$; its laminar state is $\omega=f_K/(\nu k^2+\alpha)$, on which the nonlinear term vanishes.  The random kick adds
+plus a random kick before every step (\code{solver_config.forcing}, \code{src/forcing.c}).  The linear drag $-\alpha\omega$ removes the energy the inverse cascade carries to the largest scales.  The hyperviscosity $-\nu_h(-\nabla^2)^p\omega$ applies the discrete Laplacian $D_{xx}+D_{yy}$ $p$ times (on the GPU in Fourier space, \cref{sec:cuda}); its damping rate $\nu_hQ^p$ is negligible except near the grid cutoff, so it removes the enstrophy of the direct cascade there and leaves the range above almost inviscid, which plain viscosity at an affordable resolution cannot do.  The hypodrag $-\alpha_h\psi=-\alpha_h(-\nabla^2)^{-1}\omega$ uses the stream function of the stage; its damping rate $\alpha_h/Q$ confines it to the largest scales, where it stops the inverse cascade instead of damping it along the way as linear drag does.  The time-step limit of \cref{sec:stability} includes all the damping terms.  A periodic mode with eigenvalue $Q$ of $-(D_{xx}+D_{yy})$ decays at $\sigma(Q)=Q/\Rey+\nu_hQ^p+\alpha+\alpha_h/Q$, which is convex for $Q>0$, so its maximum over the modes is at the largest $Q$, the $\lambda_{\max}$ of \cref{sec:stability}, or with hypodrag possibly at the smallest non-zero one, the symbol of $D_{xx}$ or $D_{yy}$ at the lowest wavenumber.  The run is refused unless $\Delta t\le\rho/\max\sigma$.  For each term the limit is sharp: the single mode that sets it (on which the nonlinear term vanishes) decays at $0.95$ times the limit and grows at $1.05$ times, with Euler, RK4, AB3 and RK46.  $f_K$ is the curl of the Kolmogorov body force $A\sin(ky)\,\hat{\mathbf x}$; its laminar state is $\omega=f_K/(\nu k^2+\alpha)$, on which the nonlinear term vanishes.  The random kick adds
 \begin{equation}
 \delta\omega=\sum_m a_m\cos(\mathbf{k}_m\cdot\mathbf{x}+\phi_m)
 \end{equation}
@@ -721,7 +732,7 @@ C_x=U_{\mathrm{lid}}\frac{\dt}{\dx},
 \qquad
 C_y=U_{\mathrm{lid}}\frac{\dt}{\dy},
 \end{equation}
-and aborts if either exceeds \code{max_co = 1}, where $U_{\mathrm{lid}}$ is the largest wall speed.  The bound is calibrated on RK4; for AB3 it is scaled by the ratio of the two schemes' stability intervals on the imaginary axis, $0.7236/(2\sqrt2)=0.2558$, which keeps the same margin.  This is a useful sanity check but should not be interpreted as a complete stability proof.  The actual interior velocity can differ from the lid velocity, and diffusion imposes a separate explicit restriction, which is checked as described next.
+and aborts if either exceeds \code{max_co = 1}, where $U_{\mathrm{lid}}$ is the largest wall speed.  The bound is calibrated on RK4; for AB3 and RK46 it is scaled by the ratio of their stability intervals on the imaginary axis to RK4's, $0.7236/(2\sqrt2)=0.2558$ and $3.8160/(2\sqrt2)=1.3492$, which keeps the same margin.  This is a useful sanity check but should not be interpreted as a complete stability proof.  The actual interior velocity can differ from the lid velocity, and diffusion imposes a separate explicit restriction, which is checked as described next.
 
 \subsection{Implemented viscous limit}
 
@@ -733,7 +744,7 @@ taken from the middle row of the one-dimensional operators (which is also the mi
 \begin{equation}
 \dt\le\frac{\rho}{\lambda_{\max}},
 \qquad
-\rho=\begin{cases}2 & \text{forward Euler},\\ 2.785293\ldots & \text{classical RK4},\\ 6/11 & \text{AB3},\end{cases}
+\rho=\begin{cases}2 & \text{forward Euler},\\ 2.785293\ldots & \text{classical RK4},\\ 6/11 & \text{AB3},\\ 4.071051\ldots & \text{RK46},\end{cases}
 \end{equation}
 $\rho$ being the extent of each method's stability region along the negative real axis, and unless the Courant condition holds; the message names both limits and suggests the smaller one, rounded down so that the suggestion itself passes.  For forward Euler the classical centered advection--diffusion condition $\dt\le 2\nu/U^2 = 2/(\Rey\,U^2)$ is checked as well, but only as a warning, since it is conservative here (below); when an Euler run is refused, the suggested $\dt$ is the smallest of all three limits, so that following it does not trigger the warning.  Measured on the lid-driven cavity, the viscous bound is sharp: for orders 2, 4 and 6, both schemes and $n=64$ and $128$, runs at $0.95$ times the bound stay bounded for 3000 steps and runs at $1.05$ times diverge.  The advection condition is conservative: at $\Rey=1000$, $n=64$, Euler stayed bounded up to about three times it.  At the defaults ($n=64$, $\Rey=100$, sixth order) the bounds are $\dt\le 0.00580$ for RK4 and $\dt\le 0.00416$ for Euler.
 
@@ -1337,40 +1348,65 @@ cavity, $513^2$ & 16.1 & 6.9 (43\,\%) & 2.7 & 3.8 & 0.1 & 0.1 \\
 \end{center}
 The columns are the whole step, the Poisson solves, the rest of the velocity recovery, the transport right-hand side, the skew-symmetric correction, and the forcing and damping terms.  The forced run is the direct cascade of \cref{sec:cascade} (order 6, sparse operators, skew-symmetric form, hyperviscosity of order 4 in spectral space, hypodrag, random forcing; five solves per step, since the kick changes $\omega$ every step); the decaying run is that of the same section; the cavity is the default case on $513^2$.  On the periodic grids the Poisson solves are about $15\,\%$ of a step and the cost is spread over the parts of a right-hand-side evaluation, so a time integrator gains in proportion to the evaluations it saves, not to the solves.  With walls the sine-transform solve is $43\,\%$.  On the CPU the sparse products dominate: 68 per RK4 step in the forced run on $256^2$ (16 for the transport, 32 for the hyperviscosity of order 4, 8 for the skew-symmetric form, 10 for the velocity, 2 for the continuity check), about three quarters of the time in a \code{gprof} profile; the solves, mostly in FFTW, are under a tenth.
 
-\paragraph{Time integrators: AB3 against RK4.}
+\paragraph{Time integrators: RK4, AB3 and RK46.}
 \label{sec:integrators}
-With the cost spread over the parts of each right-hand-side evaluation, a scheme gains by the stable time per evaluation, not by the solves it saves.  \code{make integrators} (\code{tests/integrators.c}) measures AB3 (\cref{sec:ab3}) against RK4 in decaying turbulence ($256^2$, $\Rey=2\times10^4$, order 6, skew-symmetric form, on the GPU).  The largest stable step, found by bisection over $t\le0.2$, is $1.92\times10^{-3}$ for RK4 and $4.95\times10^{-4}$ for AB3: their ratio, $0.2575$, is within $1\,\%$ of the ratio of the imaginary-axis intervals, $0.2558$, so advection sets both limits.  An AB3 step costs $0.28$ of an RK4 step.  Run at fractions of its own limit to $t=0.1$, before the runs decorrelate, against RK4 at $1/64$ of its limit (\cref{fig:ab3-decaying}):
+With the cost spread over the parts of each right-hand-side evaluation, a scheme gains by the stable time per evaluation and by its accuracy per evaluation, not by the solves it saves.  \code{make integrators} (\code{tests/integrators.c}) measures AB3 (\cref{sec:ab3}) and RK46 (\cref{sec:rk46}) against RK4 in decaying turbulence ($256^2$, $\Rey=2\times10^4$, order 6, skew-symmetric form, on the GPU).  The largest stable step, found by bisection over $t\le0.2$, is $1.92\times10^{-3}$ for RK4, $4.95\times10^{-4}$ for AB3 and $2.53\times10^{-3}$ for RK46.  Relative to RK4 that is $0.2575$ and $1.317$, against $0.2558$ and $1.349$ from the imaginary-axis intervals, so advection sets the limits.  A step costs $0.28$ (AB3) and $1.48$ (RK46) of an RK4 step, about in proportion to the evaluations.  Run at fractions of its own limit to $t=0.1$, before the runs decorrelate, against RK4 at $1/64$ of its limit (\cref{fig:integrators-decaying}):
 \begin{center}\small
 \begin{tabular}{lrrrr}
 \toprule
  & $\dt/\text{limit}$ & GPU seconds & error of $\omega$ & error of $Z(k)$ \\
 \midrule
-RK4 & 0.9 & 0.175 & $4.2\times10^{-3}$ & $4.6\times10^{-3}$ \\
-AB3 & 0.9 & 0.191 & $3.1\times10^{-3}$ & $5.7\times10^{-3}$ \\
-RK4 & 0.45 & 0.347 & $3.7\times10^{-4}$ & $3.4\times10^{-4}$ \\
-AB3 & 0.45 & 0.376 & $4.5\times10^{-4}$ & $8.5\times10^{-4}$ \\
-RK4 & 0.225 & 0.692 & $2.4\times10^{-5}$ & $1.8\times10^{-5}$ \\
-AB3 & 0.225 & 0.749 & $5.7\times10^{-5}$ & $1.1\times10^{-4}$ \\
-RK4 & 0.056 & 2.75 & $9.4\times10^{-8}$ & $5.9\times10^{-8}$ \\
-AB3 & 0.056 & 2.98 & $9.0\times10^{-7}$ & $1.8\times10^{-6}$ \\
+RK4 & 0.9 & 0.179 & $4.2\times10^{-3}$ & $4.6\times10^{-3}$ \\
+AB3 & 0.9 & 0.198 & $3.1\times10^{-3}$ & $5.7\times10^{-3}$ \\
+RK46 & 0.9 & 0.201 & $1.7\times10^{-3}$ & $1.4\times10^{-3}$ \\
+\midrule
+RK4 & 0.45 & 0.360 & $3.7\times10^{-4}$ & $3.4\times10^{-4}$ \\
+AB3 & 0.45 & 0.388 & $4.5\times10^{-4}$ & $8.5\times10^{-4}$ \\
+RK46 & 0.45 & 0.404 & $7.1\times10^{-5}$ & $4.8\times10^{-5}$ \\
+\midrule
+RK4 & 0.225 & 0.716 & $2.4\times10^{-5}$ & $1.8\times10^{-5}$ \\
+AB3 & 0.225 & 0.771 & $5.7\times10^{-5}$ & $1.1\times10^{-4}$ \\
+RK46 & 0.225 & 0.808 & $4.2\times10^{-6}$ & $2.9\times10^{-6}$ \\
+\midrule
+RK4 & 0.056 & 2.85 & $9.4\times10^{-8}$ & $5.9\times10^{-8}$ \\
+AB3 & 0.056 & 3.07 & $9.0\times10^{-7}$ & $1.8\times10^{-6}$ \\
+RK46 & 0.056 & 3.22 & $1.6\times10^{-8}$ & $1.1\times10^{-8}$ \\
 \bottomrule
 \end{tabular}
 \end{center}
-(the relative $L_2$ error of $\omega$, and the largest relative error of the enstrophy spectrum over $K\le n/3$).  At the stability limit the two tie: AB3 is $9\,\%$ slower to the same time, with a comparable error.  Below it, where accuracy sets the step, RK4 pulls ahead by its higher order (its error falls by 16 when the step is halved, AB3's by 8): at equal cost AB3's error is $2$--$10$ times larger in $\omega$ and $2$--$30$ times in the spectrum.  So AB3 does not win where accuracy sets the step either, and on damping-limited steps its stable interval per evaluation is the smaller one.
+(the relative $L_2$ error of $\omega$, and the largest relative error of the enstrophy spectrum over $K\le n/3$).
+\begin{itemize}[leftmargin=2em]
+  \item \textbf{At the stability limit} RK4 is the cheapest to a given time: AB3 is $11\,\%$ and RK46 $12\,\%$ slower.  RK46 is then the most accurate, $2.5$ times below RK4 in $\omega$.
+  \item \textbf{Where accuracy sets the step}, RK46 leads: at equal GPU time its error is about $3.6$ times below RK4's, so at equal error it is about $28\,\%$ cheaper, as the analysis of its error on an advected mode predicts (\cref{sec:rk46}).  AB3 falls behind RK4 by its lower order: at equal cost its error is $2$--$10$ times larger in $\omega$ and $2$--$30$ times in the spectrum.
+\end{itemize}
 
-In forced turbulence (the direct cascade of \cref{sec:cascade}, $512^2$, $t=10$--$30$), AB3 at $\dt=1.25\times10^{-4}$ does the same number of right-hand-side evaluations as RK4 at $5\times10^{-4}$, and stays stable.  It reproduces the dual cascade: both flux signs, enstrophy conserved to round-off, a $\Pi_Z$ plateau of $46.6$ against RK4's $44.7$ (within the $\pm8\,\%$ scatter of the forced statistics), and the energy budget closing to within one standard error ($+7.2\,\%$ and $-6.6\,\%$; \cref{fig:ab3-forced}).  Its plateau is less flat ($12.6\,\%$ against $7.9\,\%$), and its mean energy and enstrophy are $24$ and $19\,\%$ higher, but with its energy still drifting over the window and one forcing realisation per scheme (one kick per step, so different sequences) these differences are not attributed to the scheme.  The run took $1429$\,s against $1055$\,s: at equal evaluations AB3 is $35\,\%$ slower here, from the costs of a step it pays four times as often (the kick, and the second solve).  RK4 therefore stays the default; AB3 remains an option.
+In forced turbulence (the direct cascade of \cref{sec:cascade}, $512^2$, $t=10$--$30$), each scheme was run with the same number of right-hand-side evaluations per unit time: RK4 at $\dt=5\times10^{-4}$, AB3 at $1.25\times10^{-4}$ and RK46 at $7.5\times10^{-4}$.  All three are stable and reproduce the dual cascade (both flux signs, enstrophy conserved to round-off; \cref{fig:integrators-forced}):
+\begin{center}\small
+\begin{tabular}{lrrrrr}
+\toprule
+ & $\Pi_Z$ plateau & spread & $\langle E\rangle$, $\langle Z\rangle$ & energy budget & GPU time \\
+\midrule
+RK4 & 44.7 & $7.9\,\%$ & 0.213, 144 & $-6.6\,\%$ ($-1.0\sigma$) & 1055\,s \\
+AB3 & 46.6 & $12.6\,\%$ & 0.264, 172 & $+7.2\,\%$ ($+0.9\sigma$) & 1429\,s \\
+RK46 & 44.0 & $7.5\,\%$ & 0.211, 143 & $-9.8\,\%$ ($-1.4\sigma$) & 980\,s \\
+\bottomrule
+\end{tabular}
+\end{center}
+(the plateau over $K=10$--$100$ and its spread $(\max-\min)/\text{mean}$; the budget is the input it implies against $\varepsilon$, in standard errors of the realised input).  The kick comes once per step, so the three runs are different forcing realisations, and only their statistics can be compared.  RK46 agrees with RK4 to $2\,\%$, inside the $\pm8\,\%$ scatter of the forced statistics.  AB3's plateau is less flat and its mean energy and enstrophy are $24$ and $19\,\%$ higher, but with its energy still drifting over the window and one realisation per scheme this is not attributed to the scheme.  At equal evaluations the costs differ by what a step costs beyond its evaluations (the kick, and with AB3 a second solve): AB3, with four times RK4's steps, is $35\,\%$ slower, and RK46, with two thirds of them, $7\,\%$ faster.
+
+RK4 stays the default: in these runs the step is set by stability, where RK4 is cheapest.  \code{--time-scheme rk46} is the better choice when accuracy sets the step, for example to resolve the time scales of a transient, or when the per-step costs are large (random forcing).  AB3 remains an option, which none of these measurements favours.
 
 \begin{figure}[ht]
 \centering
-\includegraphics[width=\textwidth]{ab3_decaying.png}
+\includegraphics[width=\textwidth]{time_integrators_decaying.png}
 \caption{Error against GPU time in decaying turbulence, $256^2$, $t=0.1$: each scheme at 0.9, 0.45, 0.225, 0.11 and 0.056 of its own stability limit.}
-\label{fig:ab3-decaying}
+\label{fig:integrators-decaying}
 \end{figure}
 \begin{figure}[ht]
 \centering
-\includegraphics[width=\textwidth]{ab3_forced.png}
-\caption{Forced turbulence, $512^2$, mean over $t=10$--$30$: RK4 at $\dt=5\times10^{-4}$ and AB3 at $1.25\times10^{-4}$, the same number of right-hand-side evaluations.  The spectrum is RK4's.}
-\label{fig:ab3-forced}
+\includegraphics[width=\textwidth]{time_integrators_forced.png}
+\caption{Forced turbulence, $512^2$, mean over $t=10$--$30$, with RK4, AB3 and RK46 at the same number of right-hand-side evaluations per unit time.}
+\label{fig:integrators-forced}
 \end{figure}
 
 For transform performance, grid sizes for which $n-1$ factors into small primes are advantageous, because the sine transform of the $n-2$ interior nodes acts through FFT lengths of $2(n-1)$.  Sizes such as 65, 129, 257, 513 and 1025 are therefore fast, and their neighbours can be several times slower: on the machine above one serial FFT Poisson solve takes 6.7\,ms at $255^2$ ($2(n-1)=508=4\cdot127$) against 1.6\,ms at $257^2$ ($512$), and 85\,ms at $1023^2$ against 31\,ms at $1025^2$.  On the GPU a step takes 77\,ms at $1024\times1024$ against 60\,ms at $1025\times1025$.
@@ -1411,14 +1447,14 @@ make CUDA=1 test
 make OPENMP=1 CUDA=1 test
 make OPENMP=1 convergence   # spatial convergence study, about 1.5 minutes
 make OPENMP=1 ablation      # what limits the spatial order
-make CUDA=1 integrators     # time integrators: stability limits, error against cost
+make CUDA=1 integrators     # RK4, AB3 and RK46: stability limits, error against cost
 \end{lstlisting}
 
 \code{make test} builds and runs \code{test_cnavier}, which checks:
 \begin{itemize}[leftmargin=2em]
   \item \textbf{Building blocks}: sparse operations against dense ones; every row of the finite-difference operators (boundary rows included) exact on the polynomials its stencil is built for, for orders 2, 4 and 6; the derivative operators acting along the right axis on non-square grids; wall velocities, corners included; the VTK and centerline writers.
   \item \textbf{Poisson solvers}: the FFT solver against an exact eigenmode, at sizes that exercise every batching case of the transform; FFT, SOR and Gauss--Seidel giving the same answer once converged; the residuals of the iterative solvers; SOR iteration counts on anisotropic grids (\cref{sec:verification-poisson}).
-  \item \textbf{Time stepping}: short cavity runs with Euler and RK4 (finite, divergence-free); the stability limit of each scheme (0.95 times runs, 1.05 times diverges) and the suggested $\dt$; the observed order in $\dt$, walls included (Euler first, RK4 fourth, AB3 third), also with a time-dependent vorticity source and from $t_0>0$; AB3 starting again after \code{backend_set_fields()}.
+  \item \textbf{Time stepping}: short cavity runs with Euler and RK4 (finite, divergence-free); the stability limit of each scheme (0.95 times runs, 1.05 times diverges) and the suggested $\dt$; the observed order in $\dt$, walls included (Euler first, RK4 fourth, AB3 third, RK46 fourth), also with a time-dependent vorticity source and from $t_0>0$; AB3 starting again after \code{backend_set_fields()}.
   \item \textbf{Spatial accuracy}: the manufactured solutions of \cref{sec:mms} with walls and of \cref{sec:periodic-verification} without, at the orders measured there; the compact Poisson operator, the third-order wall closure and the fourth-order velocity rows (\cref{sec:wall-order}).
   \item \textbf{Diagnostics, forcing and turbulence terms}: \cref{sec:diagnostics-verification} and the sections that follow it.
   \item \textbf{Backends}: driving the solver through \code{backend.c} gives exactly what calling it directly gives; every solver ignores changes to the caller's configuration after it is created; \code{backend_psi()} changes no step.
@@ -1488,7 +1524,7 @@ Options not given keep the defaults of \code{src/main.c} (\cref{tab:defaults}); 
 --outer-bc NAME & Polar: \texttt{farfield} (default) or \texttt{freestream}. \\
 --steady-tol TOL & Polar: stop once $\max|\partial\omega/\partial t|<$ TOL (default $10^{-6}$; 0 never). \\
 --diag-interval N & Polar: steps between diagnostics (default 100). \\
---time-scheme NAME & \texttt{rk4} (default), \texttt{euler} or \texttt{ab3} (\cref{sec:ab3}). \\
+--time-scheme NAME & \texttt{rk4} (default), \texttt{euler}, \texttt{ab3} (\cref{sec:ab3}) or \texttt{rk46} (\cref{sec:rk46}). \\
 --cpu & In a CUDA build, force the CPU backend. \\
 --help & Print command-line help. \\
 \bottomrule
@@ -1808,6 +1844,9 @@ U. Frisch, S. Kurien, R. Pandit, W. Pauls, S. S. Ray, A. Wirth and J.-Z. Zhu,
 \bibitem{canuto2006}
 C. Canuto, M. Y. Hussaini, A. Quarteroni and T. A. Zang,
 \emph{Spectral Methods: Fundamentals in Single Domains}, Springer, 2006.
+
+\bibitem{berland2006}
+J.~Berland, C.~Bogey and C.~Bailly, Low-dissipation and low-dispersion fourth-order Runge--Kutta algorithm, \emph{Computers \& Fluids} \textbf{35} (2006) 1459--1463.
 
 \bibitem{lunasin2007}
 E.~Lunasin, S.~Kurien, M.~Taylor and E.~S. Titi, A study of the Navier--Stokes-$\alpha$ model for two-dimensional turbulence, \emph{J. Turbul.} \textbf{8} (2007) N30.

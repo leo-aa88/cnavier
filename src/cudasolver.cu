@@ -256,6 +256,19 @@ __global__ void axpy_kernel(const double *x, double a, const double *y, double *
 }
 
 // w += c*(k1 + 2*k2 + 2*k3 + k4)
+// RK46-NL stage, as in rk46(): W = a W + dt F (W unread when first), w += b W
+__global__ void rk46_stage_kernel(double *W, double *w, const double *F, double a, double b, double dt, int first,
+                                  int n)
+{
+    int k = blockIdx.x * blockDim.x + threadIdx.x;
+    if (k < n)
+    {
+        double r = (first ? 0.0 : a * W[k]) + dt * F[k];
+        W[k] = r;
+        w[k] += b * r;
+    }
+}
+
 // AB3: w += dt (23 f0 - 16 f1 + 5 f2) / 12
 __global__ void ab3_kernel(double *w, double dt, const double *f0, const double *f1, const double *f2, int n)
 {
@@ -1279,9 +1292,9 @@ gpu_solver *gpu_init(const solver_config *cfg)
         printf("** Error: valid Poisson solver types are 1, 2 or 3 **\n");
         exit(1);
     }
-    if (cfg->time_scheme < 1 || cfg->time_scheme > 3)
+    if (cfg->time_scheme < 1 || cfg->time_scheme > 4)
     {
-        printf("** Error: time_scheme must be 1 (Euler), 2 (RK4) or 3 (AB3) **\n");
+        printf("** Error: time_scheme must be 1 (Euler), 2 (RK4), 3 (AB3) or 4 (RK46) **\n");
         exit(1);
     }
 
@@ -1641,6 +1654,26 @@ static void gpu_step_impl(gpu_solver *g)
         add_forcing_terms(g, g->k1, g->w);
         LAUNCH(axpy_kernel, n, g->w, dt, g->k1, g->w, n);
         g->psi_of_w = 0;
+        dealias(g);
+        velocity_from_vorticity(g, g->w);
+    }
+    else if (g->cfg.time_scheme == 4)
+    {
+        // RK46-NL, as rk46() in fluiddyn.c: six stages updating w in place,
+        // the register in k1, the right-hand side in k2. Each stage changes w,
+        // so the next one solves again (psi_of_w cleared).
+        static const double a[6] = {0.0, -0.737101392796, -1.634740794341, -0.744739003780, -1.469897351522,
+                                    -2.813971388035};
+        static const double b[6] = {0.032918605146, 0.823256998200, 0.381530948900,
+                                    0.200092213184, 1.718581042715, 0.27};
+        static const double c[6] = {0.0, 0.032918605146, 0.249351723343, 0.466911705055, 0.582030414044,
+                                    0.847252983783};
+        for (int s = 0; s < 6; s++)
+        {
+            dwdt(g, g->w, g->k2, t + c[s] * dt);
+            LAUNCH(rk46_stage_kernel, n, g->k1, g->w, g->k2, a[s], b[s], dt, s == 0, n);
+            g->psi_of_w = 0;
+        }
         dealias(g);
         velocity_from_vorticity(g, g->w);
     }

@@ -81,9 +81,9 @@ rk4_ctx rk4_alloc(const solver_config *cfg)
     ctx.w_solved = initm(ny, nx);
     ctx.psi_valid = 0;
     ctx.solves = 0;
-    if (cfg->time_scheme < 1 || cfg->time_scheme > 3)
+    if (cfg->time_scheme < 1 || cfg->time_scheme > 4)
     {
-        printf("** Error: time_scheme must be 1 (Euler), 2 (RK4) or 3 (AB3) **\n");
+        printf("** Error: time_scheme must be 1 (Euler), 2 (RK4), 3 (AB3) or 4 (RK46) **\n");
         exit(1);
     }
     ctx.f1 = cfg->time_scheme == 3 ? initm(ny, nx) : (mtrx){0};
@@ -602,6 +602,46 @@ void rk4(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx)
     velocity_from_vorticity(w, u, v, !ctx->kicks, ctx);
 }
 
+// RK46-NL of Berland, Bogey and Bailly (Computers & Fluids 35, 2006): six
+// stages, fourth order, in two-register (2N) form,
+//   W_i = A_i W_{i-1} + dt F(w_{i-1}, t + c_i dt),  w_i = w_{i-1} + B_i W_i,
+// with w updated in place and the register in k1, the right-hand side in k2.
+// Per right-hand-side evaluation its stability intervals are about those of
+// RK4 (0.679 against 0.696 on the real axis, 0.636 against 0.707 on the
+// imaginary one), and its error on advected modes is about 0.3 of RK4's at
+// the same work for small steps. On return u and v are the velocity of the
+// interior of w_{n+1}, as after rk4().
+static const double rk46_a[6] = {0.0, -0.737101392796, -1.634740794341,
+                                 -0.744739003780, -1.469897351522, -2.813971388035};
+static const double rk46_b[6] = {0.032918605146, 0.823256998200, 0.381530948900,
+                                 0.200092213184, 1.718581042715, 0.27};
+static const double rk46_c[6] = {0.0, 0.032918605146, 0.249351723343,
+                                 0.466911705055, 0.582030414044, 0.847252983783};
+
+void rk46(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx)
+{
+    double dt = ctx->cfg.dt, t = ctx->cfg.t0 + (double)ctx->steps * dt;
+    int s, i, n = ctx->cfg.nx * ctx->cfg.ny;
+
+    for (s = 0; s < 6; s++)
+    {
+        double a = rk46_a[s], b = rk46_b[s];
+        dwdt(w, u, v, ctx->k2, t + rk46_c[s] * dt, ctx);
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static) if (n >= OMP_MIN_WORK)
+#endif
+        for (i = 0; i < n; i++)
+        {
+            // A_0 = 0: the first stage sets the register (whatever it held)
+            double W = (s == 0 ? 0.0 : a * ctx->k1.M[i]) + dt * ctx->k2.M[i];
+            ctx->k1.M[i] = W;
+            w.M[i] += b * W;
+        }
+    }
+    if (ctx->fourier && ctx->cfg.dealias == 1) fourier_filter(ctx->fourier, w.M);
+    velocity_from_vorticity(w, u, v, !ctx->kicks, ctx);
+}
+
 // ---------------------------------------------------------------------------
 // Time-step limit
 // ---------------------------------------------------------------------------
@@ -714,9 +754,11 @@ double max_stable_dt_forced(const smtrx *dxx, const smtrx *dyy, double Re, const
     // Forward Euler is stable for real eigenvalues in [-2, 0], classical RK4
     // down to -2.785293...
     // The schemes' stability intervals on the negative real axis: Euler 2,
-    // RK4 2.7853, AB3 6/11
-    double rho = time_scheme == 1 ? 2.0 : time_scheme == 3 ? 6.0 / 11.0
-                                                           : 2.785293563405282;
+    // RK4 2.7853, AB3 6/11, RK46 4.0711
+    double rho = time_scheme == 1   ? 2.0
+                 : time_scheme == 3 ? 6.0 / 11.0
+                 : time_scheme == 4 ? 4.071051455840976
+                                    : 2.785293563405282;
     return rho / damping_rate_max(dxx, dyy, Re, fc);
 }
 
@@ -745,6 +787,8 @@ dt_limits time_step_limits_forced(const smtrx *dxx, const smtrx *dyy, double h, 
     // imaginary axis (advection) is 0.7236 against RK4's 2 sqrt(2): the same
     // margin needs a step shorter by their ratio.
     if (time_scheme == 3) l.courant *= 0.723627226987111 / 2.828427124746588;
+    // RK46's reaches 3.8160: a longer step, though not per evaluation
+    if (time_scheme == 4) l.courant *= 3.815986179237247 / 2.828427124746588;
     l.viscous = max_stable_dt_forced(dxx, dyy, Re, fc, time_scheme);
     l.advection = time_scheme == 1 ? euler_advection_dt(Re, u_max) : HUGE_VAL;
     l.accept = fmin(l.courant, l.viscous);
@@ -754,8 +798,10 @@ dt_limits time_step_limits_forced(const smtrx *dxx, const smtrx *dyy, double h, 
 
 const char *time_scheme_name(int time_scheme)
 {
-    return time_scheme == 1 ? "Euler" : time_scheme == 3 ? "AB3"
-                                                         : "RK4";
+    return time_scheme == 1   ? "Euler"
+           : time_scheme == 3 ? "AB3"
+           : time_scheme == 4 ? "RK46"
+                              : "RK4";
 }
 
 double round_down_3(double x)
@@ -853,6 +899,8 @@ void step(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx)
         if (ctx->fourier && ctx->cfg.dealias == 1) fourier_filter(ctx->fourier, w.M);
         velocity_from_vorticity(w, u, v, 0, ctx);
     }
+    else if (ctx->cfg.time_scheme == 4)
+        rk46(w, u, v, ctx);
     else if (ctx->cfg.time_scheme == 3 && ctx->history == 2)
     {
         // AB3: w_{n+1} = w_n + dt (23 F_n - 16 F_{n-1} + 5 F_{n-2}) / 12,
