@@ -180,13 +180,24 @@ int main(int argc, char **argv)
     double Re = 2E4, T = 0.1;
     for (k = 1; k < argc; k++)
     {
+        char *end = NULL;
+        int ok = 1;
         if (strcmp(argv[k], "--n") == 0 && k + 1 < argc)
-            n = atoi(argv[++k]);
+        {
+            long val = strtol(argv[++k], &end, 10);
+            ok = *end == '\0' && val >= 16 && val <= 4096;
+            n = (int)val;
+        }
         else if (strcmp(argv[k], "--re") == 0 && k + 1 < argc)
-            Re = atof(argv[++k]);
+        {
+            Re = strtod(argv[++k], &end);
+            ok = *end == '\0' && Re > 0.0 && isfinite(Re);
+        }
         else if (strcmp(argv[k], "--cpu") == 0)
             gpu = 0;
         else
+            ok = 0;
+        if (!ok)
         {
             printf("Usage: %s [--n N] [--re RE] [--cpu]\n", argv[0]);
             return 1;
