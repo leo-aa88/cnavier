@@ -1312,6 +1312,20 @@ serial build & 3.66\,ms & 326\,ms \\
 \end{center}
 The 8- and 16-thread rows come from one interleaved comparison (\cref{sec:openmp} explains the plateau).  Forced turbulence on $512^2$ takes 16.2\,ms per step on the GPU (\cref{sec:cuda}).
 
+\paragraph{Where the time goes.}  A build with \code{make CUDA=1 NVCC_FLAGS="-O2 -DGPU_PROFILE"} times each phase of a GPU step with CUDA events and prints the means when the solver is freed.  Each phase then ends with a synchronisation, which makes the step 13--24\,\% slower than in the normal build, so the proportions are the result, not the totals.  RK4, ms per step (profiling build):
+\begin{center}\footnotesize
+\begin{tabular}{lrrrrrr}
+\toprule
+ & step & solves & velocity & transport & skew & forcing \\
+\midrule
+forced, $512^2$ & 21.3 & 3.3 (15\,\%) & 2.9 & 3.8 & 3.5 & 3.2 \\
+decaying, $512^2$ & 17.2 & 2.5 (15\,\%) & 2.4 & 3.8 & 3.4 & 2.8 \\
+cavity, $513^2$ & 16.1 & 6.9 (43\,\%) & 2.7 & 3.8 & 0.1 & 0.1 \\
+\bottomrule
+\end{tabular}
+\end{center}
+The columns are the whole step, the Poisson solves, the rest of the velocity recovery, the transport right-hand side, the skew-symmetric correction, and the forcing and damping terms.  The forced run is the direct cascade of \cref{sec:cascade} (order 6, sparse operators, skew-symmetric form, hyperviscosity of order 4 in spectral space, hypodrag, random forcing; five solves per step, since the kick changes $\omega$ every step); the decaying run is that of the same section; the cavity is the default case on $513^2$.  On the periodic grids the Poisson solves are about $15\,\%$ of a step and the cost is spread over the parts of a right-hand-side evaluation, so a time integrator gains in proportion to the evaluations it saves, not to the solves.  With walls the sine-transform solve is $43\,\%$.  On the CPU the sparse products dominate: 68 per RK4 step in the forced run on $256^2$ (16 for the transport, 32 for the hyperviscosity of order 4, 8 for the skew-symmetric form, 10 for the velocity, 2 for the continuity check), about three quarters of the time in a \code{gprof} profile; the solves, mostly in FFTW, are under a tenth.
+
 For transform performance, grid sizes for which $n-1$ factors into small primes are advantageous, because the sine transform of the $n-2$ interior nodes acts through FFT lengths of $2(n-1)$.  Sizes such as 65, 129, 257, 513 and 1025 are therefore fast, and their neighbours can be several times slower: on the machine above one serial FFT Poisson solve takes 6.7\,ms at $255^2$ ($2(n-1)=508=4\cdot127$) against 1.6\,ms at $257^2$ ($512$), and 85\,ms at $1023^2$ against 31\,ms at $1025^2$.  On the GPU a step takes 77\,ms at $1024\times1024$ against 60\,ms at $1025\times1025$.
 
 The GPU becomes increasingly advantageous as the grid grows because the fixed kernel-launch overhead is amortized over more work.  Double-precision FFT throughput is a major cost on consumer GPUs, so larger speedups may be observed on hardware with stronger FP64 capability.

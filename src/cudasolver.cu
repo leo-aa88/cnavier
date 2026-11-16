@@ -824,7 +824,79 @@ static void f_divergence(gpu_solver *g, const double *a, const double *b, double
     CUFFT_CHECK(cufftExecZ2D(g->plan_c2r, g->f_work, out));
 }
 
+// ---------------------------------------------------------------------------
+// Profiling (make CUDA=1 NVCC_FLAGS="-O2 -DGPU_PROFILE"): the time of each
+// phase of a step by CUDA events, printed by gpu_free(). Every phase ends with
+// a synchronisation, so a profiling build is slower; the other builds have no
+// timers at all.
+// ---------------------------------------------------------------------------
+
+#ifdef GPU_PROFILE
+enum
+{
+    PROF_STEP,
+    PROF_VELOCITY, // the Poisson solve (with the Fourier operators too) and u, v
+    PROF_POISSON,  // the solve alone (not with the Fourier operators)
+    PROF_RHS,
+    PROF_NONLINEAR,
+    PROF_FORCING,
+    PROF_N
+};
+static const char *prof_name[PROF_N] = {"whole step", "velocity (solve + u, v)", "  of which Poisson solve",
+                                        "transport right-hand side", "skew-symmetric correction",
+                                        "forcing and damping terms"};
+static cudaEvent_t prof_ev[PROF_N][2];
+static double prof_ms[PROF_N];
+static long prof_calls[PROF_N];
+static int prof_ready;
+
+static void prof_begin(int k)
+{
+    if (!prof_ready)
+    {
+        for (int i = 0; i < PROF_N; i++)
+        {
+            CUDA_CHECK(cudaEventCreate(&prof_ev[i][0]));
+            CUDA_CHECK(cudaEventCreate(&prof_ev[i][1]));
+        }
+        prof_ready = 1;
+    }
+    CUDA_CHECK(cudaEventRecord(prof_ev[k][0]));
+}
+
+static void prof_end(int k)
+{
+    float ms;
+    CUDA_CHECK(cudaEventRecord(prof_ev[k][1]));
+    CUDA_CHECK(cudaEventSynchronize(prof_ev[k][1]));
+    CUDA_CHECK(cudaEventElapsedTime(&ms, prof_ev[k][0], prof_ev[k][1]));
+    prof_ms[k] += ms;
+    prof_calls[k]++;
+}
+
+static void prof_report(long steps)
+{
+    if (!prof_ready || steps < 1) return;
+    printf("GPU profile, ms per step over %ld steps (calls per step):\n", steps);
+    for (int k = 0; k < PROF_N; k++)
+        printf("  %-28s %9.4f  (%.1f)\n", prof_name[k], prof_ms[k] / steps, (double)prof_calls[k] / steps);
+}
+#define PROF_BEGIN(k) prof_begin(k)
+#define PROF_END(k)   prof_end(k)
+#else
+#define PROF_BEGIN(k) ((void)0)
+#define PROF_END(k)   ((void)0)
+#endif
+
+static void solve_poisson_impl(gpu_solver *g, const double *w);
 static void solve_poisson(gpu_solver *g, const double *w)
+{
+    PROF_BEGIN(PROF_POISSON);
+    solve_poisson_impl(g, w);
+    PROF_END(PROF_POISSON);
+}
+
+static void solve_poisson_impl(gpu_solver *g, const double *w)
 {
     if (g->cfg.periodic)
         poisson_periodic_gpu(g, w);
@@ -839,8 +911,17 @@ static void solve_poisson(gpu_solver *g, const double *w)
 // repeat the last solve of the step before. psi_of_w is set by a solve for
 // g->w and cleared by everything that changes the interior of g->w (the wall
 // entries, which the FFT solvers do not read, may change). The iterative
-// solvers start from the previous psi and are never skipped, as on the CPU.
+// solvers are never skipped, as on the CPU (they start from zero, so a repeat
+// would give the same psi; the reuse is just not applied to them).
+static void velocity_from_vorticity_impl(gpu_solver *g, const double *w);
 static void velocity_from_vorticity(gpu_solver *g, const double *w)
+{
+    PROF_BEGIN(PROF_VELOCITY);
+    velocity_from_vorticity_impl(g, w);
+    PROF_END(PROF_VELOCITY);
+}
+
+static void velocity_from_vorticity_impl(gpu_solver *g, const double *w)
 {
     if (g->cfg.fourier)
     {
@@ -960,7 +1041,15 @@ static void add_padded_nonlinear(gpu_solver *g, const double *w, double *out)
 
 // out += (the solver's nonlinear term) - (the advective one), as
 // nonlinear_correction(): the skew-symmetric form, or 3/2 padding
+static void add_nonlinear_correction_impl(gpu_solver *g, const double *w, double *out);
 static void add_nonlinear_correction(gpu_solver *g, const double *w, double *out)
+{
+    PROF_BEGIN(PROF_NONLINEAR);
+    add_nonlinear_correction_impl(g, w, out);
+    PROF_END(PROF_NONLINEAR);
+}
+
+static void add_nonlinear_correction_impl(gpu_solver *g, const double *w, double *out)
 {
     if (g->cfg.fourier && g->cfg.dealias == 2)
     {
@@ -1075,7 +1164,15 @@ __global__ void neg_laplacian_kernel(csr_dev DX2, csr_dev DY2, const double *in,
 
 // out += -drag w + the Kolmogorov source - nu_h (-L)^p w - alpha_h psi, as
 // add_forcing_terms() in fluiddyn.c; g->psi must be that of w
+static void add_forcing_terms_impl(gpu_solver *g, double *out, const double *w);
 static void add_forcing_terms(gpu_solver *g, double *out, const double *w)
+{
+    PROF_BEGIN(PROF_FORCING);
+    add_forcing_terms_impl(g, out, w);
+    PROF_END(PROF_FORCING);
+}
+
+static void add_forcing_terms_impl(gpu_solver *g, double *out, const double *w)
 {
     const forcing_config *fc = &g->cfg.forcing;
     if (fc->hyperviscosity > 0.0 && g->cfg.fourier)
@@ -1123,6 +1220,7 @@ static void add_forcing_terms(gpu_solver *g, double *out, const double *w)
 // in g->f_wx, g->f_wy for the nonlinear correction)
 static void rhs(gpu_solver *g, const double *w, double *out)
 {
+    PROF_BEGIN(PROF_RHS);
     if (g->cfg.fourier)
     {
         f_derivatives(g, w, 1);
@@ -1130,6 +1228,7 @@ static void rhs(gpu_solver *g, const double *w, double *out)
     }
     else
         LAUNCH(rhs_kernel, g->n, g->DX, g->DY, g->DX2, g->DY2, w, g->u, g->v, g->cfg.Re, out, g->n);
+    PROF_END(PROF_RHS);
 }
 
 // Evaluate dw/dt at time t into out and update u, v consistent with w
@@ -1372,6 +1471,9 @@ gpu_solver *gpu_init(const solver_config *cfg)
 void gpu_free(gpu_solver *g)
 {
     if (!g) return;
+#ifdef GPU_PROFILE
+    prof_report(g->steps);
+#endif
 
     csr_free(g->DX);
     csr_free(g->DY);
@@ -1470,7 +1572,15 @@ static void dealias(gpu_solver *g)
     f_inverse(g, F_FILTER, g->f_hat, g->w);
 }
 
+static void gpu_step_impl(gpu_solver *g);
 void gpu_step(gpu_solver *g)
+{
+    PROF_BEGIN(PROF_STEP);
+    gpu_step_impl(g);
+    PROF_END(PROF_STEP);
+}
+
+static void gpu_step_impl(gpu_solver *g)
 {
     int n = g->n;
     double dt = g->cfg.dt, t = g->cfg.t0 + (double)g->steps * dt;
