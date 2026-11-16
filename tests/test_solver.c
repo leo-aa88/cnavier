@@ -478,11 +478,11 @@ static double field_diff(mtrx a, mtrx b)
 static void test_temporal_order(void)
 {
     int n = 17, s, k;
-    double T = 0.2, order, err_at[4];
+    double T = 0.2, order, err_at[5];
     char name[96];
 
     printf("Unit: observed order of the time integration, %dx%d grid, t = %g\n", n, n, T);
-    for (s = 1; s <= 3; s++)
+    for (s = 1; s <= 4; s++)
     {
         double err[2];
         mtrx ref = run_to(n, s, T / 4096, T);
@@ -505,11 +505,16 @@ static void test_temporal_order(void)
             snprintf(name, sizeof(name), "RK4: observed order %.2f, |order - 4|", order);
             check(name, isnan(order) ? INFINITY : fabs(order - 4.0), 0.3);
         }
-        else
+        else if (s == 3)
         {
             // Started with two RK4 steps, AB3 is third order
             snprintf(name, sizeof(name), "AB3: observed order %.2f, |order - 3|", order);
             check(name, isnan(order) ? INFINITY : fabs(order - 3.0), 0.3);
+        }
+        else
+        {
+            snprintf(name, sizeof(name), "RK46: observed order %.2f, |order - 4|", order);
+            check(name, isnan(order) ? INFINITY : fabs(order - 4.0), 0.3);
         }
     }
     snprintf(name, sizeof(name), "RK4 / Euler error at dt = T/64 (%.1e / %.1e)", err_at[2], err_at[1]);
@@ -544,11 +549,11 @@ static void test_source_temporal_order(void)
     char name[96];
 
     printf("Unit: observed order in time with a vorticity source, %dx%d grid, t = %g\n", n, n, T);
-    for (s = 1; s <= 3; s++)
+    for (s = 1; s <= 4; s++)
     {
-        static const double expect[4] = {0, 1, 4, 3};
-        int coarse = s == 1 ? 64 : s == 2 ? 16
-                                          : 32;
+        static const double expect[5] = {0, 1, 4, 3, 4};
+        int coarse = s == 1 ? 64 : s == 3 ? 32
+                                          : 16;
         double err[2], order;
         mtrx ref = run_with_source(n, s, T / (64 * coarse), T, &c);
         for (k = 0; k < 2; k++)
@@ -1406,7 +1411,7 @@ static void test_damping_stability(void)
 
     printf("Stability: the time-step limit of the drag, hypodrag and hyperviscosity\n");
     for (int term = 0; term < 3; term++)
-        for (int scheme = 1; scheme <= 3; scheme++)
+        for (int scheme = 1; scheme <= 4; scheme++)
         {
             forcing_config f = {0};
             if (term == 0) f.drag = 1000.0;
@@ -3390,6 +3395,10 @@ static void run_gpu_tests(void)
     GPU_TEST(test_gpu_forcing(2, "RK4"));
     GPU_TEST(test_gpu_forcing(1, "Euler"));
     GPU_TEST(test_gpu_forcing(3, "AB3"));
+    GPU_TEST(test_gpu_forcing(4, "RK46"));
+    GPU_TEST(test_gpu_step(32, 32, 50, 0.002, 4, 3, 1E-10, NULL, "RK46 + FFT", 1E-11));
+    GPU_TEST(test_gpu_periodic(48, 33, 50, 4, "RK46"));
+    GPU_TEST(test_gpu_source(33, 33, 50, 4, "RK46 + FFT"));
     GPU_TEST(test_gpu_step(32, 32, 50, 0.002, 3, 3, 1E-10, NULL, "AB3 + FFT", 1E-11));
     GPU_TEST(test_gpu_periodic(48, 33, 50, 3, "AB3"));
     GPU_TEST(test_gpu_source(33, 33, 50, 3, "AB3 + FFT"));
@@ -3485,6 +3494,7 @@ int main(int argc, char **argv)
     test_cpu_stability_limit(1, "Euler");
     test_cpu_stability_limit(2, "RK4");
     test_cpu_stability_limit(3, "AB3");
+    test_cpu_stability_limit(4, "RK46");
     test_ab3_restart();
     test_cpu_time_step_limits();
 #ifdef _OPENMP

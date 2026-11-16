@@ -160,8 +160,9 @@ static void usage(const char *prog)
 #ifdef USE_CUDA
     printf("  --cpu                run on the CPU instead of the GPU\n");
 #endif
-    printf("  --time-scheme NAME   rk4 (default), euler, or ab3 (third-order Adams-Bashforth:\n"
-           "                       one right-hand side per step, started with two RK4 steps)\n");
+    printf("  --time-scheme NAME   rk4 (default), euler, ab3 (third-order Adams-Bashforth:\n"
+           "                       one right-hand side per step, started with two RK4 steps), or\n"
+           "                       rk46 (low-storage six-stage fourth-order RK46-NL)\n");
     printf("  --help               show this message\n");
     printf("Unset options keep the defaults at the top of src/main.c.\n");
 }
@@ -267,6 +268,8 @@ int main(int argc, char *argv[])
                 time_scheme = 2;
             else if (strcmp(optarg, "ab3") == 0)
                 time_scheme = 3;
+            else if (strcmp(optarg, "rk46") == 0)
+                time_scheme = 4;
             else
                 ok = 0;
             break;
@@ -743,7 +746,10 @@ int main(int argc, char *argv[])
         printf("** Error: dt = %g is too large; use --dt %.3g or less. Limits: Courant number <= %g "
                "gives dt <= %.3g, the stability limit of the %s scheme for the viscous and damping "
                "terms on this grid gives dt <= %.3g",
-               dt, round_down_3(lim.suggest), time_scheme == 3 ? max_co * 0.723627226987111 / 2.828427124746588 : max_co,
+               dt, round_down_3(lim.suggest),
+               time_scheme == 3   ? max_co * 0.723627226987111 / 2.828427124746588
+               : time_scheme == 4 ? max_co * 3.815986179237247 / 2.828427124746588
+                                  : max_co,
                round_down_3(lim.courant),
                time_scheme_name(time_scheme), round_down_3(lim.viscous));
         if (time_scheme == 1)

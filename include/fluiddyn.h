@@ -34,7 +34,8 @@ typedef struct solver_config
     double Re;                        // Reynolds number
     double dt;                        // time step
     double t0;                        // time at the start of the run
-    int time_scheme;                  // 1=Euler, 2=RK4, 3=AB3 (Adams-Bashforth, started with two RK4 steps)
+    int time_scheme;                  // 1=Euler, 2=RK4, 3=AB3 (Adams-Bashforth, started with two RK4 steps),
+                                      // 4=RK46 (Berland, Bogey and Bailly's low-storage RK46-NL)
     int poisson_type;                 // 1=Gauss-Seidel, 2=SOR, 3=FFT
     int poisson_max_it;               // iteration limit of Gauss-Seidel/SOR
     int poisson_order;                // FFT solver with walls: 2 (5-point) or 4 (compact 9-point)
@@ -149,8 +150,12 @@ void dwdt(mtrx w, mtrx u, mtrx v, mtrx out, double t, rk4_ctx *ctx);
 // completes the state)
 void rk4(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx);
 
+// RK46-NL (Berland, Bogey and Bailly 2006): six stages, fourth order, two
+// registers; the same contract as rk4()
+void rk46(mtrx w, mtrx u, mtrx v, rk4_ctx *ctx);
+
 // Largest stable time step of the explicit scheme (time_scheme 1=Euler,
-// 2=RK4, 3=AB3) for the viscous term (1/Re) * (d_xx + d_yy), from the 1D
+// 2=RK4, 3=AB3, 4=RK46) for the viscous term (1/Re) * (d_xx + d_yy), from the 1D
 // second-derivative operators in x and y.
 double max_stable_dt(const smtrx *dxx, const smtrx *dyy, double Re, int time_scheme);
 
@@ -165,7 +170,8 @@ double euler_advection_dt(double Re, double u_max);
 typedef struct
 {
     double courant;   // max_co * h / u_max (HUGE_VAL if the walls are at rest), for AB3
-                      // times 0.2558, the ratio of its imaginary-axis interval to RK4's
+                      // times 0.2558 and for RK46 times 1.3492, the ratios of their
+                      // imaginary-axis intervals to RK4's
     double viscous;   // max_stable_dt()
     double advection; // euler_advection_dt() for Euler, HUGE_VAL for RK4
     double accept;    // largest dt that is run: min(courant, viscous)
@@ -212,7 +218,7 @@ dt_limits time_step_limits_forced(const smtrx *dxx, const smtrx *dyy, double h, 
 dt_limits time_step_limits(const smtrx *dxx, const smtrx *dyy, double h, double Re, double u_max,
                            double max_co, int time_scheme);
 
-// "Euler", "RK4" or "AB3" for time_scheme 1, 2, 3
+// "Euler", "RK4", "AB3" or "RK46" for time_scheme 1, 2, 3, 4
 const char *time_scheme_name(int time_scheme);
 
 // x rounded down to three significant digits, for suggesting a time step: the

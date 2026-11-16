@@ -1,5 +1,6 @@
 // Time integrators in decaying 2-D turbulence (#48): the largest stable time
-// step of each scheme, and its error against the cost, as the issue asks.
+// step of RK4, AB3 and RK46, and their error against the cost, as the issue
+// asks.
 //
 //   make integrators                       256^2, Re = 2e4, on the GPU if built with CUDA=1
 //   ./integrators_study --n 128 --cpu      another grid, or the CPU
@@ -209,13 +210,13 @@ int main(int argc, char **argv)
     spectra *sp = spectra_setup(&c);
     int N = n * n, bins = spectra_bins(sp);
     double *ref = (double *)malloc((size_t)N * sizeof(double)), *w = (double *)malloc((size_t)N * sizeof(double));
-    double *E_ref = (double *)malloc((size_t)bins * sizeof(double)), limit[4] = {0}, g; // E_ref: Z(k) of the reference
-    static const int schemes[2] = {2, 3};
+    double *E_ref = (double *)malloc((size_t)bins * sizeof(double)), limit[5] = {0}, g; // E_ref: Z(k) of the reference
+    static const int schemes[3] = {2, 3, 4};
 
     printf("Decaying turbulence, %d^2, Re = %g, order 6, skew-symmetric; %s\n", n, Re, gpu ? "GPU if available" : "CPU");
     // The bracket: the viscous limits of the schemes are far above the
     // advective ones here, so start from them and the Courant estimate
-    for (s1 = 0; s1 < 2; s1++)
+    for (s1 = 0; s1 < 3; s1++)
     {
         int sc = schemes[s1];
         double hi = max_stable_dt(&s.d2, &s.d2, Re, sc), lo = hi / 1E3;
@@ -223,6 +224,7 @@ int main(int argc, char **argv)
         printf("  %s: largest stable dt %.4e (viscous limit %.4e)\n", time_scheme_name(sc), limit[sc], hi);
     }
     printf("  AB3 / RK4 limit %.4f (imaginary-axis intervals: 0.7236 / 2.8284 = 0.2558)\n", limit[3] / limit[2]);
+    printf("  RK46 / RK4 limit %.4f (imaginary-axis intervals: 3.8160 / 2.8284 = 1.3492)\n", limit[4] / limit[2]);
 
     // Reference: RK4 at 1/64 of its limit
     run(&s, 2, limit[2] / 64.0, T, 0, ref, &g, NULL);
@@ -237,7 +239,7 @@ int main(int argc, char **argv)
     printf("\nError at t = %g against RK4 at 1/64 of its limit (columns: scheme, dt / own limit, dt, steps, "
            "seconds, relative L2 error of w, max relative error of Z(k) over K <= n/3):\n",
            T);
-    for (s1 = 0; s1 < 2; s1++)
+    for (s1 = 0; s1 < 3; s1++)
     {
         int sc = schemes[s1];
         for (int f = 1; f <= 16; f *= 2)
