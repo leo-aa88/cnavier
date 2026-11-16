@@ -27,7 +27,7 @@
 \graphicspath{{../figures/}}
 \newcommand{\Rey}{\mathrm{Re}}
 \newcommand{\code}[1]{\texttt{#1}}
-\title{Compact and pseudospectral differentiation in two-dimensional turbulence\
+\title{Compact and pseudospectral differentiation in two-dimensional turbulence\\
 \large Dissipation-scale resolution, cell Reynolds number and a dealiased control}
 \author{Leonardo Araujo}
 \date{Draft, \today}
@@ -64,11 +64,11 @@ The two-dimensional incompressible Navier--Stokes equations are solved in a doub
 \end{equation}
 where $\nu=1/\Rey$. The term $f$ contains the forcing and damping contributions described in \cref{sec:forced}. The nonlinear term is written in skew-symmetric form,
 \begin{equation}
-N=-\tfrac12\left(u,D_x\omega+v,D_y\omega\right)
+N=-\tfrac12\left(u\,D_x\omega+v\,D_y\omega\right)
   -\tfrac12\left(D_x(u\omega)+D_y(v\omega)\right).
 \label{eq:skew}
 \end{equation}
-For periodic antisymmetric difference operators, this form conserves the discrete enstrophy $\tfrac12\langle\omega^2\rangle$ to round-off for all schemes considered. The purely advective form does not. In the under-resolved tests reported in the companion methodology, it produces spurious enstrophy near the cutoff corresponding to $23$--$45,%$ of the input. Time integration is performed with the classical fourth-order Runge--Kutta method, using double precision.
+For periodic antisymmetric difference operators, this form conserves the discrete enstrophy $\tfrac12\langle\omega^2\rangle$ to round-off for all schemes considered. The purely advective form does not. In the under-resolved tests reported in the companion methodology, it produces spurious enstrophy near the cutoff corresponding to $23$--$45\,\%$ of the input. Time integration is performed with the classical fourth-order Runge--Kutta method, using double precision.
 \subsection{Operators in Fourier space}
 For a periodic grid with $n$ points, any translation-invariant difference operator forms a circulant matrix and is diagonal in the discrete Fourier basis. For a stencil with coefficients $c_j$, the corresponding eigenvalue at wavenumber $k$ is
 $\sum_jc_je^{ikjh}$. The first- and second-derivative symbols are written as
@@ -101,17 +101,17 @@ The Fourier implementation starts with one transform of $\omega$. Inverse transf
 \centering\small
 \begin{tabular}{lccccc}
 \toprule
-& \multicolumn{2}{c}{first derivative} & \multicolumn{2}{c}{second derivative} & \
-fraction of $0,\pi$ within & $1,%$ & $10,%$ & $1,%$ & $10,%$ & $(k^*h){\max}$ \
+& \multicolumn{2}{c}{first derivative} & \multicolumn{2}{c}{second derivative} & \\
+fraction of $[0,\pi]$ within & $1\,\%$ & $10\,\%$ & $1\,\%$ & $10\,\%$ & $(k^*h){\max}$ \\
 \midrule
-E6 & 0.35 & 0.54 & 0.45 & 0.71 & 1.59 \
-C6 & 0.50 & 0.70 & 0.56 & 0.81 & 1.99 \
-S & 1 & 1 & 1 & 1 & $\pi$ \
-S${3/2}$ & 1 & 1 & 1 & 1 & $\pi$ \
-S$_{2/3}$ & 2/3 & 2/3 & 2/3 & 2/3 & $2\pi/3$ \
+E6 & 0.35 & 0.54 & 0.45 & 0.71 & 1.59 \\
+C6 & 0.50 & 0.70 & 0.56 & 0.81 & 1.99 \\
+S & 1 & 1 & 1 & 1 & $\pi$ \\
+S${3/2}$ & 1 & 1 & 1 & 1 & $\pi$ \\
+S$_{2/3}$ & 2/3 & 2/3 & 2/3 & 2/3 & $2\pi/3$ \\
 \bottomrule
 \end{tabular}
-\caption{Portion of the represented interval differentiated with errors below $1,%$ and $10,%$, together with the largest modified wavenumber. The last quantity determines the relative advective stability limit.}
+\caption{Portion of the represented interval differentiated with errors below $1\,\%$ and $10\,\%$, together with the largest modified wavenumber. The last quantity determines the relative advective stability limit.}
 \label{tab:kstar}
 \end{table}
 The modified-wavenumber curves are shown in \cref{fig:kstar}, and the corresponding numerical ranges are summarized in \cref{tab:kstar}. Methods that remain accurate farther into the spectrum also have larger values of $(k^*h){\max}$. Their explicit advective time-step limit is therefore smaller, varying as $h/(k^*h){\max}$.
@@ -128,7 +128,7 @@ The energy and enstrophy fluxes are computed from the same nonlinear term used b
 The spatial orders were first checked with a manufactured periodic solution. The explicit schemes recover orders 2, 4 and 6, while C6 gives an observed order of $6.04$. At $64^2$, the C6 error is twelve times smaller than the E6 error. For the pseudospectral case, the error at $32^2$ is $3.5\times10^{-9}$, compared with $1.1\times10^{-4}$ for C6. Halving the time step reduces the pseudospectral error by a factor of 16, showing that the remaining error is controlled by RK4.
 The two implementations of the finite-difference operators were also compared. For E6 and C6, applying the operators through Fourier symbols reproduces the sparse formulation to $10^{-14}$ in the fields, integral quantities and spectra after 20 forced steps. In a complete decaying-turbulence calculation, the C6 spectrum obtained in Fourier space agrees with that of the exact banded implementation to $4\times10^{-12}$.
 The padded nonlinear term was verified independently against direct convolution of the modal coefficients. On $10\times8$ and $9\times7$ grids, covering even and odd Nyquist cases, agreement over the non-Nyquist triads is $7\times10^{-15}$. The GPU implementation based on cuFFT reproduces the FFTW CPU results to $6\times10^{-15}$ for all five methods. In addition, the skew-symmetric form conserves enstrophy to approximately $10^{-15}$--$10^{-14}$ of the largest shell transfer. The S${2/3}$ and S${3/2}$ formulations also conserve energy to this level in either nonlinear form.
-Each decaying case uses its own $2048^2$ E6 reference. To check that the comparison is not controlled by the reference discretization, the two most demanding cases, $\Rey=8\times10^4$ and $k_0=20$, were repeated at $2048^2$ with C6. The two references differ by no more than $1.5\times10^{-3}$ through $K=255$, which is the largest shell used in the comparison, and by approximately $10^{-4}$ through $K=127$. These differences are well below the $2,%$ and $10,%$ error levels used to define the resolved bandwidth.
+Each decaying case uses its own $2048^2$ E6 reference. To check that the comparison is not controlled by the reference discretization, the two most demanding cases, $\Rey=8\times10^4$ and $k_0=20$, were repeated at $2048^2$ with C6. The two references differ by no more than $1.5\times10^{-3}$ through $K=255$, which is the largest shell used in the comparison, and by approximately $10^{-4}$ through $K=127$. These differences are well below the $2\,\%$ and $10\,\%$ error levels used to define the resolved bandwidth.
 % =============================================================================
 \section{Experimental design}
 \label{sec:design}
@@ -140,7 +140,7 @@ $E(k)\propto(k/k_0)^4e^{-2(k/k_0)^2}$, whose maximum occurs at $K=k_0$, with $K=
 All schemes in a given case use the same time step, $6.25\times10^{-5}$, and are therefore compared at the same physical time. Since the initial energy is fixed, the turnover time varies as $\tau_0\propto1/k_0$. The comparison is made at
 $t=0.09\cdot10/k_0$, corresponding to approximately six eddy-turnover times. At this stage the cascade has populated the spectrum, while the largest scales, $K\le20$, remain within $10^{-3}$--$10^{-2}$ of the reference. The solutions have therefore not yet decorrelated. At $t=0.5$, by comparison, differences of tens of percent are already present at $K=10$.
 \paragraph{Accuracy and resolution parameters.}
-The effective bandwidth is defined by the largest shell $K_{10}$ for which every preceding shell remains within $10,%$ of the reference spectrum. A corresponding $K_2$ is obtained with a $2,%$ tolerance. The maximum value of $E/E_{\mathrm{ref}}$ is used to characterize the high-wavenumber pile-up.
+The effective bandwidth is defined by the largest shell $K_{10}$ for which every preceding shell remains within $10\,\%$ of the reference spectrum. A corresponding $K_2$ is obtained with a $2\,\%$ tolerance. The maximum value of $E/E_{\mathrm{ref}}$ is used to characterize the high-wavenumber pile-up.
 Three resolution measures are considered. The first is the cutoff-to-peak energy ratio
 \begin{equation}
 \chi=\frac{E_{\mathrm{ref}}(K_{\mathrm{Nyq}})}
@@ -150,7 +150,7 @@ which measures the amount of spectral energy reaching the Nyquist shell of the c
 For comparison with San and Staples~\cite{san2012}, the cell Reynolds number is defined as $\Rey_c=\Rey h$, with $h=1/n$ for the unit square. Since all present calculations start with the same total energy, $\Rey_c$ can be compared among the present cases, although its numerical value is not the same as in their domain. This quantity contains information about viscosity and grid spacing, but not about $k_0$ or the instantaneous spectrum.
 The third parameter is the classical two-dimensional dissipation-scale measure $k_{\max}l_\eta$. Here $k_{\max}=\pi/h$ is the one-dimensional Nyquist wavenumber and
 $l_\eta=(\nu^3/\eta)^{1/6}$, where
-$\eta=\nu\langle|\nabla\omega|^2\rangle$ is the reference enstrophy-dissipation rate at the comparison time. The shell sum of viscous enstrophy dissipation agrees with $2\nu$ times the palinstrophy to $0.1,%$. This definition of $\eta$ is the same as that used by Lunasin et al.~\cite{lunasin2007}.
+$\eta=\nu\langle|\nabla\omega|^2\rangle$ is the reference enstrophy-dissipation rate at the comparison time. The shell sum of viscous enstrophy dissipation agrees with $2\nu$ times the palinstrophy to $0.1\,\%$. This definition of $\eta$ is the same as that used by Lunasin et al.~\cite{lunasin2007}.
 Their reported $k_{\max}$ is the largest radial wavenumber retained by the 2/3 rule, $(\sqrt2/3)N$ in units of $2\pi$ for the unit box. If the product $k_{\max}l_\eta$ is formed with angular wavenumbers, as in the usual three-dimensional criterion $k_{\max}\eta$ with $k_{\max}=\pi/\Delta x$, their cutoff is approximately $0.94$ of the present value. The convention is not stated explicitly in their text. Interpreting the tabulated values as shell units instead would imply about 38 grid cells per $l_\eta$ in their resolved calculations, rather than approximately 6 with angular units. The ordering found below is unchanged by this common rescaling; only its numerical correspondence with the published thresholds depends on the convention.
 Both $\chi$ and $k_{\max}l_\eta$ are evaluated from the high-resolution reference and should therefore be regarded as a posteriori descriptors in this study. An a priori use of $k_{\max}l_\eta$ for scheme selection would require an estimate of $\eta$ before the reference is known. An under-resolved calculation may not provide such an estimate reliably.
 \paragraph{Computational cost.}
@@ -161,7 +161,7 @@ $t{\mathrm{step}}(k^*h)_{\max}/h$.
 The comparison is made at equal effective bandwidth and is an estimate rather than a direct benchmark of every equivalent-resolution configuration. For the baseline E6 runs, $K_{10}$ increases from 74 shells on $256^2$ to 152 on $512^2$, approximately linearly with $n$. Its cost per unit physical time varies as $n^3$. An E6 calculation matching a method with bandwidth $K_{10}$ therefore has an estimated cost proportional to
 $(K_{10}/K_{10}^{\mathrm{E6}})^3$
 relative to E6 on the same grid. The reported cost ratio compares each method with this equivalent-bandwidth E6 estimate.
-Each method is timed in its fastest implementation available in the solver. C6 and all pseudospectral variants are most efficient in Fourier space. E6 is faster as a sparse seven-point stencil and is therefore computed and timed in that form. Since sparse and Fourier E6 apply the same matrix and agree to $10^{-14}$, this choice changes the cost but not the discretization. It also favors E6; applying it in Fourier space would increase its step cost by about $40,%$.
+Each method is timed in its fastest implementation available in the solver. C6 and all pseudospectral variants are most efficient in Fourier space. E6 is faster as a sparse seven-point stencil and is therefore computed and timed in that form. Since sparse and Fourier E6 apply the same matrix and agree to $10^{-14}$, this choice changes the cost but not the discretization. It also favors E6; applying it in Fourier space would increase its step cost by about $40\,\%$.
 \paragraph{Forced turbulence.}
 Because independently forced simulations decorrelate, their comparison is based on time-averaged statistics rather than instantaneous spectra. Random white-in-time forcing injects energy at a rate $\varepsilon=0.1$ in the shell $|K-4|\le1$, while the inverse cascade is removed by a large-scale hypodrag $-\alpha_h\psi$.
 Two $256^2$ cases are considered. In the first, the small-scale dissipation is concentrated near the cutoff using hyperviscosity,
@@ -176,18 +176,18 @@ $-\nu_h(-\nabla^2)^4\omega$, and statistics are collected over $t=6$--$16$. The 
 \setlength{\tabcolsep}{4pt}
 \begin{tabular}{lcccccccccc}
 \toprule
-case & grid & $\Rey_c$ & $\chi$ & $k_{\max}l_\eta$ & E6 & C6 & S & S${3/2}$ & S${2/3}$ \
+case & grid & $\Rey_c$ & $\chi$ & $k_{\max}l_\eta$ & E6 & C6 & S & S${3/2}$ & S${2/3}$ \\
 \midrule
-$\Rey=8\times10^4$ & $256^2$ & 313 & $1.2\times10^{-5}$ & 0.76 & \textbf{80} & 79 & 75 & 79 & 46 \
-$k_0=20$ & $256^2$ & 78 & $1.6\times10^{-4}$ & 0.92 & \textbf{89} & 74 & 74 & 72 & 49 \
-baseline & $256^2$ & 78 & $4.9\times10^{-6}$ & 1.35 & 74 & \textbf{118} & 93 & 93 & 50 \
-$\Rey=8\times10^4$ & $512^2$ & 156 & $2.3\times10^{-7}$ & 1.52 & 152 & \textbf{217} & 193 & 200 & 117 \
-$k_0=20$ & $512^2$ & 39 & $1.6\times10^{-6}$ & 1.83 & 159 & 213 & \textbf{217} & \textbf{217} & 130 \
-$k_0=5$ & $256^2$ & 78 & $9.0\times10^{-8}$ & 2.01 & 71 & 105 & 101 & \textbf{109} & 62 \
-$\Rey=5\times10^3$ & $256^2$ & 20 & $2.0\times10^{-7}$ & 2.50 & 74 & 105 & \textbf{120} & \textbf{120} & 70 \
-baseline & $512^2$ & 39 & $1.5\times10^{-8}$ & 2.71 & 152 & 198 & 235 & \textbf{239} & 143 \
-$k_0=5$ & $512^2$ & 39 & $4.2\times10^{-11}$ & 4.01 & 146 & 197 & \textbf{246} & \textbf{246} & 154 \
-$\Rey=5\times10^3$ & $512^2$ & 9.8 & $2.8\times10^{-12}$ & 5.01 & 144 & 196 & \textbf{249} & 248 & 163 \
+$\Rey=8\times10^4$ & $256^2$ & 313 & $1.2\times10^{-5}$ & 0.76 & \textbf{80} & 79 & 75 & 79 & 46 \\
+$k_0=20$ & $256^2$ & 78 & $1.6\times10^{-4}$ & 0.92 & \textbf{89} & 74 & 74 & 72 & 49 \\
+baseline & $256^2$ & 78 & $4.9\times10^{-6}$ & 1.35 & 74 & \textbf{118} & 93 & 93 & 50 \\
+$\Rey=8\times10^4$ & $512^2$ & 156 & $2.3\times10^{-7}$ & 1.52 & 152 & \textbf{217} & 193 & 200 & 117 \\
+$k_0=20$ & $512^2$ & 39 & $1.6\times10^{-6}$ & 1.83 & 159 & 213 & \textbf{217} & \textbf{217} & 130 \\
+$k_0=5$ & $256^2$ & 78 & $9.0\times10^{-8}$ & 2.01 & 71 & 105 & 101 & \textbf{109} & 62 \\
+$\Rey=5\times10^3$ & $256^2$ & 20 & $2.0\times10^{-7}$ & 2.50 & 74 & 105 & \textbf{120} & \textbf{120} & 70 \\
+baseline & $512^2$ & 39 & $1.5\times10^{-8}$ & 2.71 & 152 & 198 & 235 & \textbf{239} & 143 \\
+$k_0=5$ & $512^2$ & 39 & $4.2\times10^{-11}$ & 4.01 & 146 & 197 & \textbf{246} & \textbf{246} & 154 \\
+$\Rey=5\times10^3$ & $512^2$ & 9.8 & $2.8\times10^{-12}$ & 5.01 & 144 & 196 & \textbf{249} & 248 & 163 \\
 \bottomrule
 \end{tabular}
 \caption{Resolved spectral bandwidth $K_{10}$ for the decaying cases. The rows are arranged by $k_{\max}l_\eta$. Values of $\Rey_c=\Rey h$ and $\chi$ are included for comparison. The Nyquist shells are 127 for $256^2$ and 255 for $512^2$.}
@@ -209,9 +209,9 @@ The comparison in \cref{tab:map,fig:map} shows that $\Rey_c$ alone does not orga
 This difference follows from the actual small-scale content of the flow. At fixed $\Rey$ and grid size, changing $k_0$ modifies the enstrophy dissipation and changes $l_\eta$ by approximately a factor of two. None of this information enters $\Rey_c$.
 The ordering becomes much clearer when the cases are arranged by $k_{\max}l_\eta$. For the two under-resolved cases, $k_{\max}l_\eta=0.76$ and $0.92$, E6 gives the smallest spectral-bandwidth error. Its larger high-wavenumber differentiation error supplies numerical attenuation close to the cutoff. This should not be interpreted as resolution of the missing scales. The grid is under-resolved for all the methods according to this criterion, and E6 is only the least inaccurate of the tested calculations by the present bandwidth measure.
 At $k_{\max}l_\eta=1.35$ and $1.52$, where the dissipative length is represented but the calculation is not well resolved, C6 clearly gives the largest bandwidth. It retains approximately $1.4$--$1.6$ times as many shells as E6, while the pseudospectral method gives about $1.3$ times as many. In this range, the pseudospectral spectrum develops the cutoff pile-up shown in \cref{fig:baseline,sec:padding}. C6 also underestimates the derivative near Nyquist, since $k^*<k$, but less strongly than E6. Its spectrum consequently falls below rather than above the reference near the cutoff.
-The distinction between C6 and pseudospectral differentiation becomes small around $k_{\max}l_\eta\simeq2$. At $1.83$ and $2.01$ their $K_{10}$ values differ by less than $4,%$, and the leading method changes between the two cases. Padding affects which method is nominally ahead at $2.01$, but not the overall regime.
-For $k_{\max}l_\eta=2.50$--$5.01$, the pseudospectral method is consistently superior by the bandwidth criterion. It retains $1.55$--$1.73$ times the number of E6 shells and reaches $92$--$98,%$ of the Nyquist range. C6 remains at $1.30$--$1.42$ times the E6 bandwidth. The difference between spectral and compact differentiation in these cases is 15--53 shells, much larger than the uncertainty associated with the two high-resolution references.
-The transition between these ranges occurs near the resolution thresholds reported by Lunasin et al.~\cite{lunasin2007}. Using their value of $k_{\max}$ would lower the present abscissae by approximately $6,%$. The ordering itself is not affected by this rescaling. With the present definition, the first transition lies between $0.92$ and $1.35$, while the compact--spectral transition lies broadly between about $1.5$ and $2.5$. Ten points are insufficient to locate either boundary more precisely, and these values were identified from the same cases used to display the organization; they should not be treated as independently validated prediction limits.
+The distinction between C6 and pseudospectral differentiation becomes small around $k_{\max}l_\eta\simeq2$. At $1.83$ and $2.01$ their $K_{10}$ values differ by less than $4\,\%$, and the leading method changes between the two cases. Padding affects which method is nominally ahead at $2.01$, but not the overall regime.
+For $k_{\max}l_\eta=2.50$--$5.01$, the pseudospectral method is consistently superior by the bandwidth criterion. It retains $1.55$--$1.73$ times the number of E6 shells and reaches $92$--$98\,\%$ of the Nyquist range. C6 remains at $1.30$--$1.42$ times the E6 bandwidth. The difference between spectral and compact differentiation in these cases is 15--53 shells, much larger than the uncertainty associated with the two high-resolution references.
+The transition between these ranges occurs near the resolution thresholds reported by Lunasin et al.~\cite{lunasin2007}. Using their value of $k_{\max}$ would lower the present abscissae by approximately $6\,\%$. The ordering itself is not affected by this rescaling. With the present definition, the first transition lies between $0.92$ and $1.35$, while the compact--spectral transition lies broadly between about $1.5$ and $2.5$. Ten points are insufficient to locate either boundary more precisely, and these values were identified from the same cases used to display the organization; they should not be treated as independently validated prediction limits.
 The cutoff ratio $\chi$ provides a less complete description of the same behavior. It approximately separates the regimes, but the ordering is not monotonic. In particular, the cases at $\chi=2.0\times10^{-7}$ and $2.3\times10^{-7}$ exchange the compact and spectral ordering, as do those at $9.0\times10^{-8}$ and $1.6\times10^{-6}$. The 2/3 method never provides the largest bandwidth because its usable range is limited by construction to two thirds of Nyquist. Its spectrum also accumulates energy immediately below that reduced cutoff.
 \subsection{Effect of $3/2$ dealiasing}
 \label{sec:padding}
@@ -230,11 +230,11 @@ The remaining pile-up is consistent with an effect of spectral truncation. If en
 \centering\small
 \begin{tabular}{lcccccc}
 \toprule
-ms per GPU step & E6 (sparse) & E6, C6, S (Fourier) & S${2/3}$ & S${3/2}$ & C6, banded sparse \
+ms per GPU step & E6 (sparse) & E6, C6, S (Fourier) & S${2/3}$ & S${3/2}$ & C6, banded sparse \\
 \midrule
-$256^2$ & 3.6 & 4.8 & 5.0 & 7.7 & 66 \
-$512^2$ & 12.8 & 17.7 & 18.4 & 31.5 & 269 \
-$1024^2$ & 51.8 & 78.5 & 82.0 & -- & -- \
+$256^2$ & 3.6 & 4.8 & 5.0 & 7.7 & 66 \\
+$512^2$ & 12.8 & 17.7 & 18.4 & 31.5 & 269 \\
+$1024^2$ & 51.8 & 78.5 & 82.0 & -- & -- \\
 \bottomrule
 \end{tabular}
 \caption{GPU time per step for decaying turbulence using the skew-symmetric nonlinear form and RK4. E6 is fastest as a sparse seven-point stencil. E6, C6 and S have the same cost when all are applied through Fourier symbols. The exact banded-circulant C6 implementation, with 78 and 45 entries per row, is approximately 15 times more expensive than the Fourier form. The $3/2$ treatment costs $1.85$ times the unpadded spectral step because five transforms are performed on grids of size $(3n/2)^2$ for each nonlinear evaluation.}
@@ -243,13 +243,13 @@ $1024^2$ & 51.8 & 78.5 & 82.0 & -- & -- \
 The raw step times are given in \cref{tab:time}. When implemented through Fourier symbols, E6, C6 and S require essentially the same work per step. The sparse seven-point E6 implementation is about $1/1.4$ of this cost. The methods also differ in the maximum stable time step and in the spectral range obtained at a given $n$, so their ranking changes when cost is measured at equal effective bandwidth.
 For $k_{\max}l_\eta\lesssim1$, E6 remains the least expensive of the tested under-resolved calculations. The corresponding equal-bandwidth estimates for C6 are $1.9$--$3.1$ times the E6 cost; those for S are $3.4$--$4.9$. Between approximately $k_{\max}l_\eta=1$ and $2.5$, C6 gives the lowest cost, at $0.44$--$0.74$ of E6, while S ranges from $0.64$ to $1.40$. In the best-resolved cases, $k_{\max}l_\eta\gtrsim2.5$, pseudospectral differentiation becomes the least expensive at equal bandwidth, with ratios of $0.54$--$0.76$. C6 remains competitive, at $0.69$--$0.81$.
 Neither dealiased spectral variant is the cheapest by this metric. The 2/3 calculation costs between $1.3$ and $11$ times the equivalent-bandwidth E6 estimate. Padding retains the full pseudospectral range but increases each step by a factor of $1.85$. Consequently S${3/2}$ costs $1.00$--$1.31$ times E6 for $k{\max}l_\eta\ge2$ and approximately $2$--$9$ times E6 below this range. Even so, S${3/2}$ remains cheaper than S${2/3}$ at equal bandwidth in all cases, consistent with the results of Sinhababu and Ayyalasomayajula~\cite{sinhababu2021}. The quoted padded and unpadded timings, $31.5$ and $17.0,$ms on $512^2$, were obtained from the same build.
-Where the higher-resolution schemes provide a cost advantage, the gains are generally of order tens of percent rather than orders of magnitude. Their additional resolved range is partly offset by a smaller allowable time step: approximately $20,%$ smaller for C6 and $50,%$ smaller for S relative to E6. These ratios apply to the skew-symmetric nonlinear form. Other formulations can alter the stability restriction; Raeth and Hallatschek~\cite{raeth2024}, for example, obtained a considerably tighter limit for spectral-like differentiation with an Arakawa Jacobian. All timings used here come from the same build, including a rerun of the baseline.
+Where the higher-resolution schemes provide a cost advantage, the gains are generally of order tens of percent rather than orders of magnitude. Their additional resolved range is partly offset by a smaller allowable time step: approximately $20\,\%$ smaller for C6 and $50\,\%$ smaller for S relative to E6. These ratios apply to the skew-symmetric nonlinear form. Other formulations can alter the stability restriction; Raeth and Hallatschek~\cite{raeth2024}, for example, obtained a considerably tighter limit for spectral-like differentiation with an Arakawa Jacobian. All timings used here come from the same build, including a rerun of the baseline.
 \subsection{Forced turbulence}
 \label{sec:forced}
-The forced cases are evaluated through time-averaged statistics because independently forced realizations decorrelate. Over the averaging intervals used here, the realized enstrophy input from the 28 forced modes varies by approximately $\pm8,%$. Differences of the same order cannot be separated reliably from this sampling variability.
+The forced cases are evaluated through time-averaged statistics because independently forced realizations decorrelate. Over the averaging intervals used here, the realized enstrophy input from the 28 forced modes varies by approximately $\pm8\,\%$. Differences of the same order cannot be separated reliably from this sampling variability.
 For the hyperviscous case, all four methods give practically the same direct-cascade behavior. The measured spectral slopes range from $-3.44$ to $-3.48$, and the enstrophy-flux plateau ends at $K=66$ for every method, where hyperviscous dissipation becomes important. The plateau levels are 41.9, 43.0, 46.2 and 50.1 for E6, C6, S and S$_{2/3}$, respectively. Their variation is comparable to that of the total enstrophy removed in each realization and is therefore associated with the realized forcing input rather than with a measurable change of cascade dynamics. With dissipation confined close to the cutoff, no clear scheme dependence is observed in the inertial range.
-The ordinary-viscosity case gives the same general conclusion. For $\Rey=10^5$ on $256^2$, the reference gives $k_{\max}l_\eta=1.33$ from the time-mean enstrophy dissipation and $\chi=2.8\times10^{-7}$. This lies in the range where C6 leads the decaying calculations. Each forced spectrum is normalized by its own enstrophy flux according to $E\propto\Pi_Z^{2/3}$ in order to remove the variation in realized input. The nominal $10,%$ bandwidths relative to the $768^2$ reference are $K=100$ for E6, 89 for S, 84 for C6 and 42 for S${2/3}$. Thus E6 has the largest nominal $K{10}$, unlike the decaying cases at similar $k_{\max}l_\eta$, but the remaining differences away from the cutoff are as large as $8,%$ and fall within the sampling uncertainty.
-The principal differences are again concentrated near the end of the spectrum. At $K=120$, E6 has fallen to $0.64$ of the reference. The pseudospectral spectrum instead reaches $1.53$ and rises to about twice the reference at the Nyquist shell. C6 remains between these limits, with a ratio of $1.00$ at $K=120$ and an overshoot no larger than $17,%$ immediately below it, while S$_{2/3}$ terminates earlier. The close agreement of the inertial-range statistics is consistent with the forced-turbulence comparison reported by Rodhiya et al.~\cite{rodhiya2026}.
+The ordinary-viscosity case gives the same general conclusion. For $\Rey=10^5$ on $256^2$, the reference gives $k_{\max}l_\eta=1.33$ from the time-mean enstrophy dissipation and $\chi=2.8\times10^{-7}$. This lies in the range where C6 leads the decaying calculations. Each forced spectrum is normalized by its own enstrophy flux according to $E\propto\Pi_Z^{2/3}$ in order to remove the variation in realized input. The nominal $10\,\%$ bandwidths relative to the $768^2$ reference are $K=100$ for E6, 89 for S, 84 for C6 and 42 for S${2/3}$. Thus E6 has the largest nominal $K{10}$, unlike the decaying cases at similar $k_{\max}l_\eta$, but the remaining differences away from the cutoff are as large as $8\,\%$ and fall within the sampling uncertainty.
+The principal differences are again concentrated near the end of the spectrum. At $K=120$, E6 has fallen to $0.64$ of the reference. The pseudospectral spectrum instead reaches $1.53$ and rises to about twice the reference at the Nyquist shell. C6 remains between these limits, with a ratio of $1.00$ at $K=120$ and an overshoot no larger than $17\,\%$ immediately below it, while S$_{2/3}$ terminates earlier. The close agreement of the inertial-range statistics is consistent with the forced-turbulence comparison reported by Rodhiya et al.~\cite{rodhiya2026}.
 % =============================================================================
 \section{Discussion}
 % =============================================================================
@@ -259,7 +259,7 @@ The result also clarifies the apparent difference from San and Staples~\cite{san
 The padded calculations address the origin of the pseudospectral cutoff accumulation separately. San and Staples observed high-wavenumber accumulation in non-conservative finite differences and associated it with aliasing. In the present calculations, the skew-symmetric form conserves enstrophy for every scheme. The finite-difference spectra fall below the reference near the cutoff, while the pseudospectral excess remains after $3/2$ padding. Quadratic aliasing of the nonlinear term is therefore not the cause of this pile-up for the formulation examined here. The remaining behavior is compatible with earlier descriptions based on spectral truncation~\cite{ishihara2018,bardos2015,frisch2008} and with dispersion-induced accumulation reported by Yalla et al.~\cite{yalla2021}, but the present tests do not establish which of these mechanisms is responsible.
 The resulting scheme ordering has a simple numerical interpretation. When the grid does not resolve the enstrophy-dissipation scale, E6 is the least inaccurate method according to the present spectral-bandwidth measure. Its modified wavenumber substantially underestimates the exact derivative near the cutoff and supplies numerical attenuation. This behavior is useful only in the comparative sense: it does not recover absent scales and is not a replacement for increasing resolution. Vreman et al.~\cite{vreman1996} observed a related advantage of lower-order discretization under coarse filtering.
 Once the dissipative scale is represented but is still close to the cutoff, C6 gives the best compromise. It extends the useful modified-wavenumber range substantially beyond E6 without retaining the exact high-wavenumber derivative of the pseudospectral method. This is the range $1\lesssim k_{\max}l_\eta\lesssim2$ in the present calculations, and corresponds closely to the marginal-resolution regime for which compact schemes were developed and applied by Laizet and Lamballais~\cite{laizet2009}. When the grid is well resolved, the exact spectral derivative becomes advantageous and the pseudospectral method gives the largest bandwidth at the lowest estimated cost.
-Full dealiasing does not improve this cost balance for the cases tested. The 2/3 rule obtains exact conservation at the price of removing one third of the spectral interval. Padding retains the interval but raises the step cost by $85,%$, without materially changing the bandwidth in these runs. Other spectral treatments may give a different balance. Phase-shift dealiasing~\cite{lambert2026}, high-order Fourier filtering~\cite{hou2007} and selective filtering~\cite{yamamoto2026} were not examined here.
+Full dealiasing does not improve this cost balance for the cases tested. The 2/3 rule obtains exact conservation at the price of removing one third of the spectral interval. Padding retains the interval but raises the step cost by $85\,\%$, without materially changing the bandwidth in these runs. Other spectral treatments may give a different balance. Phase-shift dealiasing~\cite{lambert2026}, high-order Fourier filtering~\cite{hou2007} and selective filtering~\cite{yamamoto2026} were not examined here.
 The organization by $k_{\max}l_\eta$ should not be interpreted as a general law for turbulent-flow statistics. It is obtained for transient decaying turbulence before the solutions decorrelate. The forced viscous case provides a direct limitation: at $k_{\max}l_\eta=1.33$, where C6 leads the decaying cases, E6 has the largest nominal $K_{10}$, but the differences are no larger than the sampling scatter and the inertial-range statistics do not distinguish the methods. The accuracy measure itself is also specific. Spectral bandwidth emphasizes agreement in $E(k)$; quantities such as structure functions, vortex statistics or higher-order moments may rank the schemes differently.
 The use of Fourier symbols also provides a useful experimental control. On a periodic grid, finite-difference operators can be applied through the same spectral machinery as an exact derivative. The scheme then enters as a table of symbols, while the Poisson operator, diagnostics and transport terms remain consistent with that table. In particular, this avoids comparing a transport discretization with a Poisson operator representing a different numerical Laplacian. The approach is related to the mixed physical/spectral treatment of Laizet and Lamballais~\cite{laizet2009}. It also reduces the cost of the compact method considerably in the present periodic problem: the Fourier implementation is about 15 times faster than the exact banded circulant. This advantage is specific to periodic grids. For non-periodic or distributed problems, compact schemes require tridiagonal solutions, whose efficient implementation on CPUs and GPUs is a separate problem~\cite{akkurt2025}.
 \paragraph{Limitations.}
@@ -273,7 +273,9 @@ For $k_{\max}l_\eta\lesssim1$, the grid is under-resolved by the adopted criteri
 The pseudospectral pile-up observed near the cutoff is not removed by $3/2$ padding. The padded and unpadded calculations give nearly the same bandwidth and high-wavenumber excess, while padding increases the step cost by a factor of $1.85$. For the skew-symmetric nonlinear form used here, the compact--spectral crossover is therefore not an artifact of quadratic aliasing of the nonlinear term. The remaining accumulation is compatible with truncation effects described in previous work, but its detailed mechanism was not established.
 The regime map applies to the transient decaying cases considered and not to all turbulent statistics. In the forced calculation at $k_{\max}l_\eta=1.33$, the methods are indistinguishable in the inertial range within the forcing scatter and differ mainly near the cutoff. Further work is required to determine whether $l_\eta$ can be estimated reliably enough a priori to use the map for scheme selection, to place the transition values with additional cases, to examine other nonlinear formulations and to determine whether the same ordering occurs in three-dimensional turbulence.
 \paragraph{Code and data availability.}
-The cnavier repository (\url{https://github.com/leo-aa88/cnavier}) contains the solver, the analysis scripts (\code{tools/compare_schemes.py}, \code{tools/cascade.py} and \code{tools/modified_wavenumber.py}) and the command lines used for the simulations. A more detailed description of the implementation and verification tests is provided in \code{docs/cnavier_methodology.pdf}.
+\begin{sloppypar}
+The cnavier repository (\url{https://github.com/leo-aa88/cnavier}) contains the solver, the analysis scripts (\code{tools/compare\_schemes.py}, \code{tools/cascade.py} and \code{tools/modified\_wavenumber.py}) and the command lines used for the simulations. A more detailed description of the implementation and verification tests is provided in \code{docs/cnavier\_methodology.pdf}.
+\end{sloppypar}
 % =============================================================================
 \begin{thebibliography}{99}
 % =============================================================================
@@ -296,13 +298,13 @@ P.~Moin, K.~Mahesh, Direct numerical simulation: a tool in turbulence research, 
 \bibitem{san2012}
 O.~San, A.~E. Staples, High-order methods for decaying two-dimensional homogeneous isotropic turbulence, \emph{Comput. Fluids} 63 (2012) 105--127, doi:10.1016/j.compfluid.2012.04.006.
 \bibitem{rodhiya2026}
-A.~Rodhiya, S.~Bhattacharya, M.~K. Verma, Relative accuracy of turbulence simulations using pseudo-spectral and finite difference solvers, \emph{S=adhan=a} 51 (2026) 38, doi:10.1007/s12046-025-03035-y.
+A.~Rodhiya, S.~Bhattacharya, M.~K. Verma, Relative accuracy of turbulence simulations using pseudo-spectral and finite difference solvers, \emph{S\=adhan\=a} 51 (2026) 38, doi:10.1007/s12046-025-03035-y.
 \bibitem{orszag1971}
 S.~A. Orszag, On the elimination of aliasing in finite-difference schemes by filtering high-wavenumber components, \emph{J. Atmos. Sci.} 28 (1971) 1074, doi:10.1175/1520-0469(1971)028<1074:OTEOAI>2.0.CO;2.
 \bibitem{canuto2006}
 C.~Canuto, M.~Y. Hussaini, A.~Quarteroni, T.~A. Zang, \emph{Spectral Methods: Fundamentals in Single Domains}, Springer, Berlin, 2006, doi:10.1007/978-3-540-30726-6.
 \bibitem{fedioun2001}
-I.~Fedioun, N.~Lardjane, I.~G"okalp, Revisiting numerical errors in direct and large eddy simulations of turbulence: physical and spectral spaces analysis, \emph{J. Comput. Phys.} 174 (2001) 816--851, doi:10.1006/jcph.2001.6939.
+I.~Fedioun, N.~Lardjane, I.~G\"okalp, Revisiting numerical errors in direct and large eddy simulations of turbulence: physical and spectral spaces analysis, \emph{J. Comput. Phys.} 174 (2001) 816--851, doi:10.1006/jcph.2001.6939.
 \bibitem{park2004}
 N.~Park, J.~Y. Yoo, H.~Choi, Discretization errors in large eddy simulation: on the suitability of centered and upwind-biased compact difference schemes, \emph{J. Comput. Phys.} 198 (2004) 580--616, doi:10.1016/j.jcp.2004.01.017.
 \bibitem{yalla2021}
@@ -326,13 +328,13 @@ P.~K. Yeung, K.~R. Sreenivasan, S.~B. Pope, Effects of finite spatial and tempor
 \bibitem{lunasin2007}
 E.~Lunasin, S.~Kurien, M.~Taylor, E.~S. Titi, A study of the Navier--Stokes-$\alpha$ model for two-dimensional turbulence, \emph{J. Turbul.} 8 (2007) N30, doi:10.1080/14685240701439403.
 \bibitem{baty2026}
-H.~Baty, Triggering physical plasmoids in forming current sheets: conditions and diagnostics, arXiv:2604.02065 (2026), following J.~M. Garc'ia Morillo, A.~Alexakis, \emph{J. Fluid Mech.} 1007 (2025) R3, doi:10.1017/jfm.2025.109.
+H.~Baty, Triggering physical plasmoids in forming current sheets: conditions and diagnostics, arXiv:2604.02065 (2026), following J.~M. Garc\'ia Morillo, A.~Alexakis, \emph{J. Fluid Mech.} 1007 (2025) R3, doi:10.1017/jfm.2025.109.
 \bibitem{kritsuk2011}
-A.~G. Kritsuk, \AA.~Nordlund, D.~Collins, P.~Padoan, M.~L. Norman, T.~Abel, R.~Banerjee, C.~Federrath, M.~Flock, D.~Lee, P.~S. Li, W.-C. M"uller, R.~Teyssier, S.~D. Ustyugov, C.~Vogel, H.~Xu, Comparing numerical methods for isothermal magnetized supersonic turbulence, \emph{Astrophys. J.} 737 (2011) 13, doi:10.1088/0004-637X/737/1/13.
+A.~G. Kritsuk, \AA.~Nordlund, D.~Collins, P.~Padoan, M.~L. Norman, T.~Abel, R.~Banerjee, C.~Federrath, M.~Flock, D.~Lee, P.~S. Li, W.-C. M\"uller, R.~Teyssier, S.~D. Ustyugov, C.~Vogel, H.~Xu, Comparing numerical methods for isothermal magnetized supersonic turbulence, \emph{Astrophys. J.} 737 (2011) 13, doi:10.1088/0004-637X/737/1/13.
 \bibitem{fontana2020}
 M.~Fontana, O.~P. Bruno, P.~D. Mininni, P.~Dmitruk, Fourier continuation method for incompressible fluids with boundaries, \emph{Comput. Phys. Commun.} 256 (2020) 107482, doi:10.1016/j.cpc.2020.107482.
 \bibitem{cichowlas2005}
-C.~Cichowlas, P.~Bona"iti, F.~Debbasch, M.~Brachet, Effective dissipation and turbulence in spectrally truncated Euler flows, \emph{Phys. Rev. Lett.} 95 (2005) 264502, doi:10.1103/PhysRevLett.95.264502.
+C.~Cichowlas, P.~Bona\"iti, F.~Debbasch, M.~Brachet, Effective dissipation and turbulence in spectrally truncated Euler flows, \emph{Phys. Rev. Lett.} 95 (2005) 264502, doi:10.1103/PhysRevLett.95.264502.
 \bibitem{ray2011}
 S.~S. Ray, U.~Frisch, S.~Nazarenko, T.~Matsumoto, Resonance phenomenon for the Galerkin-truncated Burgers and Euler equations, \emph{Phys. Rev. E} 84 (2011) 016301, doi:10.1103/PhysRevE.84.016301.
 \bibitem{bardos2015}
