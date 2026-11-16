@@ -1368,7 +1368,7 @@ make OPENMP=1 ablation      # what limits the spatial order
 Further checks, each a \code{make} target run by continuous integration:
 \begin{itemize}[leftmargin=2em]
   \item \code{test-cli}: invalid command lines (NaN, garbage after numbers, grids out of range, unstable $\dt$, options that need \code{--geometry polar} or that it refuses, \dots) are refused with exit status 1 and an error message, and write nothing; a crash counts as a failure.
-  \item \code{regression}: 100 steps of the default case against stored results; the steady default case within $0.004$ ($u$) and $0.010$ ($v$) of the Ghia et al.\ data (\cref{sec:ghia}); the periodic Taylor--Green vortex against its exact solution on $32^2$ and $64^2$, at sixth order, and its energy; laminar Kolmogorov flow; the dual cascade of forced turbulence on $64^2$ (flux signs and enstrophy conservation, with \code{tools/cascade.py}); the cylinder at $\Rey=40$ on a coarse polar grid (\cref{sec:polar}); and the steady-state check on a short final interval.  Non-finite values fail.
+  \item \code{regression}: 100 steps of the default case against stored results; the steady default case within $0.004$ ($u$) and $0.010$ ($v$) of the Ghia et al.\ data (\cref{sec:ghia}); the periodic Taylor--Green vortex against its exact solution on $32^2$ and $64^2$, at sixth order, and its energy; laminar Kolmogorov flow; the dual cascade of forced turbulence on $64^2$ (flux signs and enstrophy conservation, with \code{tools/cascade.py}); the cylinder at $\Rey=40$ on a coarse polar grid (\cref{sec:polar}); the steady-state check on a short final interval; and the VTK frames of a polar run.  Non-finite values fail.
   \item \code{test-asan} and \code{valgrind}: the test suite and a short run under AddressSanitizer and UndefinedBehaviorSanitizer, and under valgrind, where any leak, including memory still reachable at exit, fails.
   \item \code{format-check}: the formatting of \code{.clang-format}, which \code{make format} applies.
   \item \code{cppcheck} and \code{tidy}: static analysis (the checks of \code{.clang-tidy}), also over the CUDA and OpenMP branches of the C sources; the CUDA source itself is checked only by its compiler.
@@ -1526,11 +1526,10 @@ For a reproducible numerical experiment, the following workflow is recommended:
 The current architecture makes several research-oriented extensions relatively natural:
 
 \begin{itemize}[leftmargin=2em]
-  \item a consistent fourth- or sixth-order Poisson discretization, solved by an appropriate sparse/direct/iterative method;
-  \item dedicated high-order wall-vorticity formulas;
+  \item a sixth-order Poisson discretization with walls (the compact operator of \cref{sec:compact-poisson} is fourth order), solved by an appropriate sparse/direct/iterative method;
+  \item wall-vorticity formulas beyond third order (Briley's, \cref{eq:briley}, is third);
   \item adaptive timestep selection from advective and diffusive spectral bounds;
-  \item automated steady-state residual monitoring;
-  \item automated Ghia interpolation and error norms in the test suite;
+  \item steady-state residual monitoring in the Cartesian driver (the cylinder run stops on it, \cref{sec:polar});
   \item grid-convergence-index (GCI) reporting;
   \item alternative convection schemes, such as upwind-biased, compact or WENO, and with walls a skew-symmetric form (on periodic grids it is available, \cref{eq:skew});
   \item multigrid for the Poisson equation when boundary conditions or geometries no longer permit a separable sine transform;
@@ -1587,7 +1586,7 @@ The options are listed in \cref{sec:runtime-options}.  At the end the run prints
   \item \code{output/cylinder_history.csv}: $C_D$ with its pressure and friction parts, $L_w/D$, $\theta_s$, $\max|\partial\omega/\partial t|$ over the steps since the previous line, the $C_D$ of the far-field condition, and the area means $E$, $Z$, $P$ (\cref{sec:diagnostics}, with $\mathrm{d}A=r^2\,\mathrm{d}\xi\,\mathrm{d}\theta$);
   \item \code{output/cylinder_surface.csv}: the wall vorticity and wall pressure against $\theta$;
   \item \code{output/cylinder_centreline.csv}: $u_x$ on the symmetry axis, upstream and in the wake;
-  \item VTK structured grids of the vorticity (with the Cartesian velocity) and of the stream function, in Cartesian coordinates and closed at $\theta=2\pi$.
+  \item VTK structured grids of the vorticity (with the Cartesian velocity) and of the stream function, in Cartesian coordinates and closed at $\theta=2\pi$: every \code{--output-interval} steps, and the final state (once, if the last step was not already a frame).
 \end{itemize}
 \end{sloppypar}
 \code{tools/cylinder_validate.py} runs series of grids and outer radii (\code{run}), tabulates them against the reference with observed orders and Richardson extrapolation (\code{table}), and plots the centreline velocity and the wall vorticity (\code{plot}).
@@ -1647,9 +1646,9 @@ The free-stream boundary gives $C_D$ $1.4\%$ high and accelerates the centreline
 
 \texttt{cnavier} implements a mathematically clean and computationally compact route to incompressible flow in two dimensions: evolve vorticity, invert a scalar Poisson equation, and differentiate a streamfunction to recover velocity.  The code is particularly transparent because the spatial derivatives are explicit finite-difference matrices, the two-dimensional operators are tensor products, and both CPU and GPU backends expose the same algorithmic sequence.
 
-The strongest parts of the present methodology are the exact discrete streamfunction enforcement of incompressibility, the direct DST-based Poisson option, reusable sparse operators, RK4 stage consistency, and unusually thorough CPU--GPU equivalence tests for a compact CFD code.  The main scientific qualifications are equally clear: high-order accuracy applies primarily to interior transport derivatives; boundary closures are lower order; the streamfunction Poisson operator is second order; and quantitative benchmark/grid-convergence validation is not yet automated.
+The strongest parts of the present methodology are the exact discrete streamfunction enforcement of incompressibility, the direct DST-based Poisson option, reusable sparse operators, RK4 stage consistency, and unusually thorough CPU--GPU equivalence tests for a compact CFD code.  The main scientific qualifications are equally clear: high-order accuracy applies primarily to interior transport derivatives.  By default the boundary closures are lower order and the streamfunction Poisson operator is second order, which together hold the method to second order with walls (\cref{sec:mms}); the opt-in compact Poisson operator and third-order wall closure raise it to four (\cref{sec:wall-order}).  The regression tests check the cavity against Ghia et al.\ and the cylinder against Gautier et al.\ automatically, while the convergence studies are \code{make} targets run by hand, not by continuous integration.
 
-For educational CFD, numerical experimentation, backend comparisons, and as a foundation for further research-oriented development, these characteristics make the project both useful and unusually auditable.  For publication-quality quantitative claims, the next step is not to complicate the code immediately, but to formalize its grid convention and add systematic temporal/spatial convergence and benchmark-error measurements.
+For educational CFD, numerical experimentation, backend comparisons, and as a foundation for further research-oriented development, these characteristics make the project both useful and unusually auditable.  For publication-quality quantitative claims, the convergence studies and benchmark comparisons of \cref{sec:mms,sec:ghia,sec:polar} are the starting point: a result should come with its observed orders and its distance from a reference.
 
 % =============================================================================
 \appendix

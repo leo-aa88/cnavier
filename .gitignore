@@ -64,3 +64,11 @@ output/integrals.csv
 output/spectrum-*.csv
 __pycache__/
 runs/
+
+# LaTeX build files of the manual and the paper
+docs/**/*.aux
+docs/**/*.fdb_latexmk
+docs/**/*.fls
+docs/**/*.log
+docs/**/*.out
+docs/**/*.synctex.gz

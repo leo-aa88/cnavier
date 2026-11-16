@@ -126,6 +126,11 @@ int cylinder_run(const cylinder_options *o)
     // flow and the wall closure the vortex sheet on the cylinder
     mtrx *u, *v, *w;
     mtrx w_prev = initm(nr, nt);
+    // VTK frames: copies of the velocity with the wall velocity imposed, so
+    // that the solver's own arrays are not written to; the step of the last
+    // frame (0: none)
+    mtrx u_frame = initm(nr, nt), v_frame = initm(nr, nt);
+    int last_frame = 0;
     backend_fields(solver, &u, &v, &w);
 
     FILE *hist = open_output("./output/cylinder_history.csv");
@@ -142,8 +147,17 @@ int cylinder_run(const cylinder_options *o)
         steps = t;
         if (o->output_interval > 0 && t % o->output_interval == 0)
         {
-            backend_fields(solver, NULL, NULL, &w);
-            printvtk_polar(&g, w, NULL, NULL, "vorticity");
+            // The vorticity with the velocity, and the stream function, as
+            // the final state is written
+            const mtrx *psi_frame;
+            backend_fields(solver, &u, &v, &w);
+            mtrxcpy(u_frame, *u);
+            mtrxcpy(v_frame, *v);
+            polar_apply_bc(&g, u_frame, v_frame);
+            printvtk_polar(&g, w, &u_frame, &v_frame, "vorticity");
+            psi_frame = backend_psi(solver);
+            if (psi_frame) printvtk_polar(&g, psi_frame, NULL, NULL, "streamfunction");
+            last_frame = t;
         }
         if (t % o->diag_interval != 0 && t != it_max) continue;
 
@@ -156,6 +170,8 @@ int cylinder_run(const cylinder_options *o)
             printf("** Error: the solution is not finite at step %d (t = %g); reduce dt **\n", t, t * dt);
             fclose(hist);
             freem(&w_prev);
+            freem(&u_frame);
+            freem(&v_frame);
             backend_free(solver);
             polar_grid_free(&g);
             return 1;
@@ -227,8 +243,12 @@ int cylinder_run(const cylinder_options *o)
     for (i = 0; i < nr; i++)
         fprintf(fc, "%.12g,%.12g\n", g.r[i], MAt(*v, i, 0)); // the wake, theta = 0
     fclose(fc);
-    printvtk_polar(&g, w, u, v, "vorticity");
-    if (psi) printvtk_polar(&g, psi, NULL, NULL, "streamfunction");
+    // The final state, unless the last step already wrote it as a frame
+    if (last_frame != steps)
+    {
+        printvtk_polar(&g, w, u, v, "vorticity");
+        if (psi) printvtk_polar(&g, psi, NULL, NULL, "streamfunction");
+    }
 
     printf("\n%s at t = %g after %d steps (max |dw/dt| = %.3e)\n", steady ? "Steady" : "Stopped", steps * dt, steps,
            residual);
@@ -252,6 +272,8 @@ int cylinder_run(const cylinder_options *o)
 
     free(p_wall);
     freem(&w_prev);
+    freem(&u_frame);
+    freem(&v_frame);
     backend_free(solver);
     freesm(DX);
     freesm(DY);

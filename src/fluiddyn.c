@@ -187,8 +187,10 @@ void rk4_free(rk4_ctx *ctx)
 // Does w hold, wherever the Poisson solve reads it, the values ctx->psi was
 // solved for? The FFT solvers read all of w on a periodic grid and its
 // interior with walls (the compact right-hand side extrapolates its wall
-// values from the interior). The iterative solvers start from the previous
-// psi, so a second solve may converge further: never skipped for them.
+// values from the interior). The iterative solvers are never skipped. They
+// start from zero (poisson(), poisson_SOR() and the GPU's red-black solver
+// all clear psi first), so a repeated solve would give the same psi; the
+// reuse is just not applied to them.
 static int psi_is_current(mtrx w, const rk4_ctx *ctx)
 {
     int i, nx = ctx->cfg.nx, ny = ctx->cfg.ny, edge = ctx->cfg.periodic ? 0 : 1;
