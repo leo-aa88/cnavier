@@ -154,3 +154,20 @@ else
     echo "  [FAIL] expected 'Stopped at t = 10.8181 after 251 steps', got: $(grep -E '^(Steady|Stopped)' unsteady.txt)"
     exit 1
 fi
+
+# VTK frames of a polar run: every frame has the velocity and a stream
+# function frame, and the final state is not written twice when the last step
+# is a frame (10 steps, a frame every 5: two of each)
+echo "Regression: cylinder VTK frames"
+rm -f output/vorticity-1-*.vtk output/streamfunction-1-*.vtk
+"$bin" --geometry polar --ntheta 32 --r-inf 5 --dt 0.0431 --tf 0.432 --output-interval 5 --diag-interval 5 \
+    > frames.txt
+nw=$(ls output/vorticity-1-*.vtk | wc -l)
+ns=$(ls output/streamfunction-1-*.vtk | wc -l)
+nv=$(grep -l '^VECTORS velocity' output/vorticity-1-*.vtk | wc -l)
+if [ "$nw" -eq 2 ] && [ "$ns" -eq 2 ] && [ "$nv" -eq 2 ]; then
+    echo "  [ ok ] 2 vorticity frames, each with the velocity, and 2 stream function frames"
+else
+    echo "  [FAIL] $nw vorticity frames ($nv with the velocity), $ns stream function frames; expected 2, 2, 2"
+    exit 1
+fi
