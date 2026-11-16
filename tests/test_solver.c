@@ -185,6 +185,13 @@ static void fill_pseudo_random(double *x, int n, unsigned int seed)
     }
 }
 
+// fmax() ignores a NaN argument, so an error accumulated with it would read 0
+// for a field that blew up; this propagates the NaN, which check() fails
+static double nanmax(double a, double b)
+{
+    return isnan(a) || isnan(b) ? NAN : fmax(a, b);
+}
+
 static double max_abs(const double *x, int n)
 {
     int i;
@@ -372,7 +379,7 @@ static double row_diff(smtrx S, int r, int count, const int *cols, const double 
     for (k = 0; k < count; k++)
     {
         if (S.col_idx[S.row_ptr[r] + k] != cols[k]) return INFINITY;
-        d = fmax(d, fabs(S.values[S.row_ptr[r] + k] - vals[k]));
+        d = nanmax(d, fabs(S.values[S.row_ptr[r] + k] - vals[k]));
     }
     return d;
 }
@@ -402,12 +409,12 @@ static void test_finitediff_rows(void)
         double v8[] = {-0.5 * h, 0.5 * h};
         int c9[] = {8, 9};
         double v9[] = {-h, h};
-        worst = fmax(worst, row_diff(d1, 0, 2, c0, v0));
-        worst = fmax(worst, row_diff(d1, 1, 2, c1, v1));
-        worst = fmax(worst, row_diff(d1, 2, 4, c2, v2));
-        worst = fmax(worst, row_diff(d1, 5, 6, c5, v5));
-        worst = fmax(worst, row_diff(d1, 8, 2, c8, v8));
-        worst = fmax(worst, row_diff(d1, 9, 2, c9, v9));
+        worst = nanmax(worst, row_diff(d1, 0, 2, c0, v0));
+        worst = nanmax(worst, row_diff(d1, 1, 2, c1, v1));
+        worst = nanmax(worst, row_diff(d1, 2, 4, c2, v2));
+        worst = nanmax(worst, row_diff(d1, 5, 6, c5, v5));
+        worst = nanmax(worst, row_diff(d1, 8, 2, c8, v8));
+        worst = nanmax(worst, row_diff(d1, 9, 2, c9, v9));
     }
     check("first derivative, order 6: rows 0, 1, 2, 5, 8, 9", worst, 1E-14);
 
@@ -422,10 +429,10 @@ static void test_finitediff_rows(void)
                        3.0 / 2.0 * h2, -3.0 / 20.0 * h2, 1.0 / 90.0 * h2};
         int c9[] = {6, 7, 8, 9};
         double v9[] = {-1 * h2, 4 * h2, -5 * h2, 2 * h2};
-        worst = fmax(worst, row_diff(d2, 0, 4, c0, v0));
-        worst = fmax(worst, row_diff(d2, 1, 3, c1, v1));
-        worst = fmax(worst, row_diff(d2, 5, 7, c5, v5));
-        worst = fmax(worst, row_diff(d2, 9, 4, c9, v9));
+        worst = nanmax(worst, row_diff(d2, 0, 4, c0, v0));
+        worst = nanmax(worst, row_diff(d2, 1, 3, c1, v1));
+        worst = nanmax(worst, row_diff(d2, 5, 7, c5, v5));
+        worst = nanmax(worst, row_diff(d2, 9, 4, c9, v9));
     }
     check("second derivative, order 6: rows 0, 1, 5, 9", worst, 1E-12);
 
@@ -653,24 +660,24 @@ static void test_compact_operators(void)
             }
             spmv(d1, f, d);
             for (i = 0; i < n; i++)
-                e1 = fmax(e1, fabs(d[i] + ks * g[i]));
+                e1 = nanmax(e1, fabs(d[i] + ks * g[i]));
             spmv(d1, g, d);
             for (i = 0; i < n; i++)
-                e1 = fmax(e1, fabs(d[i] - ks * f[i]));
+                e1 = nanmax(e1, fabs(d[i] - ks * f[i]));
             spmv(d2, f, d);
             for (i = 0; i < n; i++)
-                e2 = fmax(e2, fabs(d[i] - q * f[i]));
-            s1 = fmax(s1, fabs(ks));
-            s2 = fmax(s2, fabs(q));
+                e2 = nanmax(e2, fabs(d[i] - q * f[i]));
+            s1 = nanmax(s1, fabs(ks));
+            s2 = nanmax(s2, fabs(q));
         }
         for (i = 0; i < n; i++)
             f[i] = 1.0;
         spmv(d1, f, d);
         for (i = 0; i < n; i++)
-            ones = fmax(ones, fabs(d[i]) * dx);
+            ones = nanmax(ones, fabs(d[i]) * dx);
         spmv(d2, f, d);
         for (i = 0; i < n; i++)
-            ones = fmax(ones, fabs(d[i]) * dx * dx);
+            ones = nanmax(ones, fabs(d[i]) * dx * dx);
         // Antisymmetry of the first derivative: entry (0, j) = -(0, n - j)
         for (k = d1.row_ptr[0]; k < d1.row_ptr[1]; k++)
         {
@@ -678,7 +685,7 @@ static void test_compact_operators(void)
             double mirror = 0.0;
             for (m = d1.row_ptr[0]; m < d1.row_ptr[1]; m++)
                 if (d1.col_idx[m] == (n - j) % n) mirror = d1.values[m];
-            asym = fmax(asym, fabs(d1.values[k] + mirror) * dx);
+            asym = nanmax(asym, fabs(d1.values[k] + mirror) * dx);
         }
         w1 = d1.row_ptr[1] - d1.row_ptr[0];
         w2 = d2.row_ptr[1] - d2.row_ptr[0];
@@ -712,18 +719,18 @@ static void test_periodic_operators(void)
                 f[i] = sin(2.0 * PI * i * dx);
             spmv(d1, f, d);
             for (i = 0; i < n; i++)
-                e1 = fmax(e1, fabs(d[i] - 2.0 * PI * cos(2.0 * PI * i * dx)));
+                e1 = nanmax(e1, fabs(d[i] - 2.0 * PI * cos(2.0 * PI * i * dx)));
             spmv(d2, f, d);
             for (i = 0; i < n; i++)
-                e2 = fmax(e2, fabs(d[i] + 4.0 * PI * PI * f[i]));
+                e2 = nanmax(e2, fabs(d[i] + 4.0 * PI * PI * f[i]));
             for (i = 0; i < n; i++)
                 f[i] = 1.0;
             spmv(d1, f, d);
             for (i = 0; i < n; i++)
-                ones = fmax(ones, fabs(d[i]));
+                ones = nanmax(ones, fabs(d[i]));
             spmv(d2, f, d);
             for (i = 0; i < n; i++)
-                ones = fmax(ones, fabs(d[i]) * dx);
+                ones = nanmax(ones, fabs(d[i]) * dx);
             err[n == 64][0] = e1;
             err[n == 64][1] = e2;
             if (n == 64)
@@ -769,8 +776,8 @@ static void test_periodic_poisson(int nx, int ny, int order)
     mean = 0.0;
     for (k = 0; k < N; k++)
     {
-        res = fmax(res, fabs(a[k] + b[k] - f.M[k]));
-        scale = fmax(scale, fabs(f.M[k]));
+        res = nanmax(res, fabs(a[k] + b[k] - f.M[k]));
+        scale = nanmax(scale, fabs(f.M[k]));
         mean += psi.M[k] / N;
     }
     printf("Unit: periodic Poisson solver, %dx%d grid, order %d\n", nx, ny, order);
@@ -861,7 +868,7 @@ static double compact_poisson_error(int nx, int ny, int order)
     poisson_FFT_order(fs, f, u, dx, dy, order);
     for (i = 0; i < ny; i++)
         for (j = 0; j < nx; j++)
-            err = fmax(err, fabs(MAt(u, i, j) - sin(PI * j * dx) * exp(j * dx) * sin(PI * i * dy) * exp(2.0 * i * dy)));
+            err = nanmax(err, fabs(MAt(u, i, j) - sin(PI * j * dx) * exp(j * dx) * sin(PI * i * dy) * exp(2.0 * i * dy)));
     fft_cleanup(fs);
     freem(&f);
     freem(&u);
@@ -909,9 +916,9 @@ static void test_velocity_rows(void)
             {
                 double exact = p == 0 ? 0.0 : p * pow(i * dx - 0.3, p - 1);
                 if (i <= 1 || i >= n - 2)
-                    worst = fmax(worst, fabs(d[i] - exact));
+                    worst = nanmax(worst, fabs(d[i] - exact));
                 else
-                    inner = fmax(inner, fabs(d[i] - d0[i]));
+                    inner = nanmax(inner, fabs(d[i] - d0[i]));
             }
         }
         freesm(A);
@@ -1028,8 +1035,8 @@ static void budget_run(int n, double out[4])
     {
         sE += E[k];
         sZ += Z[k];
-        mE = fmax(mE, fabs(PE[k]));
-        mZ = fmax(mZ, fabs(PZ[k]));
+        mE = nanmax(mE, fabs(PE[k]));
+        mZ = nanmax(mZ, fabs(PZ[k]));
     }
     step(p.w, p.u, p.v, &p.ctx);
     flow_integrals f1 = compute_integrals(&p.cfg, p.u, p.v, p.w, p.ctx.k1.M, p.ctx.k2.M);
@@ -1093,8 +1100,8 @@ static void flux_consistency(int nx, int ny, int order, double out[2])
     spectra_compute(sp, p.u, p.v, p.w, NULL, NULL, PE, PZ);
     for (k = 0; k < B; k++)
     {
-        mE = fmax(mE, fabs(PE[k]));
-        mZ = fmax(mZ, fabs(PZ[k]));
+        mE = nanmax(mE, fabs(PE[k]));
+        mZ = nanmax(mZ, fabs(PZ[k]));
     }
     // The flux through the last shell is minus the net transfer
     out[0] = fabs(rE + PE[B - 1]) / mE;
@@ -1224,7 +1231,7 @@ static double enstrophy_defect(int nx, int ny, int order, int advection)
     PZ = (double *)calloc(B, sizeof(double));
     spectra_compute(sp, p.u, p.v, p.w, NULL, NULL, NULL, PZ);
     for (k = 0; k < B; k++)
-        peak = fmax(peak, fabs(PZ[k] - (k ? PZ[k - 1] : 0.0)));
+        peak = nanmax(peak, fabs(PZ[k] - (k ? PZ[k - 1] : 0.0)));
     net = fabs(PZ[B - 1]) / peak;
     free(PZ);
     spectra_free(sp);
@@ -1322,9 +1329,9 @@ static void test_kolmogorov_laminar(void)
         for (j = 0; j < n; j++)
         {
             double f = -A * k * cos(k * i * p.cfg.dy);
-            err_d = fmax(err_d, fabs(MAt(p.w, i, j) - f / (nu * Q + drag)));
-            err_c = fmax(err_c, fabs(MAt(p.w, i, j) - f / (nu * k * k + drag)));
-            peak = fmax(peak, fabs(f / (nu * k * k + drag)));
+            err_d = nanmax(err_d, fabs(MAt(p.w, i, j) - f / (nu * Q + drag)));
+            err_c = nanmax(err_c, fabs(MAt(p.w, i, j) - f / (nu * k * k + drag)));
+            peak = nanmax(peak, fabs(f / (nu * k * k + drag)));
         }
     check("steady w = f / (nu Q + drag), Q of the discrete operator", err_d / peak, 1E-10);
     check("... and within O(h^6) of the continuum f / (nu k^2 + drag)", err_c / peak, 1E-5);
@@ -1369,7 +1376,7 @@ static double damped_mode_growth(forcing_config f, int checkerboard, int time_sc
         {
             MAt(p.w, i, j) = checkerboard ? ((i + j) % 2 ? -1.0 : 1.0) : sin(2.0 * PI * j * h);
             MAt(p.u, i, j) = MAt(p.v, i, j) = 0.0;
-            w0 = fmax(w0, fabs(MAt(p.w, i, j)));
+            w0 = nanmax(w0, fabs(MAt(p.w, i, j)));
         }
     for (t = 0; t < 300; t++)
         step(p.w, p.u, p.v, &p.ctx);
@@ -1537,8 +1544,8 @@ static void test_fourier_operators(void)
         spectra_all(sb, b.u, b.v, b.w, ob);
         for (int k = 0; k < SPECTRA_COLUMNS * B; k++)
         {
-            ds = fmax(ds, fabs(oa[k] - ob[k]));
-            peak = fmax(peak, fabs(oa[k]));
+            ds = nanmax(ds, fabs(oa[k] - ob[k]));
+            peak = nanmax(peak, fabs(oa[k]));
         }
         const char *label = c ? "compact 6" : "order 6";
         snprintf(name, sizeof(name), "%s: w, u after 20 steps (%ld and %ld solves)", label, a.ctx.solves, b.ctx.solves);
@@ -1603,8 +1610,8 @@ static void test_pseudospectral(void)
         spectra_compute(sp, p.u, p.v, p.w, NULL, NULL, PE, PZ);
         for (t = 0; t < B; t++)
         {
-            pe = fmax(pe, fabs(PE[t] - (t ? PE[t - 1] : 0.0)));
-            pz = fmax(pz, fabs(PZ[t] - (t ? PZ[t - 1] : 0.0)));
+            pe = nanmax(pe, fabs(PE[t] - (t ? PE[t - 1] : 0.0)));
+            pz = nanmax(pz, fabs(PZ[t] - (t ? PZ[t - 1] : 0.0)));
         }
         snprintf(name, sizeof(name), "2/3 rule, %s form: w^2 above the cutoff %.1e, net transfers E %.1e, Z %.1e",
                  form ? "skew-symmetric" : "advective", sqrt(above / all), fabs(PE[B - 1]) / pe, fabs(PZ[B - 1]) / pz);
@@ -1695,8 +1702,8 @@ static void test_padding_convolution(int nx, int ny)
                     double th = 2.0 * PI * ((double)ky * i / ny + (double)kx * j / nx);
                     val += nr * cos(th) - ni * sin(th);
                 }
-            err = fmax(err, fabs(val - pad[i * nx + j]));
-            peak = fmax(peak, fabs(val));
+            err = nanmax(err, fabs(val - pad[i * nx + j]));
+            peak = nanmax(peak, fabs(val));
         }
     snprintf(name, sizeof(name), "%dx%d: padded = direct convolution (max %.2e)", nx, ny, peak);
     check(name, err / peak, 1E-13);
@@ -1729,8 +1736,8 @@ static void test_padding(void)
         spectra_compute(sp, q.u, q.v, q.w, NULL, NULL, PE, PZ);
         for (t = 0; t < B; t++)
         {
-            pe = fmax(pe, fabs(PE[t] - (t ? PE[t - 1] : 0.0)));
-            pz = fmax(pz, fabs(PZ[t] - (t ? PZ[t - 1] : 0.0)));
+            pe = nanmax(pe, fabs(PE[t] - (t ? PE[t - 1] : 0.0)));
+            pz = nanmax(pz, fabs(PZ[t] - (t ? PZ[t - 1] : 0.0)));
         }
         snprintf(name, sizeof(name), "%s form, 20 forced steps: net transfers E %.1e, Z %.1e",
                  form ? "skew-symmetric" : "advective", fabs(PE[B - 1]) / pe, fabs(PZ[B - 1]) / pz);
@@ -1761,8 +1768,8 @@ static void test_random_initial_field(void)
     for (i = 0; i < n; i++)
         for (j = 0; j < n; j++)
         {
-            err = fmax(err, fabs(MAt(w, i, j) - MAt(w2, 2 * i, 2 * j)));
-            peak = fmax(peak, fabs(MAt(w, i, j)));
+            err = nanmax(err, fabs(MAt(w, i, j) - MAt(w2, 2 * i, 2 * j)));
+            peak = nanmax(peak, fabs(MAt(w, i, j)));
         }
     for (i = 0; i < N; i++)
         e += 0.5 * (u.M[i] * u.M[i] + v.M[i] * v.M[i]) / N;
@@ -1775,13 +1782,13 @@ static void test_random_initial_field(void)
     spmv(p.DY, v.M, p.ctx.k2.M);
     for (i = 0; i < N; i++)
     {
-        div = fmax(div, fabs(p.ctx.k1.M[i] + p.ctx.k2.M[i]));
-        umax = fmax(umax, fabs(u.M[i]));
+        div = nanmax(div, fabs(p.ctx.k1.M[i] + p.ctx.k2.M[i]));
+        umax = nanmax(umax, fabs(u.M[i]));
     }
     spmv(p.DX, v.M, p.ctx.k1.M);
     spmv(p.DY, u.M, p.ctx.k2.M);
     for (i = 0; i < N; i++)
-        curl = fmax(curl, fabs(p.ctx.k1.M[i] - p.ctx.k2.M[i] - w.M[i]));
+        curl = nanmax(curl, fabs(p.ctx.k1.M[i] - p.ctx.k2.M[i] - w.M[i]));
     snprintf(name, sizeof(name), "DX u + DY v = 0, DX v - DY u = w (order 6): %.1e, %.1e", div / umax, curl / peak);
     // Truncation error of order 6 on the spectrum (2 % at |k|/2 pi = 12):
     // this checks signs and axes, which would be wrong by O(1)
@@ -1861,7 +1868,7 @@ static void test_random_kick(void)
     {
         double kk = sqrt(a->kx[k] * a->kx[k] + a->ky[k] * a->ky[k]) / (2.0 * PI);
         kmin = fmin(kmin, kk);
-        kmax = fmax(kmax, kk);
+        kmax = nanmax(kmax, kk);
     }
     check("one kick carries eps dt of discrete energy", fabs(E - eps * dt) / (eps * dt), 1E-12);
     check("its modes lie in the shell 5 <= |k| / 2 pi <= 7", (kmin < 5.0 - 1E-12) + (kmax > 7.0 + 1E-12), 0.0);
@@ -2353,7 +2360,7 @@ static void test_cpu_time_step_limits(void)
         char text[32];
         snprintf(text, sizeof(text), "%.3g", round_down_3(limits[k]));
         double back = strtod(text, NULL);
-        if (back > limits[k] || back < 0.99 * limits[k]) worst = fmax(worst, fabs(back - limits[k]) / limits[k]);
+        if (back > limits[k] || back < 0.99 * limits[k]) worst = nanmax(worst, fabs(back - limits[k]) / limits[k]);
         if (back > limits[k]) worst = INFINITY;
     }
     snprintf(name, sizeof(name), "suggested dt <= limit and within 1%%, %d cases", k);
@@ -3094,8 +3101,8 @@ static void test_gpu_fourier(int order, int dealias, const char *label)
     spectra_all(sp, p.u, p.v, p.w, host);
     for (t = 0; t < SPECTRA_COLUMNS * B; t++)
     {
-        diff = fmax(diff, fabs(dev[t] - host[t]));
-        peak = fmax(peak, fabs(host[t]));
+        diff = nanmax(diff, fabs(dev[t] - host[t]));
+        peak = nanmax(peak, fabs(host[t]));
     }
     snprintf(name, sizeof(name), "%s: spectra vs CPU", label);
     check(name, diff / peak, 1E-12);
@@ -3190,8 +3197,8 @@ static void test_gpu_spectra(int advection)
         double diff = 0.0, peak = 0.0;
         for (b = 0; b < B; b++)
         {
-            diff = fmax(diff, fabs(dev[q * B + b] - host[q * B + b]));
-            peak = fmax(peak, fabs(host[q * B + b]));
+            diff = nanmax(diff, fabs(dev[q * B + b] - host[q * B + b]));
+            peak = nanmax(peak, fabs(host[q * B + b]));
         }
         snprintf(name, sizeof(name), "%s vs host (largest %.2e)", cols[q], peak);
         check(name, peak > 0.0 ? diff / peak : INFINITY, 1E-12);
@@ -3210,8 +3217,8 @@ static void test_gpu_spectra(int advection)
     spectra_all(sp, u, v, w, host2);
     for (b = 0; b < SPECTRA_COLUMNS * B2; b++)
     {
-        diff2 = fmax(diff2, fabs(dev2[b] - host2[b]));
-        peak2 = fmax(peak2, fabs(host2[b]));
+        diff2 = nanmax(diff2, fabs(dev2[b] - host2[b]));
+        peak2 = nanmax(peak2, fabs(host2[b]));
     }
     snprintf(name, sizeof(name), "a new spectra object (%d shells, was %d) is uploaded again", B2, B);
     check(name, B2 != B ? diff2 / peak2 : INFINITY, 1E-12);

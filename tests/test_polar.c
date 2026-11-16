@@ -17,6 +17,13 @@
 
 static check_fn check;
 
+// fmax() ignores a NaN argument, so an error accumulated with it would read 0
+// for a field that blew up; this propagates the NaN, which check() fails
+static double nanmax(double a, double b)
+{
+    return isnan(a) || isnan(b) ? NAN : fmax(a, b);
+}
+
 // Operators of a polar grid: DX, DX2 in theta (periodic), DY, DY2 in xi
 typedef struct
 {
@@ -69,7 +76,7 @@ static double potential_error(int ntheta, int order)
     polar_poisson_solve(s, w, p.g.psi_out, psi);
     for (i = 0; i < p.g.nr; i++)
         for (j = 0; j < p.g.ntheta; j++)
-            e = fmax(e, fabs(psi[i * p.g.ntheta + j] - polar_potential_psi(&p.g, p.g.r[i], j * p.g.dtheta)));
+            e = nanmax(e, fabs(psi[i * p.g.ntheta + j] - polar_potential_psi(&p.g, p.g.r[i], j * p.g.dtheta)));
     polar_poisson_free(s);
     free(w);
     free(psi);
@@ -106,13 +113,13 @@ static void test_polar_poisson(void)
         {
             int k = i * nt + j;
             double a = lap[k] + (psi[k - nt] - 2.0 * psi[k] + psi[k + nt]) / h2;
-            res = fmax(res, fabs(a - f[k]));
-            scale = fmax(scale, fabs(f[k]));
+            res = nanmax(res, fabs(a - f[k]));
+            scale = nanmax(scale, fabs(f[k]));
         }
     check("order 2 solves its discrete system (residual / max |f|)", res / scale, 1E-12);
     double bmax = 0.0;
     for (j = 0; j < nt; j++)
-        bmax = fmax(bmax, fabs(psi[j]) + fabs(psi[(nr - 1) * nt + j] - p.g.psi_out[j]));
+        bmax = nanmax(bmax, fabs(psi[j]) + fabs(psi[(nr - 1) * nt + j] - p.g.psi_out[j]));
     check("boundary values: psi = 0 on the wall, psi_out outside", bmax, 0.0);
     polar_poisson_free(s);
 
@@ -124,8 +131,8 @@ static void test_polar_poisson(void)
     polar_divergence(&p.g, &p.DX, &p.DY, u, v, lap, s1, s2);
     for (i = 0; i < n; i++)
     {
-        dmax = fmax(dmax, fabs(lap[i]));
-        umax = fmax(umax, fabs(u[i]) + fabs(v[i]));
+        dmax = nanmax(dmax, fabs(lap[i]));
+        umax = nanmax(umax, fabs(u[i]) + fabs(v[i]));
     }
     check("divergence of the velocity of psi / max |u|", dmax / umax, 1E-12);
 
@@ -149,9 +156,9 @@ static void test_polar_poisson(void)
                 double d = fabs(qu[i * qt + j] - ut) + fabs(qv[i * qt + j] - ur);
                 // Rows 1, 2 and nr-3, nr-2 have the biased rows of DY
                 if (i >= 3 && i < q.g.nr - 3)
-                    e = fmax(e, d);
+                    e = nanmax(e, d);
                 else
-                    e_near = fmax(e_near, d);
+                    e_near = nanmax(e_near, d);
             }
         check("potential-flow velocity (u_r, u_theta signs), 128 x 57, interior", e, 1E-6);
         check("  and on the rows next to the boundaries (biased stencils)", e_near, 2E-3);
@@ -418,7 +425,7 @@ static void test_polar_diagnostics(void)
     check("C_L and mean dp/dtheta vanish", fabs(f.cl) + fabs(f.dpdt_mean), 1E-13);
     double pe = 0.0;
     for (j = 0; j < nt; j++)
-        pe = fmax(pe, fabs(pw[j] + nu * beta * p.g.cos_t[j]));
+        pe = nanmax(pe, fabs(pw[j] + nu * beta * p.g.cos_t[j]));
     check("wall pressure integrated from dp/dtheta", pe, 1E-13);
     check("odd field: asymmetry", polar_asymmetry(&p.g, w), 1E-14);
 
@@ -491,11 +498,11 @@ static void test_polar_farfield(void)
     printf("\nPolar grid: outer boundary conditions\n");
     polar_farfield_set(&g, 0.0, 40.0);
     for (j = 0; j < nt; j++)
-        e = fmax(e, fabs(g.psi_out[j] - g.r_inf * g.sin_t[j]));
+        e = nanmax(e, fabs(g.psi_out[j] - g.r_inf * g.sin_t[j]));
     check("far field with C_D = 0 is the free stream", e, 1E-12);
     polar_farfield_set(&g, 1.5, 40.0);
     for (j = 0; j < nt; j++)
-        odd = fmax(odd, fabs(g.psi_out[j] + g.psi_out[(nt - j) % nt]));
+        odd = nanmax(odd, fabs(g.psi_out[j] + g.psi_out[(nt - j) % nt]));
     check("far-field psi is odd in theta (symmetric flow)", odd, 1E-12);
     // Outside the wake psi falls short of the free stream by C_D / 4 (half
     // the deficit flux C_D / 2), less the uniform outflow that returns it,
@@ -539,7 +546,7 @@ static void test_polar_backend(void)
     check("impulsive start: finite", !finite, 0.0);
     double wmax = 0.0;
     for (k = 0; k < w->m * w->n; k++)
-        wmax = fmax(wmax, fabs(w->M[k]));
+        wmax = nanmax(wmax, fabs(w->M[k]));
     check("impulsive start: symmetric (asymmetry / max |w|)", polar_asymmetry(&p.g, w->M) / wmax, 1E-12);
     backend_free(b);
     ops_free(&p);
@@ -728,7 +735,7 @@ static void test_polar_boundary_change(void)
     backend_fields(b, NULL, NULL, &wq);
     double d = 0.0;
     for (k = 0; k < n; k++)
-        d = fmax(d, fabs(w->M[k] - wq->M[k]));
+        d = nanmax(d, fabs(w->M[k] - wq->M[k]));
     check("the step after the change equals a fresh solver's (w, bitwise)", d, 0.0);
 
     // u, v from the solver's own psi, on the interior rows (the cylinder row
@@ -738,9 +745,9 @@ static void test_polar_boundary_change(void)
     d = 0.0;
     for (i = 1; i < nr; i++)
         for (k = 0; k < nt; k++)
-            d = fmax(d, fabs(us[i * nt + k] - MAt(*u, i, k)) + fabs(vs[i * nt + k] - MAt(*v, i, k)));
+            d = nanmax(d, fabs(us[i * nt + k] - MAt(*u, i, k)) + fabs(vs[i * nt + k] - MAt(*v, i, k)));
     for (k = 0; k < nt; k++)
-        d = fmax(d, fabs(MAt(*psi, nr - 1, k) - psi_b[k]));
+        d = nanmax(d, fabs(MAt(*psi, nr - 1, k) - psi_b[k]));
     check("backend_psi() gives the solver's u, v and the new boundary (bitwise)", d, 0.0);
 
     backend_free(a);
@@ -774,7 +781,7 @@ static void test_polar_backend_psi(void)
     polar_poisson_solve(s, w.M, p.g.psi_out, ref.M);
     d = 0.0;
     for (k = 0; k < n; k++)
-        d = fmax(d, fabs(psi->M[k] - ref.M[k]));
+        d = nanmax(d, fabs(psi->M[k] - ref.M[k]));
     check("before the first step: the Poisson solve of w (potential flow)", d, 0.0);
     for (k = 0; k < 10; k++)
     {
@@ -790,7 +797,7 @@ static void test_polar_backend_psi(void)
     polar_poisson_solve(s, w.M, p.g.psi_out, ref.M);
     d = 0.0;
     for (k = 0; k < n; k++)
-        d = fmax(d, fabs(psi->M[k] - ref.M[k]));
+        d = nanmax(d, fabs(psi->M[k] - ref.M[k]));
     check("after backend_set_fields(): the Poisson solve of the new w", d, 0.0);
     for (k = 0; k < 10; k++)
     {
@@ -802,7 +809,7 @@ static void test_polar_backend_psi(void)
     backend_fields(b, NULL, NULL, &wb);
     d = 0.0;
     for (k = 0; k < n; k++)
-        d = fmax(d, fabs(wa->M[k] - wb->M[k]));
+        d = nanmax(d, fabs(wa->M[k] - wb->M[k]));
     check("steps with and without backend_psi() calls (w, bitwise)", d, 0.0);
 
     // psi depends on the outer boundary too, which may change between steps
@@ -817,7 +824,7 @@ static void test_polar_backend_psi(void)
     polar_poisson_solve(s, w.M, p.g.psi_out, ref.M);
     d = 0.0;
     for (k = 0; k < n; k++)
-        d = fmax(d, fabs(psi->M[k] - ref.M[k]));
+        d = nanmax(d, fabs(psi->M[k] - ref.M[k]));
     check("boundary changed after a step: the solve with the new boundary", d, 0.0);
     backend_set_fields(a, &u, &v, &w);
     backend_set_fields(b, &u, &v, &w);
@@ -829,7 +836,7 @@ static void test_polar_backend_psi(void)
     polar_poisson_solve(s, w.M, p.g.psi_out, ref.M);
     d = 0.0;
     for (k = 0; k < n; k++)
-        d = fmax(d, fabs(psi->M[k] - ref.M[k]));
+        d = nanmax(d, fabs(psi->M[k] - ref.M[k]));
     check("boundary changed after an on-demand solve: solved again", d, 0.0);
     for (k = 0; k < 5; k++)
     {
@@ -840,7 +847,7 @@ static void test_polar_backend_psi(void)
     backend_fields(b, NULL, NULL, &wb);
     d = 0.0;
     for (k = 0; k < n; k++)
-        d = fmax(d, fabs(wa->M[k] - wb->M[k]));
+        d = nanmax(d, fabs(wa->M[k] - wb->M[k]));
     check("  and the steps after are still those without the calls (w, bitwise)", d, 0.0);
     free(psi_b);
     free(zero);
